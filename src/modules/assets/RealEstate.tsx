@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useSystem } from '../../context/SystemContext';
 import { ToastMessage } from '../../App';
 import { Building2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { RealEstate } from '../../types';
 
 interface Props {
   showToast: (type: ToastMessage['type'], message: string) => void;
@@ -13,59 +14,81 @@ export default function RealEstatePage({ showToast: _showToast }: Props) {
   // Current Date: 2026-06-02
   const currentDate = useMemo(() => new Date('2026-06-02'), []);
 
+  const realEstateAssets = useMemo(() => {
+    const estateByAssetId = new Map(realEstates.map(e => [e.assetId, e]));
+    return fixedAssets
+      .filter(a => ['مبنى', 'مكتب', 'أرض', 'مخزن'].includes(a.type))
+      .map(asset => {
+        const estate = estateByAssetId.get(asset.id) || {
+          id: `EST-${asset.id}`,
+          assetId: asset.id,
+          propertyName: asset.name,
+          propertyType: asset.type as RealEstate['propertyType'],
+          city: asset.location || '',
+          address: asset.location || '',
+          area: 0,
+          deedNumber: '',
+          ownershipType: 'مملوك' as RealEstate['ownershipType'],
+          acquisitionDate: asset.purchaseDate,
+          purchasePrice: asset.purchasePrice,
+          currentEstimatedValue: asset.currentValue,
+          leaseStart: '',
+          leaseEnd: '',
+          monthlyRent: 0,
+          status: asset.status as any
+        } as RealEstate;
+        return { asset, estate };
+      });
+  }, [fixedAssets, realEstates]);
+
   // Compute Alerts
   const alerts = useMemo(() => {
     const list: { type: 'lease' | 'deed' | 'maintenance'; message: string; propertyName: string; key: string }[] = [];
 
-    realEstates.forEach(e => {
-      // Lease Expiry Check
-      if (e.ownershipType === 'مؤجر' && e.leaseEnd) {
-        const leaseEnd = new Date(e.leaseEnd);
+    realEstateAssets.forEach(({ asset, estate }) => {
+      if (estate.ownershipType === 'مؤجر' && estate.leaseEnd) {
+        const leaseEnd = new Date(estate.leaseEnd);
         const diffTime = leaseEnd.getTime() - currentDate.getTime();
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         if (diffDays >= 0 && diffDays <= 30) {
           list.push({
             type: 'lease',
-            message: `عقد الإيجار ينتهي خلال ${diffDays} يوم بتاريخ (${e.leaseEnd})`,
-            propertyName: e.propertyName,
-            key: `lease-${e.id}`
+            message: `عقد الإيجار ينتهي خلال ${diffDays} يوم بتاريخ (${estate.leaseEnd})`,
+            propertyName: estate.propertyName,
+            key: `lease-${estate.id}`
           });
         } else if (diffDays < 0) {
           list.push({
             type: 'lease',
-            message: `عقد الإيجار منتهي تماماً منذ ${Math.abs(diffDays)} يوم (${e.leaseEnd})`,
-            propertyName: e.propertyName,
-            key: `lease-${e.id}`
+            message: `عقد الإيجار منتهي تماماً منذ ${Math.abs(diffDays)} يوم (${estate.leaseEnd})`,
+            propertyName: estate.propertyName,
+            key: `lease-${estate.id}`
           });
         }
       }
 
-      // Deed/Ownership Check
-      if (!e.deedNumber || e.deedNumber.trim() === '') {
+      if (!estate.deedNumber || estate.deedNumber.trim() === '') {
         list.push({
           type: 'deed',
           message: 'مستند صك الملكية / العقد ناقص أو غير مسجل بالنظام',
-          propertyName: e.propertyName,
-          key: `deed-${e.id}`
+          propertyName: estate.propertyName,
+          key: `deed-${estate.id}`
         });
       }
 
-      // Maintenance Check
-      const asset = fixedAssets.find(a => a.id === e.assetId);
-      const hasPendingMnt = maintenanceRecords.some(m => m.assetId === e.assetId && ['مجدولة', 'قيد التنفيذ'].includes(m.status));
-
-      if (asset?.status === 'قيد الصيانة' || hasPendingMnt) {
+      const hasPendingMnt = maintenanceRecords.some(m => m.assetId === asset.id && ['مجدولة', 'قيد التنفيذ'].includes(m.status));
+      if (asset.status === 'قيد الصيانة' || hasPendingMnt) {
         list.push({
           type: 'maintenance',
           message: 'هذا العقار يتطلب صيانة أو تجري به أعمال صيانة حالياً',
-          propertyName: e.propertyName,
-          key: `mnt-${e.id}`
+          propertyName: estate.propertyName,
+          key: `mnt-${estate.id}`
         });
       }
     });
 
     return list;
-  }, [realEstates, fixedAssets, maintenanceRecords, currentDate]);
+  }, [realEstateAssets, maintenanceRecords, currentDate]);
 
   return (
     <div className="page-content">
@@ -125,7 +148,7 @@ export default function RealEstatePage({ showToast: _showToast }: Props) {
               </tr>
             </thead>
             <tbody>
-              {realEstates.length === 0 ? (
+              {realEstateAssets.length === 0 ? (
                 <tr>
                   <td colSpan={15}>
                     <div className="empty-state">
@@ -135,38 +158,38 @@ export default function RealEstatePage({ showToast: _showToast }: Props) {
                   </td>
                 </tr>
               ) : (
-                realEstates.map(e => (
-                  <tr key={e.id}>
-                    <td style={{ fontWeight: 700, fontFamily: 'monospace' }}>{e.assetId}</td>
-                    <td style={{ fontWeight: 700 }}>{e.propertyName}</td>
-                    <td><span className="badge pending">{e.propertyType}</span></td>
-                    <td>{e.city}</td>
-                    <td style={{ fontSize: '0.8rem', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.address}>{e.address}</td>
-                    <td style={{ fontFamily: 'monospace' }}>{e.area} م²</td>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{e.deedNumber || <span style={{ color: 'var(--danger)' }}>ناقص ⚠️</span>}</td>
+                realEstateAssets.map(({ asset, estate }) => (
+                  <tr key={estate.id}>
+                    <td style={{ fontWeight: 700, fontFamily: 'monospace' }}>{estate.assetId}</td>
+                    <td style={{ fontWeight: 700 }}>{estate.propertyName}</td>
+                    <td><span className="badge pending">{estate.propertyType}</span></td>
+                    <td>{estate.city || asset.branch}</td>
+                    <td style={{ fontSize: '0.8rem', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={estate.address || asset.location}>{estate.address || asset.location}</td>
+                    <td style={{ fontFamily: 'monospace' }}>{estate.area} م²</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{estate.deedNumber || <span style={{ color: 'var(--danger)' }}>ناقص ⚠️</span>}</td>
                     <td>
-                      <span className={`badge ${e.ownershipType === 'مملوك' ? 'active' : 'pending'}`}>
-                        {e.ownershipType}
+                      <span className={`badge ${estate.ownershipType === 'مملوك' ? 'active' : 'pending'}`}>
+                        {estate.ownershipType}
                       </span>
                     </td>
-                    <td style={{ fontSize: '0.78rem' }}>{e.acquisitionDate || '—'}</td>
+                    <td style={{ fontSize: '0.78rem' }}>{estate.acquisitionDate || asset.purchaseDate || '—'}</td>
                     <td style={{ fontFamily: 'monospace' }}>
-                      {e.purchasePrice ? `${e.purchasePrice.toLocaleString()} د.ل` : '—'}
+                      {estate.purchasePrice ? `${estate.purchasePrice.toLocaleString()} د.ل` : `${asset.purchasePrice.toLocaleString()} د.ل`}
                     </td>
                     <td style={{ fontFamily: 'monospace', color: 'var(--primary)', fontWeight: 700 }}>
-                      {e.currentEstimatedValue ? `${e.currentEstimatedValue.toLocaleString()} د.ل` : '—'}
+                      {estate.currentEstimatedValue ? `${estate.currentEstimatedValue.toLocaleString()} د.ل` : `${asset.currentValue.toLocaleString()} د.ل`}
                     </td>
-                    <td style={{ fontSize: '0.78rem' }}>{e.leaseStart || '—'}</td>
-                    <td style={{ fontSize: '0.78rem', fontWeight: e.ownershipType === 'مؤجر' ? 700 : 400 }}>{e.leaseEnd || '—'}</td>
+                    <td style={{ fontSize: '0.78rem' }}>{estate.leaseStart || '—'}</td>
+                    <td style={{ fontSize: '0.78rem', fontWeight: estate.ownershipType === 'مؤجر' ? 700 : 400 }}>{estate.leaseEnd || '—'}</td>
                     <td style={{ fontFamily: 'monospace' }}>
-                      {e.monthlyRent ? `${e.monthlyRent.toLocaleString()} د.ل` : '—'}
+                      {estate.monthlyRent ? `${estate.monthlyRent.toLocaleString()} د.ل` : '—'}
                     </td>
                     <td>
                       <span className={`badge ${
-                        e.status === 'نشط' || e.status === 'مؤجر' ? 'active' :
-                        e.status === 'قيد الصيانة' ? 'pending' : 'inactive'
+                        estate.status === 'نشط' || estate.status === 'مؤجر' ? 'active' :
+                        estate.status === 'قيد الصيانة' ? 'pending' : 'inactive'
                       }`}>
-                        {e.status}
+                        {estate.status}
                       </span>
                     </td>
                   </tr>

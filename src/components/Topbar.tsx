@@ -1,21 +1,38 @@
 import { useState, useEffect } from 'react';
-import { Bell, LogOut, Clock, MapPin } from 'lucide-react';
+import { Bell, LogOut, Clock, MapPin, Search } from 'lucide-react';
 import { useSystem } from '../context/SystemContext';
 import { ToastMessage } from '../App';
 import NotificationCenter from './NotificationCenter';
+import GlobalSearch from './GlobalSearch';
+import CashDrawerWidget from './CashDrawerWidget';
+import { PageId } from '../config/permissions';
 
 interface TopbarProps {
   showToast: (type: ToastMessage['type'], message: string) => void;
+  onNavigate: (page: PageId) => void;
 }
 
-export default function Topbar({ showToast }: TopbarProps) {
+export default function Topbar({ showToast, onNavigate }: TopbarProps) {
   const { currentUser, currentRole, currentBranch, logout, notifications, liveAlerts } = useSystem();
   const [now, setNow] = useState(new Date());
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 30000);
     return () => clearInterval(timer);
+  }, []);
+
+  // Global Ctrl+K / Cmd+K shortcut to open the quick search from anywhere
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowSearch(true);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
   const handleLogout = () => {
@@ -53,6 +70,14 @@ export default function Topbar({ showToast }: TopbarProps) {
 
       {/* Left side: actions + user */}
       <div className="topbar-left">
+        <CashDrawerWidget />
+        <button
+          className="topbar-action-btn"
+          onClick={() => setShowSearch(true)}
+          title="بحث سريع (Ctrl+K)"
+        >
+          <Search size={18} />
+        </button>
         <div className="topbar-actions" style={{ position: 'relative' }}>
           <button
             className="topbar-action-btn"
@@ -98,6 +123,7 @@ export default function Topbar({ showToast }: TopbarProps) {
           <LogOut size={18} />
         </button>
       </div>
+      <GlobalSearch isOpen={showSearch} onClose={() => setShowSearch(false)} onNavigate={onNavigate} />
     </div>
   );
 }

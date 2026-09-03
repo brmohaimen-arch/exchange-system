@@ -4,10 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from .scheduler import start_scheduler, stop_scheduler
 from .database import engine, Base, SessionLocal
 from .seed import seed_database
-from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports
+from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings
+from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance
 
-# Create database tables
+# Create any brand-new tables, then patch any new columns onto pre-existing tables
 Base.metadata.create_all(bind=engine)
+run_startup_migrations(engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -15,6 +17,8 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_database(db)
+        migrate_plaintext_passwords(db)
+        seed_missing_system_settings(db)
     finally:
         db.close()
     
@@ -46,6 +50,8 @@ app.include_router(business.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(accounting.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
+app.include_router(setup.router, prefix="/api")
+app.include_router(compliance.router, prefix="/api")
 
 @app.get("/")
 def read_root():

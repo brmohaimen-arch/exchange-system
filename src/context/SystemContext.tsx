@@ -28,6 +28,9 @@ export interface ErrorReport {
 }
 
 interface SystemContextType {
+  // True until the initial data hydration completes (success or failure) at least once
+  isHydrating: boolean;
+
   // Auth & Session
   currentUser: string | null;
   currentRole: string;
@@ -223,11 +226,21 @@ const API_BASE = "http://localhost:8000/api";
 
 export async function fetchAPI(endpoint: string, options?: RequestInit) {
   try {
+    const token = localStorage.getItem('authToken');
     const res = await fetch(`${API_BASE}${endpoint}`, {
-      headers: { "Content-Type": "application/json", ...options?.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options?.headers
+      },
       ...options
     });
     const data = await res.json();
+    if (res.status === 401) {
+      // Session expired or was never established — clear it so the app falls back to the login screen
+      // instead of silently operating with stale/no credentials.
+      localStorage.removeItem('authToken');
+    }
     if (!data.success) throw new Error(data.message_ar || "حدث خطأ غير معروف");
     return data.data;
   } catch (err: any) {
@@ -239,49 +252,56 @@ export async function fetchAPI(endpoint: string, options?: RequestInit) {
 const SystemContext = createContext<SystemContextType | undefined>(undefined);
 
 export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Centralized Hydration from SQLite
-  React.useEffect(() => {
-    async function loadData() {
+  const [isHydrating, setIsHydrating] = useState(true);
+
+  // Centralized Hydration from SQLite. Defined on the component (not inside the
+  // effect) so it can be re-run after login: several endpoints now require
+  // authentication, so data that 401s pre-login (e.g. /auth/users) needs a
+  // second pass once a token exists. Every call is individually .catch()'d —
+  // one endpoint being unreachable or forbidden must not blank out everything
+  // else, which is what happened when this was a single all-or-nothing Promise.all.
+  const loadData = React.useCallback(async () => {
       try {
         const [
           currenciesData, ratesData, historiesData, vaultsData, banksData,
           bankBranchesData, bankAccountsData, customersData, debtsData,
           shiftsData, transactionsData, movementsData, journalEntriesData,
           auditLogsData, loginLogsData, inventoryCountsData, reconciliationsData,
-          approvalsData, branchesData, usersData, settingsData, backupsData,
+          approvalsData, branchesData, usersData, rolesData, settingsData, backupsData,
           fixedAssetsData, vehiclesData, realEstatesData, maintenanceRecordsData,
           depreciationRecordsData, assetDocumentsData, notificationsData, transfersData
         ] = await Promise.all([
-          fetchAPI("/currencies"),
+          fetchAPI("/currencies").catch(() => []),
           fetchAPI("/currencies/rates").catch(() => []),
           fetchAPI("/currencies/rate_histories").catch(() => []),
-          fetchAPI("/vaults"),
-          fetchAPI("/banks"),
-          fetchAPI("/bank_branches"),
-          fetchAPI("/bank_accounts"),
-          fetchAPI("/customers"),
-          fetchAPI("/debts"),
-          fetchAPI("/shifts"),
-          fetchAPI("/transactions"),
-          fetchAPI("/movements"),
-          fetchAPI("/journal_entries"),
-          fetchAPI("/audit_logs"),
-          fetchAPI("/login_logs"),
-          fetchAPI("/inventory_counts"),
-          fetchAPI("/reconciliations"),
-          fetchAPI("/approvals"),
-          fetchAPI("/branches"),
-          fetchAPI("/auth/users"),
-          fetchAPI("/settings"),
-          fetchAPI("/backups"),
-          fetchAPI("/assets"),
-          fetchAPI("/vehicles"),
-          fetchAPI("/real_estates"),
-          fetchAPI("/maintenance_records"),
-          fetchAPI("/depreciation_records"),
-          fetchAPI("/asset_documents"),
-          fetchAPI("/notifications"),
-          fetchAPI("/transfers")
+          fetchAPI("/vaults").catch(() => []),
+          fetchAPI("/banks").catch(() => []),
+          fetchAPI("/bank_branches").catch(() => []),
+          fetchAPI("/bank_accounts").catch(() => []),
+          fetchAPI("/customers").catch(() => []),
+          fetchAPI("/debts").catch(() => []),
+          fetchAPI("/shifts").catch(() => []),
+          fetchAPI("/transactions").catch(() => []),
+          fetchAPI("/movements").catch(() => []),
+          fetchAPI("/journal_entries").catch(() => []),
+          fetchAPI("/audit_logs").catch(() => []),
+          fetchAPI("/login_logs").catch(() => []),
+          fetchAPI("/inventory_counts").catch(() => []),
+          fetchAPI("/reconciliations").catch(() => []),
+          fetchAPI("/approvals").catch(() => []),
+          fetchAPI("/branches").catch(() => []),
+          fetchAPI("/auth/users").catch(() => []),
+          fetchAPI("/auth/roles").catch(() => []),
+          fetchAPI("/settings").catch(() => null),
+          fetchAPI("/backups").catch(() => []),
+          fetchAPI("/assets").catch(() => []),
+          fetchAPI("/vehicles").catch(() => []),
+          fetchAPI("/real_estates").catch(() => []),
+          fetchAPI("/maintenance_records").catch(() => []),
+          fetchAPI("/depreciation_records").catch(() => []),
+          fetchAPI("/asset_documents").catch(() => []),
+          fetchAPI("/notifications").catch(() => []),
+          fetchAPI("/transfers").catch(() => [])
         ]);
 
         if (currenciesData?.length) setCurrencies(currenciesData);
@@ -304,6 +324,11 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (approvalsData?.length) setApprovals(approvalsData);
         if (branchesData?.length) setBranches(branchesData);
         if (usersData?.length) setUsers(usersData);
+        if (rolesData?.length) {
+          const rolesMap: Record<string, string[]> = {};
+          rolesData.forEach((r: { name: string; permissions: string[] }) => { rolesMap[r.name] = r.permissions; });
+          setRolesPermissions(rolesMap);
+        }
         if (settingsData) setSettings(settingsData);
         if (backupsData?.length) setBackups(backupsData);
         if (fixedAssetsData?.length) setFixedAssets(fixedAssetsData);
@@ -316,10 +341,12 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (transfersData?.length) _setTransfers(transfersData);
       } catch (err: any) {
         console.error("Hydration from SQLite failed", err);
+      } finally {
+        setIsHydrating(false);
       }
-    }
-    loadData();
   }, []);
+
+  React.useEffect(() => { loadData(); }, [loadData]);
 
   // Session & Authentication
   const [currentUser, setCurrentUser] = useState<string | null>(() => localStorage.getItem('currentUser') || null);
@@ -537,6 +564,11 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       localStorage.setItem('currentRole', role);
       localStorage.setItem('currentBranch', branch);
       localStorage.setItem('currentVaultId', matchedUser.allowedVaultId || '');
+      if (matchedUser.token) localStorage.setItem('authToken', matchedUser.token);
+
+      // Re-hydrate now that a token exists — endpoints that 401'd pre-login
+      // (user management, audit logs, etc.) can now load.
+      loadData();
 
       // Save login log locally
       const newLoginLog: LoginLog = {
@@ -602,6 +634,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     localStorage.removeItem('currentRole');
     localStorage.removeItem('currentBranch');
     localStorage.removeItem('currentVaultId');
+    localStorage.removeItem('authToken');
   };
 
   // 1. Currencies CRUD
@@ -3202,6 +3235,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   return (
     <SystemContext.Provider value={{
+      isHydrating,
       currentUser, currentRole, currentBranch, currentVaultId, login, logout, canAccessPage,
       notifications, liveAlerts, addNotification, markNotificationAsRead, clearNotifications,
       errorReports, addErrorReport,

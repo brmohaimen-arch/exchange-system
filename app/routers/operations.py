@@ -4,13 +4,15 @@ from sqlalchemy import select
 from ..database import get_db
 from ..models import (
     Branch, Vault, BankAccount, Shift, Transfer, ApprovalRequest, InventoryCount, Reconciliation,
-    AuditAction, Notification, NotificationType, NotificationStatus
+    AuditAction, Notification, NotificationType, NotificationStatus, User, Role
 )
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
+from ..auth_deps import get_current_user, require_permission
+from .business import apply_transaction_reversal
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, Literal
 from datetime import datetime
 
 router = APIRouter(tags=["Operations"])
@@ -53,6 +55,7 @@ class ShiftOpen(BaseModel):
 class ShiftClose(BaseModel):
     actual_balances: Dict[str, float]
     notes: str | None = None
+    denomination_breakdown: Dict[str, Dict[str, int]] = {}  # {"USD": {"100": 12, "50": 4}, ...}
 
 # Transfer DTO
 class TransferCreate(BaseModel):
@@ -78,6 +81,7 @@ class InventoryCountCreate(BaseModel):
     reason: str
     notes: str | None = None
     reported_by: str
+    denomination_breakdown: Dict[str, int] = {}  # {"100": 12, "50": 4} for this currency
 
 # Helpers for serialization
 def branch_to_dict(b: Branch):
@@ -261,7 +265,7 @@ def list_shifts(db: Session = Depends(get_db)):
     return success_response(data=[shift_to_dict(s) for s in res])
 
 @router.post("/shifts/open")
-def open_shift(data: ShiftOpen, db: Session = Depends(get_db)):
+def open_shift(data: ShiftOpen, actor: User = Depends(require_permission("فتح وردية")), db: Session = Depends(get_db)):
     existing = db.get(Shift, data.id)
     if existing:
         raise APIError(code="EXISTS", message_ar="الوردية مفتوحة بالفعل", message_en="Shift already exists", status_code=400)
@@ -299,11 +303,26 @@ def open_shift(data: ShiftOpen, db: Session = Depends(get_db)):
     return success_response(data=shift_to_dict(shift))
 
 @router.post("/shifts/{shift_id}/close")
-def close_shift(shift_id: str, data: ShiftClose, db: Session = Depends(get_db)):
+def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_permission("إغلاق وردية")), db: Session = Depends(get_db)):
     shift = db.get(Shift, shift_id)
     if not shift:
         raise APIError(code="NOT_FOUND", message_ar="الوردية غير موجودة", message_en="Shift not found", status_code=404)
-    
+
+    # If a denomination breakdown was submitted for a currency, it must actually
+    # add up to the total the cashier entered for that currency — this is the
+    # whole point of counting by note, not just trusting a typed total.
+    for currency, breakdown in data.denomination_breakdown.items():
+        counted_total = sum(float(denom) * count for denom, count in breakdown.items())
+        entered_total = data.actual_balances.get(currency, 0.0)
+        if abs(counted_total - entered_total) > 0.01:
+            raise APIError(
+                code="DENOMINATION_MISMATCH",
+                message_ar=f"مجموع الفئات النقدية لعملة {currency} ({counted_total}) لا يطابق الرصيد الفعلي المدخل ({entered_total})",
+                message_en=f"Denomination breakdown for {currency} ({counted_total}) doesn't match entered actual balance ({entered_total})",
+                status_code=400
+            )
+    shift.denomination_breakdown = data.denomination_breakdown
+
     vault = db.get(Vault, shift.vault_id)
     expected = vault.balances if vault else shift.expected_balances
 
@@ -350,7 +369,7 @@ def close_shift(shift_id: str, data: ShiftClose, db: Session = Depends(get_db)):
     return success_response(data=shift_to_dict(shift))
 
 @router.post("/shifts/{shift_id}/approve")
-def approve_shift(shift_id: str, db: Session = Depends(get_db)):
+def approve_shift(shift_id: str, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
     shift = db.get(Shift, shift_id)
     if not shift:
         raise APIError(code="NOT_FOUND", message_ar="الوردية غير موجودة", message_en="Shift not found", status_code=404)
@@ -371,7 +390,10 @@ def list_transfers(db: Session = Depends(get_db)):
     return success_response(data=[transfer_to_dict(t) for t in res])
 
 @router.post("/transfers")
-def create_transfer(data: TransferCreate, db: Session = Depends(get_db)):
+def create_transfer(data: TransferCreate, actor: User = Depends(require_permission("تحويل بين الخزنات")), db: Session = Depends(get_db)):
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون مبلغ التحويل أكبر من صفر", message_en="Transfer amount must be positive", status_code=400)
+
     transfer = Transfer(
         id=data.id,
         source_type=data.source_type,
@@ -383,7 +405,7 @@ def create_transfer(data: TransferCreate, db: Session = Depends(get_db)):
         currency=data.currency,
         amount=data.amount,
         status="pending",
-        requested_by="system",
+        requested_by=actor.name,
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
         notes=data.notes
     )
@@ -395,7 +417,7 @@ def create_transfer(data: TransferCreate, db: Session = Depends(get_db)):
         title=f"طلب تحويل أموال بين الخزنات ({data.source_name} ➔ {data.dest_name})",
         amount=data.amount,
         currency=data.currency,
-        requested_by="system",
+        requested_by=actor.name,
         timestamp=transfer.timestamp,
         status="pending",
         reference_id=transfer.id,
@@ -420,12 +442,25 @@ def list_approvals(db: Session = Depends(get_db)):
     res = db.scalars(select(ApprovalRequest)).all()
     return success_response(data=[approval_to_dict(a) for a in res])
 
+APPROVAL_TYPE_PERMISSIONS = {
+    "transfer": "الموافقة على التحويلات",
+    "shift": "اعتماد الإقفالات",
+    "inventory": "اعتماد الإقفالات",
+    "reversal": "إنشاء عملية عكسية",
+}
+
 @router.post("/approvals/{approval_id}/action")
-def execute_approval_action(approval_id: str, action: str, db: Session = Depends(get_db)):
+def execute_approval_action(approval_id: str, action: Literal["approve", "reject"], actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     approval = db.get(ApprovalRequest, approval_id)
     if not approval:
         raise APIError(code="NOT_FOUND", message_ar="طلب الموافقة غير موجود", message_en="Approval request not found", status_code=404)
-    
+
+    required_permission = APPROVAL_TYPE_PERMISSIONS.get(approval.type)
+    if required_permission:
+        role = db.get(Role, actor.role)
+        if not role or required_permission not in role.permissions:
+            raise APIError(code="FORBIDDEN", message_ar=f"لا تملك صلاحية تنفيذ هذا الإجراء: {required_permission}", message_en=f"Missing required permission: {required_permission}", status_code=403)
+
     if action == "approve":
         approval.status = "approved"
         if approval.type == "transfer":
@@ -454,7 +489,10 @@ def execute_approval_action(approval_id: str, action: str, db: Session = Depends
                     dst = db.get(BankAccount, transfer.dest_id)
                     if dst:
                         dst.balance += transfer.amount
-                        
+
+        elif approval.type == "reversal":
+            apply_transaction_reversal(db, approval.reference_id, actor.name, approval.details or "لم يُذكر سبب")
+
     elif action == "reject":
         approval.status = "rejected"
         if approval.type == "transfer":
@@ -472,7 +510,20 @@ def list_inventory_counts(db: Session = Depends(get_db)):
     return success_response(data=[inventory_to_dict(ic) for ic in res])
 
 @router.post("/inventory_counts")
-def submit_inventory_count(data: InventoryCountCreate, db: Session = Depends(get_db)):
+def submit_inventory_count(data: InventoryCountCreate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if data.system_balance < 0 or data.actual_balance < 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="لا يمكن أن يكون الرصيد بقيمة سالبة", message_en="Balances cannot be negative", status_code=400)
+
+    if data.denomination_breakdown:
+        counted_total = sum(float(denom) * count for denom, count in data.denomination_breakdown.items())
+        if abs(counted_total - data.actual_balance) > 0.01:
+            raise APIError(
+                code="DENOMINATION_MISMATCH",
+                message_ar=f"مجموع الفئات النقدية ({counted_total}) لا يطابق الرصيد الفعلي المدخل ({data.actual_balance})",
+                message_en=f"Denomination breakdown ({counted_total}) doesn't match entered actual balance ({data.actual_balance})",
+                status_code=400
+            )
+
     ic = InventoryCount(
         id=data.id,
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
@@ -485,7 +536,8 @@ def submit_inventory_count(data: InventoryCountCreate, db: Session = Depends(get
         reason=data.reason,
         status="pending",
         notes=data.notes,
-        reported_by=data.reported_by
+        reported_by=data.reported_by,
+        denomination_breakdown=data.denomination_breakdown
     )
     db.add(ic)
 

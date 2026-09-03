@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, ArrowLeftRight, Users, Wallet, Building2,
-  TrendingUp, BookOpen, BarChart3, ShieldCheck, RefreshCw, ChevronRight,
-  ChevronLeft, CalendarDays, Wrench, Car, Building, FileText,
+  TrendingUp, BarChart3, ShieldCheck, RefreshCw, ChevronRight,
+  ChevronLeft, CalendarDays, Wrench, Car, Building,
   CreditCard
 } from 'lucide-react';
 import { PageId } from '../config/permissions';
@@ -42,10 +42,8 @@ const navSections = [
   {
     title: 'العملات والبنوك',
     items: [
-      { id: 'currencies' as PageId, label: 'العملات', icon: TrendingUp },
-      { id: 'currencies' as PageId, label: 'أسعار الصرف', icon: TrendingUp },
-      { id: 'banks' as PageId, label: 'البنوك', icon: Building },
-      { id: 'banks' as PageId, label: 'الحسابات البنكية', icon: BookOpen },
+      { id: 'currencies' as PageId, label: 'العملات وأسعار الصرف', icon: TrendingUp },
+      { id: 'banks' as PageId, label: 'البنوك والحسابات البنكية', icon: Building },
     ]
   },
   {
@@ -59,12 +57,7 @@ const navSections = [
   {
     title: 'التقارير',
     items: [
-      { id: 'reports' as PageId, label: 'تقارير الخزنات', icon: BarChart3 },
-      { id: 'reports' as PageId, label: 'تقارير البيع والشراء', icon: BarChart3 },
-      { id: 'reports' as PageId, label: 'تقارير البنوك', icon: BarChart3 },
-      { id: 'reports' as PageId, label: 'تقارير الديون', icon: BarChart3 },
-      { id: 'asset-reports' as PageId, label: 'تقارير الأصول', icon: BarChart3 },
-      { id: 'accounting' as PageId, label: 'سجل العمليات', icon: FileText },
+      { id: 'reports-hub' as PageId, label: 'التقارير', icon: BarChart3 },
     ]
   },
   {
@@ -77,17 +70,19 @@ const navSections = [
 ];
 
 export default function Sidebar({ activePage, onNavigate, collapsed, onToggleCollapse }: SidebarProps) {
-  const { currentUser, currentRole, currentBranch, approvals, canAccessPage } = useSystem();
+  const { currentUser, currentRole, currentBranch, approvals, canAccessPage, settings } = useSystem();
   const pendingCount = approvals.filter(a => a.status === 'pending').length;
   const initials = currentUser ? currentUser.split(' ').map(w => w[0]).slice(0, 2).join('') : '؟';
+  const companyName = settings?.companyName || 'نظام الصرافة';
+  const logoLetter = companyName.trim().charAt(0) || 'ص';
 
   return (
     <div className={`sidebar${collapsed ? ' collapsed' : ''}`}>
       {/* Header */}
       <div className="sidebar-header">
         <div className="logo-wrapper">
-          <div className="logo-icon">ص</div>
-          <span className="logo-text">نظام الصرافة</span>
+          <div className="logo-icon">{logoLetter}</div>
+          <span className="logo-text">{companyName}</span>
         </div>
         <button className="sidebar-collapse-btn" onClick={onToggleCollapse} title="طي / توسيع القائمة">
           {collapsed ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
@@ -105,7 +100,7 @@ export default function Sidebar({ activePage, onNavigate, collapsed, onToggleCol
               <div className="sidebar-menu-section-title">{section.title}</div>
               {visibleItems.map(item => {
                 const Icon = item.icon;
-                const isActive = activePage === item.id;
+                const isActive = item.id === 'reports-hub' ? activePage.startsWith('reports') : activePage === item.id;
                 return (
                   <button
                     key={`${item.id}-${item.label}`}
@@ -117,7 +112,7 @@ export default function Sidebar({ activePage, onNavigate, collapsed, onToggleCol
                       <Icon size={18} />
                       <span className="nav-text">{item.label}</span>
                     </span>
-                    {item.id === 'admin' && pendingCount > 0 && (
+                    {item.id === 'approvals' && pendingCount > 0 && (
                       <span className="nav-badge">{pendingCount}</span>
                     )}
                   </button>

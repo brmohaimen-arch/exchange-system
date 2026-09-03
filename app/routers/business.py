@@ -4,11 +4,15 @@ from sqlalchemy import select, func
 from ..database import get_db
 from ..models import (
     Bank, BankBranch, BankAccount, Customer, Debt, Transaction, Movement, JournalEntry,
-    Vault, AuditAction, Shift, ExchangeRate
+    Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule
 )
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
+from ..auth_deps import get_current_user, require_permission
+from ..id_gen import new_id
+from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
@@ -313,14 +317,17 @@ def list_customers(db: Session = Depends(get_db)):
     return success_response(data=[customer_to_dict(c) for c in res])
 
 @router.post("/customers")
-def create_customer(data: CustomerCreate, db: Session = Depends(get_db)):
+def create_customer(data: CustomerCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    if db.get(Customer, data.id):
+        raise APIError(code="CUSTOMER_EXISTS", message_ar="رمز العميل موجود بالفعل", message_en="Customer ID already exists", status_code=400)
     c = Customer(**data.model_dump())
     db.add(c)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="Customer", entity_id=c.id, description=f"تمت إضافة عميل جديد: {c.name}", username=actor.username)
     db.commit()
     return success_response(data=customer_to_dict(c))
 
 @router.put("/customers/{customer_id}")
-def update_customer(customer_id: str, data: CustomerCreate, db: Session = Depends(get_db)):
+def update_customer(customer_id: str, data: CustomerCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
     c = db.get(Customer, customer_id)
     if not c:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
@@ -333,18 +340,122 @@ def update_customer(customer_id: str, data: CustomerCreate, db: Session = Depend
     c.balances = data.balances
     c.profit_pct = data.profit_pct
     c.notes = data.notes
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="Customer", entity_id=c.id, description=f"تم تعديل بيانات العميل: {c.name}", username=actor.username)
     db.commit()
     return success_response(data=customer_to_dict(c))
 
 @router.delete("/customers/{customer_id}")
-def delete_customer(customer_id: str, db: Session = Depends(get_db)):
+def delete_customer(customer_id: str, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
     customer = db.get(Customer, customer_id)
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
     db.delete(customer)
-    create_audit_log(db, action=AuditAction.DELETE, entity_type="Customer", entity_id=customer_id, description=f"تم حذف العميل: {customer.name}")
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="Customer", entity_id=customer_id, description=f"تم حذف العميل: {customer.name}", username=actor.username)
     db.commit()
     return success_response(data={"deleted": True})
+
+# ----------------- CUSTOMER KYC DOCUMENTS -----------------
+class CustomerDocumentCreate(BaseModel):
+    id: str
+    customer_id: str
+    customer_name: str
+    document_type: str
+    file_name: str
+    expiry_date: str | None = None
+    status: str = "ساري"
+    notes: str | None = None
+
+def customer_document_to_dict(d: CustomerDocument):
+    return {
+        "id": d.id,
+        "customerId": d.customer_id,
+        "customerName": d.customer_name,
+        "documentType": d.document_type,
+        "fileName": d.file_name,
+        "expiryDate": d.expiry_date,
+        "status": d.status,
+        "notes": d.notes,
+    }
+
+@router.get("/customer_documents")
+def list_customer_documents(db: Session = Depends(get_db)):
+    res = db.scalars(select(CustomerDocument)).all()
+    return success_response(data=[customer_document_to_dict(d) for d in res])
+
+@router.post("/customer_documents")
+def add_customer_document(data: CustomerDocumentCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    if not db.get(Customer, data.customer_id):
+        raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل المحدد غير موجود", message_en="Customer not found", status_code=400)
+    doc = CustomerDocument(**data.model_dump())
+    db.add(doc)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="CustomerDocument", entity_id=doc.id, description=f"تمت إضافة مستند ({doc.document_type}) للعميل {doc.customer_name}", username=actor.username)
+    db.commit()
+    return success_response(data=customer_document_to_dict(doc), message_ar="تمت إضافة المستند بنجاح")
+
+@router.put("/customer_documents/{doc_id}")
+def update_customer_document(doc_id: str, data: CustomerDocumentCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    doc = db.get(CustomerDocument, doc_id)
+    if not doc:
+        raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    doc.document_type = data.document_type
+    doc.file_name = data.file_name
+    doc.expiry_date = data.expiry_date
+    doc.status = data.status
+    doc.notes = data.notes
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="CustomerDocument", entity_id=doc_id, description=f"تم تعديل مستند العميل {doc.customer_name}", username=actor.username)
+    db.commit()
+    return success_response(data=customer_document_to_dict(doc), message_ar="تم تعديل المستند بنجاح")
+
+@router.delete("/customer_documents/{doc_id}")
+def delete_customer_document(doc_id: str, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    doc = db.get(CustomerDocument, doc_id)
+    if not doc:
+        raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    db.delete(doc)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="CustomerDocument", entity_id=doc_id, description=f"تم حذف مستند العميل {doc.customer_name}", username=actor.username)
+    db.commit()
+    return success_response(message_ar="تم حذف المستند بنجاح")
+
+# ----------------- CUSTOMER CSV BULK IMPORT -----------------
+class CustomerImportRow(BaseModel):
+    id: str
+    name: str
+    type: str = "individual"
+    phone: str = ""
+    id_number: str = ""
+    address: str = ""
+    debt_limit: float = 0.0
+    profit_pct: float = 0.0
+    opening_balance_currency: str | None = None
+    opening_balance_amount: float = 0.0
+
+class CustomerImportRequest(BaseModel):
+    rows: List[CustomerImportRow]
+
+@router.post("/customers/import")
+def import_customers(data: CustomerImportRequest, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    """Bulk-create customers, e.g. from a CSV parsed client-side and posted as rows.
+    Skips (rather than fails) rows whose id already exists, so a re-run after fixing
+    a few bad rows doesn't need the whole file re-uploaded from scratch."""
+    created, skipped = [], []
+    for row in data.rows:
+        if db.get(Customer, row.id):
+            skipped.append(row.id)
+            continue
+        balances = {}
+        if row.opening_balance_currency and row.opening_balance_amount:
+            balances[row.opening_balance_currency] = row.opening_balance_amount
+        customer = Customer(
+            id=row.id, name=row.name, type=row.type, phone=row.phone, id_number=row.id_number,
+            address=row.address, debt_limit=row.debt_limit, balances=balances, is_active=True,
+            profit_pct=row.profit_pct
+        )
+        db.add(customer)
+        created.append(row.id)
+
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="Customer", entity_id="bulk_import", description=f"استيراد جماعي: تمت إضافة {len(created)} عميل، تم تجاوز {len(skipped)} (موجودين مسبقاً)", username=actor.username)
+    db.commit()
+    return success_response(data={"created": created, "skipped": skipped}, message_ar=f"تم استيراد {len(created)} عميل بنجاح، تم تجاوز {len(skipped)} عميل موجود مسبقاً")
 
 # ----------------- DEBTS -----------------
 @router.get("/debts")
@@ -377,11 +488,14 @@ def create_debt(data: DebtCreate, db: Session = Depends(get_db)):
     return success_response(data=debt_to_dict(debt))
 
 @router.post("/debts/{debt_id}/pay")
-def pay_debt(debt_id: str, data: DebtPayment, db: Session = Depends(get_db)):
+def pay_debt(debt_id: str, data: DebtPayment, actor: User = Depends(require_permission("إدارة الديون")), db: Session = Depends(get_db)):
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون مبلغ السداد أكبر من صفر", message_en="Payment amount must be positive", status_code=400)
+
     debt = db.get(Debt, debt_id)
     if not debt:
         raise APIError(code="NOT_FOUND", message_ar="الدين غير موجود", message_en="Debt not found", status_code=404)
-    
+
     if data.amount > debt.remaining_amount:
          raise APIError(code="OVERPAYMENT", message_ar="المبلغ المدفوع أكبر من المتبقي", message_en="Amount exceeds remaining debt", status_code=400)
     
@@ -403,11 +517,88 @@ def pay_debt(debt_id: str, data: DebtPayment, db: Session = Depends(get_db)):
     db.commit()
     return success_response(data=debt_to_dict(debt))
 
+# ----------------- COMMISSION / FEE RULES -----------------
+class CommissionRuleCreate(BaseModel):
+    id: str
+    name: str
+    currency: str | None = None
+    customer_type: str | None = None
+    min_amount: float = 0.0
+    max_amount: float | None = None
+    rate_type: str = "percentage"  # percentage, fixed
+    rate_value: float
+    priority: int = 0
+    is_active: bool = True
+
+def commission_rule_to_dict(r: CommissionRule):
+    return {
+        "id": r.id,
+        "name": r.name,
+        "currency": r.currency,
+        "customerType": r.customer_type,
+        "minAmount": r.min_amount,
+        "maxAmount": r.max_amount,
+        "rateType": r.rate_type,
+        "rateValue": r.rate_value,
+        "priority": r.priority,
+        "isActive": r.is_active,
+    }
+
+@router.get("/commission_rules")
+def list_commission_rules(db: Session = Depends(get_db)):
+    res = db.scalars(select(CommissionRule).order_by(CommissionRule.priority.desc())).all()
+    return success_response(data=[commission_rule_to_dict(r) for r in res])
+
+@router.post("/commission_rules")
+def create_commission_rule(data: CommissionRuleCreate, actor: User = Depends(require_permission("إدارة الإعدادات")), db: Session = Depends(get_db)):
+    if db.get(CommissionRule, data.id):
+        raise APIError(code="RULE_EXISTS", message_ar="رمز القاعدة موجود بالفعل", message_en="Rule ID already exists", status_code=400)
+    rule = CommissionRule(**data.model_dump())
+    db.add(rule)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="CommissionRule", entity_id=rule.id, description=f"تمت إضافة قاعدة عمولة جديدة: {rule.name}", username=actor.username)
+    db.commit()
+    return success_response(data=commission_rule_to_dict(rule), message_ar="تمت إضافة القاعدة بنجاح")
+
+@router.put("/commission_rules/{rule_id}")
+def update_commission_rule(rule_id: str, data: CommissionRuleCreate, actor: User = Depends(require_permission("إدارة الإعدادات")), db: Session = Depends(get_db)):
+    rule = db.get(CommissionRule, rule_id)
+    if not rule:
+        raise APIError(code="NOT_FOUND", message_ar="القاعدة غير موجودة", message_en="Rule not found", status_code=404)
+    for field in ["name", "currency", "customer_type", "min_amount", "max_amount", "rate_type", "rate_value", "priority", "is_active"]:
+        setattr(rule, field, getattr(data, field))
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="CommissionRule", entity_id=rule_id, description=f"تم تعديل قاعدة العمولة: {rule.name}", username=actor.username)
+    db.commit()
+    return success_response(data=commission_rule_to_dict(rule), message_ar="تم تعديل القاعدة بنجاح")
+
+@router.delete("/commission_rules/{rule_id}")
+def delete_commission_rule(rule_id: str, actor: User = Depends(require_permission("إدارة الإعدادات")), db: Session = Depends(get_db)):
+    rule = db.get(CommissionRule, rule_id)
+    if not rule:
+        raise APIError(code="NOT_FOUND", message_ar="القاعدة غير موجودة", message_en="Rule not found", status_code=404)
+    db.delete(rule)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="CommissionRule", entity_id=rule_id, description=f"تم حذف قاعدة العمولة: {rule.name}", username=actor.username)
+    db.commit()
+    return success_response(message_ar="تم حذف القاعدة بنجاح")
+
 # ----------------- POS OPERATIONS & TRANSACTIONS -----------------
 @router.get("/transactions")
 def list_transactions(db: Session = Depends(get_db)):
     res = db.scalars(select(Transaction)).all()
     return success_response(data=[transaction_to_dict(t) for t in res])
+
+@router.get("/transactions/export")
+def export_transactions(format: str = "xlsx", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    res = db.scalars(select(Transaction).order_by(Transaction.timestamp.desc())).all()
+    headers = ["رقم العملية", "النوع", "التاريخ", "العميل", "الخزنة", "من عملة", "إلى عملة", "المبلغ", "السعر", "العمولة", "الإجمالي", "طريقة الدفع", "الحالة", "المستخدم"]
+    rows = [[t.id, t.type, t.timestamp, t.customer_name, t.vault_name, t.from_currency, t.to_currency, t.amount, t.rate, t.commission, t.total_amount, t.payment_method, t.status, t.user] for t in res]
+    if format == "xlsx":
+        buf = build_excel("سجل العمليات", headers, rows)
+        return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="transactions.xlsx"'})
+    try:
+        buf = build_pdf("سجل العمليات", headers, rows)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء ملف PDF: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'attachment; filename="transactions.pdf"'})
 
 @router.get("/movements")
 def list_movements(db: Session = Depends(get_db)):
@@ -415,7 +606,25 @@ def list_movements(db: Session = Depends(get_db)):
     return success_response(data=[movement_to_dict(m) for m in res])
 
 @router.post("/exchange/pos")
-def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
+def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Determine flow
+    is_buy = data.type == "buy"
+    is_sell = data.type == "sell"
+    is_exchange = data.type == "exchange"
+
+    required_permission = "تنفيذ شراء عملة" if is_buy else "تنفيذ بيع عملة" if is_sell else None
+    if required_permission:
+        role = db.get(Role, actor.role)
+        if not role or required_permission not in role.permissions:
+            raise APIError(code="FORBIDDEN", message_ar=f"لا تملك صلاحية تنفيذ هذا الإجراء: {required_permission}", message_en=f"Missing required permission: {required_permission}", status_code=403)
+
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    if data.rate <= 0:
+        raise APIError(code="INVALID_RATE", message_ar="يجب أن يكون سعر الصرف أكبر من صفر", message_en="Rate must be positive", status_code=400)
+    if data.commission < 0:
+        raise APIError(code="INVALID_COMMISSION", message_ar="لا يمكن أن تكون العمولة بقيمة سالبة", message_en="Commission cannot be negative", status_code=400)
+
     vault = db.get(Vault, data.vaultId)
     if not vault:
         raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
@@ -424,10 +633,20 @@ def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
     if not customer:
         raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل المحدد غير موجود", message_en="Customer not found", status_code=400)
 
-    # Determine flow
-    is_buy = data.type == "buy"
-    is_sell = data.type == "sell"
-    is_exchange = data.type == "exchange"
+    # Enforce the standing rate's min/max band unless the actor is explicitly
+    # allowed to override it (doc requirement: "تقييد تعديل الأسعار بصلاحيات محددة")
+    pair_from, pair_to = (data.fromCurrency, data.toCurrency) if is_buy or is_exchange else (data.toCurrency, data.fromCurrency)
+    standing = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == pair_from, ExchangeRate.to_currency == pair_to))
+    if standing and (standing.min_rate or standing.max_rate):
+        role = db.get(Role, actor.role)
+        can_override = bool(role and "تعديل أسعار الصرف" in role.permissions)
+        if not can_override and not (standing.min_rate <= data.rate <= standing.max_rate):
+            raise APIError(
+                code="RATE_OUT_OF_BOUNDS",
+                message_ar=f"السعر المدخل ({data.rate}) خارج النطاق المسموح به ({standing.min_rate} - {standing.max_rate})",
+                message_en=f"Rate {data.rate} is outside the allowed band ({standing.min_rate} - {standing.max_rate})",
+                status_code=400
+            )
 
     cashier_receive_currency = ""
     cashier_receive_amount = 0.0
@@ -493,9 +712,9 @@ def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
             )
 
     # Start database updates
-    tx_id = data.id or f"tx_{int(datetime.utcnow().timestamp())}"
+    tx_id = data.id or new_id("tx")
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    username = data.user or "ahmed"
+    username = actor.name
 
     # 1. Update Vault balances
     v_bals = vault.balances.copy()
@@ -527,7 +746,7 @@ def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
         bank_acc.last_movement = timestamp
 
         bm = Movement(
-            id=f"bm_{int(datetime.utcnow().timestamp())}_{tx_id}",
+            id=new_id(f"bm_{tx_id}"),
             timestamp=timestamp,
             entity_type="bank_account",
             entity_id=bank_acc.id,
@@ -548,7 +767,7 @@ def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
         debt_currency = cashier_pay_currency if is_buy else cashier_receive_currency
         debt_amount = cashier_pay_amount if is_buy else cashier_receive_amount
         debt = Debt(
-            id=f"d_{int(datetime.utcnow().timestamp())}_{tx_id}",
+            id=new_id(f"d_{tx_id}"),
             customer_id=customer.id,
             customer_name=customer.name,
             currency=debt_currency,
@@ -616,7 +835,7 @@ def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
 
     # 7. Create Movements
     m1 = Movement(
-        id=f"m_{int(datetime.utcnow().timestamp())}_rec_{tx_id}",
+        id=new_id(f"m_rec_{tx_id}"),
         timestamp=timestamp,
         entity_type="vault",
         entity_id=vault.id,
@@ -634,7 +853,7 @@ def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
 
     if data.paymentMethod == "cash":
         m2 = Movement(
-            id=f"m_{int(datetime.utcnow().timestamp())}_pay_{tx_id}",
+            id=new_id(f"m_pay_{tx_id}"),
             timestamp=timestamp,
             entity_type="vault",
             entity_id=vault.id,
@@ -706,12 +925,169 @@ def execute_pos_operation(data: POSOperation, db: Session = Depends(get_db)):
     db.add(jv)
 
     create_audit_log(
-        db, 
-        action=AuditAction.CREATE, 
-        entity_type="Transaction", 
-        entity_id=tx_id, 
+        db,
+        action=AuditAction.CREATE,
+        entity_type="Transaction",
+        entity_id=tx_id,
         description=f"تم تنفيذ عملية صرافة رقم {tx_id} بنجاح: العميل يدفع ({cashier_receive_amount} {cashier_receive_currency})، العميل يستلم ({cashier_pay_amount} {cashier_pay_currency}) بقيمة عمولة {data.commission} د.ل"
     )
 
+    # AML / large-transaction flagging — compare the LYD-equivalent value against
+    # the configurable threshold, not the raw foreign-currency amount.
+    threshold_setting = db.get(SystemSetting, "amlThresholdLYD")
+    threshold = threshold_setting.value.get("val") if threshold_setting else None
+    if threshold:
+        lyd_equivalent = tx.total_amount if (data.fromCurrency == "LYD" or data.toCurrency == "LYD") else tx.total_amount * data.rate
+        if lyd_equivalent >= threshold:
+            flag = ComplianceFlag(
+                id=new_id(f"cf_{tx_id}"),
+                transaction_id=tx_id,
+                customer_id=customer.id,
+                customer_name=customer.name,
+                reason=f"عملية تتجاوز حد الإبلاغ المحدد ({threshold} د.ل)",
+                amount_lyd_equivalent=lyd_equivalent,
+                currency=data.fromCurrency if is_sell else data.toCurrency,
+                timestamp=timestamp,
+                status="pending"
+            )
+            db.add(flag)
+            create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="ComplianceFlag", entity_id=flag.id, description=f"تم رصد عملية كبيرة تستدعي المراجعة: {tx_id} بقيمة {lyd_equivalent:.2f} د.ل")
+
     db.commit()
     return success_response(data=transaction_to_dict(tx))
+
+# ----------------- TRANSACTION REVERSAL -----------------
+class ReversalRequestBody(BaseModel):
+    reason: str
+
+@router.post("/transactions/{tx_id}/request-reversal")
+def request_transaction_reversal(tx_id: str, data: ReversalRequestBody, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Doc requirement: a transaction is never deleted, only reversed, and only by someone
+    with special permission — and even then it goes through the same approval workflow
+    already used for transfers, so a second person signs off before money actually moves."""
+    tx = db.get(Transaction, tx_id)
+    if not tx:
+        raise APIError(code="NOT_FOUND", message_ar="العملية غير موجودة", message_en="Transaction not found", status_code=404)
+    if tx.status == "reversed":
+        raise APIError(code="ALREADY_REVERSED", message_ar="تم عكس هذه العملية بالفعل", message_en="Transaction already reversed", status_code=400)
+
+    existing_request = db.scalar(select(ApprovalRequest).where(ApprovalRequest.type == "reversal", ApprovalRequest.reference_id == tx_id, ApprovalRequest.status == "pending"))
+    if existing_request:
+        raise APIError(code="REVERSAL_PENDING", message_ar="يوجد بالفعل طلب عكس معلق لهذه العملية", message_en="A reversal request for this transaction is already pending", status_code=400)
+
+    approval = ApprovalRequest(
+        id=new_id(f"apr_rev_{tx_id}"),
+        type="reversal",
+        title=f"طلب عكس عملية {tx.type} رقم {tx_id}",
+        amount=tx.total_amount,
+        currency=tx.to_currency,
+        requested_by=actor.name,
+        timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        status="pending",
+        reference_id=tx_id,
+        details=data.reason
+    )
+    db.add(approval)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="ApprovalRequest", entity_id=approval.id, description=f"طلب {actor.name} عكس العملية {tx_id} — السبب: {data.reason}", username=actor.username)
+    db.commit()
+    return success_response(data={"approvalId": approval.id}, message_ar="تم إرسال طلب عكس العملية للمراجعة")
+
+
+def apply_transaction_reversal(db: Session, tx_id: str, actor_name: str, reason: str) -> Transaction:
+    """Actually undoes the money movement of a transaction: vault/bank balances via
+    their recorded Movement rows (exact, no re-derivation), customer_account/debt
+    effects via the same formulas execute_pos_operation used to create them (no
+    Movement rows exist for those paths today), then flips the journal entry.
+    Called from the approvals endpoint once a reversal request is approved."""
+    tx = db.get(Transaction, tx_id)
+    if not tx:
+        raise APIError(code="NOT_FOUND", message_ar="العملية غير موجودة", message_en="Transaction not found", status_code=404)
+    if tx.status == "reversed":
+        raise APIError(code="ALREADY_REVERSED", message_ar="تم عكس هذه العملية بالفعل", message_en="Transaction already reversed", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+
+    # 1. Undo vault & bank_account balance changes using the exact Movement rows recorded at execution time
+    movements = db.scalars(select(Movement).where(Movement.reference_id == tx_id, Movement.entity_type.in_(["vault", "bank_account"]))).all()
+    for m in movements:
+        entity = db.get(Vault, m.entity_id) if m.entity_type == "vault" else db.get(BankAccount, m.entity_id)
+        if not entity:
+            continue
+        if m.entity_type == "vault":
+            balance_before = entity.balances.get(m.currency, 0.0)
+            bals = entity.balances.copy()
+            bals[m.currency] = balance_before - m.amount_in + m.amount_out
+            entity.balances = bals
+            balance_after = bals[m.currency]
+            entity.last_movement = timestamp
+        else:
+            balance_before = entity.balance
+            entity.balance = balance_before - m.amount_in + m.amount_out
+            balance_after = entity.balance
+            entity.last_movement = timestamp
+
+        db.add(Movement(
+            id=new_id(f"m_rev_{m.id}"),
+            timestamp=timestamp, entity_type=m.entity_type, entity_id=m.entity_id, entity_name=m.entity_name,
+            currency=m.currency, type=f"عكس عملية — {m.type}", amount_in=m.amount_out, amount_out=m.amount_in,
+            balance_before=balance_before, balance_after=balance_after, reference_id=tx_id, user=actor_name
+        ))
+
+    is_buy, is_sell = tx.type == "buy", tx.type == "sell"
+    if is_buy:
+        recv_ccy, recv_amt, pay_ccy, pay_amt = tx.from_currency, tx.amount, tx.to_currency, tx.amount * tx.rate - tx.commission
+    elif is_sell:
+        recv_ccy, recv_amt, pay_ccy, pay_amt = tx.from_currency, tx.amount * tx.rate + tx.commission, tx.to_currency, tx.amount
+    else:
+        recv_ccy, recv_amt, pay_ccy, pay_amt = tx.from_currency, tx.amount, tx.to_currency, tx.amount * tx.rate
+
+    # 2. Undo the customer_account balance effect (no Movement rows exist for this path)
+    customer = db.get(Customer, tx.customer_id) if tx.customer_id else None
+    if customer and tx.payment_method == "customer_account":
+        cust_bals = customer.balances.copy()
+        cust_bals[pay_ccy] = cust_bals.get(pay_ccy, 0.0) - pay_amt
+        cust_bals[recv_ccy] = cust_bals.get(recv_ccy, 0.0) + recv_amt
+        customer.balances = cust_bals
+
+    # 3. Cancel the debt this transaction created, if untouched — refuse if the customer already paid some of it down
+    if tx.payment_method == "debt":
+        debt = db.scalar(select(Debt).where(Debt.transaction_id == tx_id))
+        if debt:
+            if debt.paid_amount > 0:
+                raise APIError(code="DEBT_PARTIALLY_PAID", message_ar="لا يمكن عكس العملية لوجود دفعات مسددة بالفعل على الدين المرتبط بها", message_en="Cannot reverse: the linked debt already has payments applied", status_code=400)
+            db.delete(debt)
+            if customer:
+                debt_ccy = pay_ccy if is_buy else recv_ccy
+                debt_amt = pay_amt if is_buy else recv_amt
+                cust_bals = customer.balances.copy()
+                cust_bals[debt_ccy] = cust_bals.get(debt_ccy, 0.0) + debt_amt
+                customer.balances = cust_bals
+
+    # 4. Reopen the shift's expected balances if it's still open
+    tx.status = "reversed"
+    shift = db.scalar(select(Shift).where(Shift.vault_id == tx.vault_id, Shift.status == "open"))
+    if shift:
+        expected = shift.expected_balances.copy()
+        expected[recv_ccy] = expected.get(recv_ccy, 0.0) - recv_amt
+        if tx.payment_method == "cash":
+            expected[pay_ccy] = expected.get(pay_ccy, 0.0) + pay_amt
+        shift.expected_balances = expected
+
+    # 5. Flip the journal entry
+    jv = db.scalar(select(JournalEntry).where(JournalEntry.reference == tx_id, JournalEntry.status == "approved"))
+    if jv:
+        jv.status = "reversed"
+        rev_lines = [{
+            "accountName": l.get("accountName"), "currency": l.get("currency"),
+            "debit": l.get("credit", 0.0), "credit": l.get("debit", 0.0),
+            "originalAmount": l.get("originalAmount"), "exchangeRate": l.get("exchangeRate"),
+            "equivalentLYD": l.get("equivalentLYD")
+        } for l in jv.lines]
+        db.add(JournalEntry(
+            id=f"REV-{jv.id}", date=timestamp, tx_type=f"إلغاء قيد {jv.tx_type}", reference=jv.reference,
+            description=f"قيد عكسي تلقائي لإلغاء المعاملة {tx_id} — السبب: {reason}",
+            user=actor_name, status="approved", lines=rev_lines
+        ))
+
+    create_audit_log(db, action=AuditAction.REVERSE, entity_type="Transaction", entity_id=tx_id, description=f"تم عكس العملية {tx_id} بالكامل (الأرصدة والقيود) — السبب: {reason}", username=actor_name)
+    return tx

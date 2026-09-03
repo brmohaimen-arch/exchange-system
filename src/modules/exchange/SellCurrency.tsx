@@ -5,6 +5,7 @@ import {
   TrendingUp, CheckCircle, AlertTriangle, RefreshCw, Printer,
   ChevronLeft, ChevronRight, User, Banknote, Calculator, Info
 } from 'lucide-react';
+import { computeExchangeQuote, percentageFee } from '../../utils/exchangeMath';
 
 interface Props { showToast: (type: ToastMessage['type'], message: string) => void; }
 
@@ -45,22 +46,20 @@ export default function SellCurrency({ showToast: _showToast }: Props) {
 
   const calc = useMemo(() => {
     if (!amt || !displayRate) return null;
-    // Sell: office sells foreign currency TO customer
-    // Customer wants: amt (foreign currency)
-    // Customer pays: amt × rate (local currency) + fee
+    // Sell: office sells foreign currency TO customer, customer pays local currency plus the fee
     const basePays = amt * displayRate;
-    const feeAmount = basePays * (profitPct / 100);
-    const customerPays = basePays + feeAmount;
-    const profit = (matchedRate ? amt * (displayRate - matchedRate.buyRate) : 0) + feeAmount;
+    const feeAmount = percentageFee(basePays, profitPct);
+    const quote = computeExchangeQuote({ type: 'sell', amount: amt, rate: displayRate, commission: feeAmount, standingRate: matchedRate });
+    if (!quote) return null;
 
     return {
       customerWants: amt,
       basePays,
       feeAmount,
-      customerPays,
+      customerPays: quote.customerPays,
       fromCur: toCurrency,   // customer pays in local
       toCur: fromCurrency,   // customer gets foreign
-      profit
+      profit: quote.totalProfit
     };
   }, [amt, displayRate, fromCurrency, toCurrency, matchedRate, profitPct]);
 

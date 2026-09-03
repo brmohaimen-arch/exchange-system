@@ -3,7 +3,7 @@ import { useSystem } from '../../context/SystemContext';
 import { ToastMessage } from '../../App';
 import {
   Banknote, TrendingUp, TrendingDown, ArrowLeftRight, AlertTriangle,
-  Clock, CheckCircle, XCircle, Building2, ArrowUpDown
+  Clock, CheckCircle, XCircle, Building2, ArrowUpDown, Wallet, Landmark
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -146,6 +146,52 @@ export default function Dashboard({ showToast, onNavigate }: Props & { onNavigat
             <span style={{ color: 'var(--success)', fontWeight: 700, fontSize: '0.85rem' }}>صندوق الصراف مفتوح — {activeShift.vaultName}</span>
           </div>
         )}
+      </div>
+
+      {/* KPI Stats */}
+      <div className="dashboard-kpis-grid">
+        <div className="kpi-card">
+          <div className="kpi-card-header">
+            <span>أرصدة الخزنات (د.ل)</span>
+            <div className="kpi-icon-wrapper blue"><Wallet size={17} /></div>
+          </div>
+          <div className="kpi-value">{totalVaultLYD.toLocaleString('ar-LY', { maximumFractionDigits: 0 })}</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-header">
+            <span>أرصدة الخزنات (USD)</span>
+            <div className="kpi-icon-wrapper gold"><Banknote size={17} /></div>
+          </div>
+          <div className="kpi-value">{totalVaultUSD.toLocaleString('ar-LY', { maximumFractionDigits: 0 })}</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-header">
+            <span>أرصدة الحسابات البنكية (د.ل)</span>
+            <div className="kpi-icon-wrapper blue"><Landmark size={17} /></div>
+          </div>
+          <div className="kpi-value">{totalBankLYD.toLocaleString('ar-LY', { maximumFractionDigits: 0 })}</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-header">
+            <span>أرباح اليوم (د.ل)</span>
+            <div className="kpi-icon-wrapper green"><TrendingUp size={17} /></div>
+          </div>
+          <div className="kpi-value" style={{ color: totalProfit >= 0 ? 'var(--success)' : 'var(--danger)' }}>{totalProfit.toLocaleString('ar-LY', { maximumFractionDigits: 0 })}</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-header">
+            <span>ديون مفتوحة (د.ل)</span>
+            <div className="kpi-icon-wrapper red"><AlertTriangle size={17} /></div>
+          </div>
+          <div className="kpi-value">{totalDebt.toLocaleString('ar-LY', { maximumFractionDigits: 0 })}</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-header">
+            <span>عمليات اليوم</span>
+            <div className="kpi-icon-wrapper gray"><ArrowLeftRight size={17} /></div>
+          </div>
+          <div className="kpi-value">{buyToday + sellToday}</div>
+        </div>
       </div>
 
       {/* Debt Alerts */}

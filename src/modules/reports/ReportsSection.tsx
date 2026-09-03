@@ -7,7 +7,13 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 
-interface Props { showToast: (type: ToastMessage['type'], message: string) => void; }
+type ReportKey = 'daily' | 'customers' | 'vaults' | 'audit' | 'debts' | 'profit';
+
+interface Props {
+  showToast: (type: ToastMessage['type'], message: string) => void;
+  /** When set, this report opens as its own dedicated page (no tab switcher, no other sections). */
+  section?: ReportKey;
+}
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
 
@@ -36,10 +42,11 @@ interface ProfitTx {
   vaultName: string;
 }
 
-export default function ReportsSection({ showToast }: Props) {
+export default function ReportsSection({ showToast, section }: Props) {
   const { transactions, vaults, customers, debts, auditLogs } = useSystem();
 
-  const [activeReport, setActiveReport] = useState<'daily' | 'customers' | 'vaults' | 'audit' | 'debts' | 'profit'>('daily');
+  const [activeReportState, setActiveReport] = useState<ReportKey>(section || 'daily');
+  const activeReport = section || activeReportState;
   const [dateFrom, setDateFrom] = useState(new Date().toISOString().substring(0, 10));
   const [dateTo, setDateTo] = useState(new Date().toISOString().substring(0, 10));
   const [auditFilter, setAuditFilter] = useState('');
@@ -133,7 +140,7 @@ export default function ReportsSection({ showToast }: Props) {
   return (
     <div className="page-content">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 800 }}>التقارير والإحصائيات</h1>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 800 }}>{reports.find(r => r.id === activeReport)?.label || 'التقارير والإحصائيات'}</h1>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-secondary" onClick={() => handleExport('excel')} style={{ fontSize: '0.85rem' }}>
             <Download size={14} />تصدير Excel
@@ -178,14 +185,16 @@ export default function ReportsSection({ showToast }: Props) {
         </div>
       </div>
 
-      {/* Report Type Tabs */}
-      <div className="pos-tabs-row" style={{ flexWrap: 'wrap' }}>
-        {reports.map(r => (
-          <button key={r.id} className={`pos-tab-btn${activeReport === r.id ? ' active' : ''}`} onClick={() => setActiveReport(r.id)}>
-            <r.icon size={16} />{r.label}
-          </button>
-        ))}
-      </div>
+      {/* Report Type Tabs — only shown when this page isn't already dedicated to one section */}
+      {!section && (
+        <div className="pos-tabs-row" style={{ flexWrap: 'wrap' }}>
+          {reports.map(r => (
+            <button key={r.id} className={`pos-tab-btn${activeReport === r.id ? ' active' : ''}`} onClick={() => setActiveReport(r.id)}>
+              <r.icon size={16} />{r.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {activeReport === 'daily' && (
         <>

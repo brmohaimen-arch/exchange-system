@@ -3,3 +3,9 @@ uvicorn
 sqlalchemy
 pydantic
 apscheduler
+bcrypt
+pyjwt
+openpyxl
+reportlab
+arabic-reshaper
+python-bidi

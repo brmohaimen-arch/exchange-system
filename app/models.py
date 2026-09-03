@@ -81,6 +81,7 @@ class ExchangeRate(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_updated: Mapped[str] = mapped_column(String(50), nullable=False)
     updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    market_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # manually-updated street/reference rate for comparison
 
 class RateHistory(Base):
     __tablename__ = "rate_histories"
@@ -189,6 +190,7 @@ class Shift(Base):
     differences: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(50), default="open")  # open, closed, approved
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    denomination_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)  # {"USD": {"100": 12, "50": 4}, ...}
 
 class Transaction(Base):
     __tablename__ = "transactions"
@@ -255,6 +257,8 @@ class AuditLog(Base):
     ip_address: Mapped[str | None] = mapped_column(String(50), nullable=True)
     device: Mapped[str | None] = mapped_column(String(150), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # sha256 of the previous log entry, forms a tamper-evident chain
+    hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # sha256(prev_hash + this entry's own fields)
 
 class LoginLog(Base):
     __tablename__ = "login_logs"
@@ -282,6 +286,7 @@ class InventoryCount(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     reported_by: Mapped[str] = mapped_column(String(100), nullable=False)
     approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    denomination_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
 
 class Reconciliation(Base):
     __tablename__ = "reconciliations"
@@ -448,3 +453,53 @@ class Backup(Base):
     size: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="ناجحة")
     user: Mapped[str] = mapped_column(String(100), nullable=False)
+
+class Role(Base):
+    __tablename__ = "roles"
+    name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)  # the 6 doc-defined roles; protected from deletion
+
+class CustomerDocument(Base):
+    __tablename__ = "customer_documents"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    customer_id: Mapped[str] = mapped_column(String(50), ForeignKey("customers.id"))
+    customer_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(100), nullable=False)  # بطاقة شخصية, جواز سفر, سجل تجاري
+    file_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    expiry_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="ساري")  # ساري, قارب على الانتهاء, منتهي
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+class ComplianceFlag(Base):
+    __tablename__ = "compliance_flags"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    transaction_id: Mapped[str] = mapped_column(String(50), ForeignKey("transactions.id"))
+    customer_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("customers.id"), nullable=True)
+    customer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    amount_lyd_equivalent: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, reviewed, reported
+    reviewed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+class CommissionRule(Base):
+    __tablename__ = "commission_rules"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)  # null = applies to all currencies
+    customer_type: Mapped[str | None] = mapped_column(String(50), nullable=True)  # null = applies to all customer types
+    min_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    max_amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # null = no upper bound
+    rate_type: Mapped[str] = mapped_column(String(20), default="percentage")  # percentage, fixed
+    rate_value: Mapped[float] = mapped_column(Float, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=0)  # higher priority wins when multiple rules match
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+class CurrencyDenomination(Base):
+    __tablename__ = "currency_denominations"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    value: Mapped[float] = mapped_column(Float, nullable=False)  # e.g. 100, 50, 20, 10, 5, 1

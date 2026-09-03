@@ -11,7 +11,13 @@ export type PageId =
   | 'debts'
   | 'currencies'
   | 'accounting'
-  | 'reports'
+  | 'reports-hub'
+  | 'reports-daily'
+  | 'reports-profit'
+  | 'reports-vaults'
+  | 'reports-customers'
+  | 'reports-debts'
+  | 'reports-audit'
   | 'daily-closings'
   | 'admin'
   | 'approvals'
@@ -41,7 +47,13 @@ export const PAGE_PERMISSIONS: Record<PageId, string[]> = {
   'banks':                  ['إدارة البنوك'],
 
   // Reports
-  'reports':                ['رؤية التقارير'],
+  'reports-hub':            ['رؤية التقارير'],
+  'reports-daily':          ['رؤية التقارير'],
+  'reports-profit':         ['رؤية الأرباح'],
+  'reports-vaults':         ['رؤية التقارير'],
+  'reports-customers':      ['رؤية التقارير'],
+  'reports-debts':          ['رؤية التقارير'],
+  'reports-audit':          ['رؤية سجل العمليات'],
   'accounting':             ['رؤية سجل العمليات'],
 
   // Fixed assets

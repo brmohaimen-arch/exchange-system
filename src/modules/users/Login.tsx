@@ -8,7 +8,7 @@ interface LoginProps {
 }
 
 export default function Login({ showToast }: LoginProps) {
-  const { login } = useSystem();
+  const { login, settings } = useSystem();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
@@ -24,7 +24,7 @@ export default function Login({ showToast }: LoginProps) {
     if (!res.success) {
       showToast('danger', res.error || 'فشل تسجيل الدخول');
     } else {
-      showToast('success', `مرحباً بك في نظام الصرافة`);
+      showToast('success', `مرحباً بك في ${settings?.companyName || 'نظام الصرافة'}`);
     }
   };
 
@@ -35,7 +35,7 @@ export default function Login({ showToast }: LoginProps) {
         {[...Array(5)].map((_, i) => (
           <div key={i} style={{
             position: 'absolute', borderRadius: '50%',
-            background: `rgba(59,130,246,${0.03 + i * 0.01})`,
+            background: `rgba(173,138,61,${0.025 + i * 0.008})`,
             width: `${300 + i * 120}px`, height: `${300 + i * 120}px`,
             top: `${10 + i * 15}%`, right: `${-5 + i * 10}%`,
           }} />
@@ -47,11 +47,11 @@ export default function Login({ showToast }: LoginProps) {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{
             width: 64, height: 64, borderRadius: 16,
-            background: 'linear-gradient(135deg, #3B82F6, #1E40AF)',
+            background: 'linear-gradient(150deg, var(--gold) 0%, #8A6B26 100%)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 8px 24px rgba(59,130,246,0.3)'
+            boxShadow: '0 8px 24px rgba(173,138,61,0.3)'
           }}>
-            <Landmark size={32} color="white" />
+            <Landmark size={32} color="var(--primary)" />
           </div>
           <div className="login-title-subtitle">
             <div className="login-main-title">نظام إدارة الصرافة</div>

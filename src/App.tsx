@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import Toast from './components/Toast';
 import RoleGuard from './components/RoleGuard';
+import LoadingScreen from './components/LoadingScreen';
 import Dashboard from './modules/dashboard/Dashboard';
 import ExchangePOS from './modules/exchange/ExchangePOS';
 import BuyCurrency from './modules/exchange/BuyCurrency';
@@ -18,6 +19,7 @@ import DebtManagement from './modules/customers/DebtManagement';
 import Currencies from './modules/settings/Currencies';
 import AccountingLedger from './modules/reports/AccountingLedger';
 import ReportsSection from './modules/reports/ReportsSection';
+import ReportsHub from './modules/reports/ReportsHub';
 import AdminPanel from './modules/users/AdminPanel';
 import DailyClosings from './modules/vaults/DailyClosings';
 import FixedAssetsDashboard from './modules/assets/FixedAssetsDashboard';
@@ -36,7 +38,7 @@ export interface ToastMessage {
 }
 
 function App() {
-  const { currentUser, logout, canAccessPage } = useSystem();
+  const { currentUser, logout, canAccessPage, isHydrating } = useSystem();
   const [activePage, setActivePage] = useState<PageId>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -105,6 +107,10 @@ function App() {
     };
   }, [currentUser]);
 
+  if (isHydrating) {
+    return <LoadingScreen />;
+  }
+
   if (!currentUser) {
     return <Login showToast={showToast} />;
   }
@@ -152,7 +158,13 @@ function App() {
       case 'debts': return <DebtManagement {...props} />;
       case 'currencies': return <Currencies {...props} />;
       case 'accounting': return <AccountingLedger {...props} />;
-      case 'reports': return <ReportsSection {...props} />;
+      case 'reports-hub': return <ReportsHub onNavigate={setActivePage} />;
+      case 'reports-daily': return <ReportsSection {...props} section="daily" />;
+      case 'reports-profit': return <ReportsSection {...props} section="profit" />;
+      case 'reports-vaults': return <ReportsSection {...props} section="vaults" />;
+      case 'reports-customers': return <ReportsSection {...props} section="customers" />;
+      case 'reports-debts': return <ReportsSection {...props} section="debts" />;
+      case 'reports-audit': return <ReportsSection {...props} section="audit" />;
       case 'daily-closings': return <DailyClosings {...props} />;
       case 'fixed-assets-dashboard': return <FixedAssetsDashboard {...props} />;
       case 'assets': return <Assets {...props} />;
@@ -183,7 +195,7 @@ function App() {
         onToggleCollapse={() => setSidebarCollapsed(c => !c)}
       />
       <div className="main-panel">
-        <Topbar showToast={showToast} />
+        <Topbar showToast={showToast} onNavigate={setActivePage} />
         {renderPage()}
       </div>
       <Toast toasts={toasts} onDismiss={dismissToast} />

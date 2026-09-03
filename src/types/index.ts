@@ -19,6 +19,7 @@ export interface ExchangeRate {
   sellRate: number;
   minRate: number;
   maxRate: number;
+  marketRate?: number | null;
   validFrom: string;
   validTo: string;
   isActive: boolean;

@@ -1,14 +1,16 @@
 import React, { useState, useMemo } from 'react';
 import { useSystem } from '../../context/SystemContext';
 import { ToastMessage } from '../../App';
-import { ArrowLeftRight, TrendingUp, TrendingDown, RefreshCw, Printer, AlertTriangle, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeftRight, TrendingUp, TrendingDown, RefreshCw, Printer, AlertTriangle, CheckCircle, ChevronLeft, ChevronRight, Calculator as CalculatorIcon, X } from 'lucide-react';
 import { showFeedback } from '../../components/feedback/showFeedback';
+import { computeExchangeQuote } from '../../utils/exchangeMath';
+import QuickCalculator from './Calculator';
 
 interface Props { showToast: (type: ToastMessage['type'], message: string) => void; }
 type OpType = 'buy' | 'sell' | 'exchange';
 
 export default function ExchangePOS({ showToast: _showToast }: Props) {
-  const { vaults, customers, currencies, rates, bankAccounts, executePOSOperation, currentVaultId, transactions, shifts } = useSystem();
+  const { vaults, customers, currencies, rates, bankAccounts, executePOSOperation, currentVaultId, transactions, shifts, settings } = useSystem();
 
   const [step, setStep] = useState(1);
   const [opType, setOpType] = useState<OpType>('buy');
@@ -24,6 +26,7 @@ export default function ExchangePOS({ showToast: _showToast }: Props) {
   const [notes, setNotes] = useState('');
   const [lastReceipt, setLastReceipt] = useState<any>(null);
   const [validationError, setValidationError] = useState('');
+  const [showCalc, setShowCalc] = useState(false);
 
   const activeVault = vaults.find(v => v.id === vaultId);
   const selectedCustomer = customers.find(c => c.id === customerId);
@@ -38,25 +41,16 @@ export default function ExchangePOS({ showToast: _showToast }: Props) {
   const comm = parseFloat(commission) || 0;
 
   const calc = useMemo(() => {
-    if (!amt || !displayRate) return null;
-    if (opType === 'buy') {
-      return {
-        customerPays: amt, customerReceives: amt * displayRate - comm,
-        fromCur: fromCurrency, toCur: toCurrency,
-        profit: matchedRate ? amt * (matchedRate.sellRate - displayRate) : 0
-      };
-    } else if (opType === 'sell') {
-      return {
-        customerPays: amt * displayRate + comm, customerReceives: amt,
-        fromCur: toCurrency, toCur: fromCurrency,
-        profit: matchedRate ? amt * (displayRate - matchedRate.buyRate) : 0
-      };
-    } else {
-      return {
-        customerPays: amt, customerReceives: amt * displayRate,
-        fromCur: fromCurrency, toCur: toCurrency, profit: comm
-      };
-    }
+    const quote = computeExchangeQuote({ type: opType, amount: amt, rate: displayRate, commission: comm, standingRate: matchedRate });
+    if (!quote) return null;
+    const fromCur = quote.payCurrencyRole === 'from' ? fromCurrency : toCurrency;
+    const toCur = quote.payCurrencyRole === 'from' ? toCurrency : fromCurrency;
+    return {
+      customerPays: quote.customerPays,
+      customerReceives: quote.customerReceives,
+      fromCur, toCur,
+      profit: quote.backendExpectedProfit
+    };
   }, [opType, amt, displayRate, comm, fromCurrency, toCurrency, matchedRate]);
 
   const validateStep = (s: number) => {
@@ -109,7 +103,24 @@ export default function ExchangePOS({ showToast: _showToast }: Props) {
 
   return (
     <div className="page-content">
-      <h1 style={{ fontSize: '1.5rem', fontWeight: 800 }}>عملية صرافة جديدة</h1>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 800 }}>عملية صرافة جديدة</h1>
+        <button className="btn btn-secondary" style={{ flex: 'none', fontSize: '0.85rem' }} onClick={() => setShowCalc(s => !s)}>
+          {showCalc ? <X size={15} /> : <CalculatorIcon size={15} />}
+          {showCalc ? 'إغلاق الحاسبة' : 'حاسبة سريعة'}
+        </button>
+      </div>
+
+      {showCalc && (
+        <div className="section-card">
+          <div className="section-card-header">
+            <div className="section-card-title"><CalculatorIcon size={17} color="var(--accent)" />حاسبة سريعة — بدون تنفيذ عملية</div>
+          </div>
+          <div className="section-card-body">
+            <QuickCalculator />
+          </div>
+        </div>
+      )}
 
       <div className="pos-container">
         {/* Left: Wizard Form */}
@@ -306,7 +317,7 @@ export default function ExchangePOS({ showToast: _showToast }: Props) {
               <div className="section-card-body">
                 <div className="receipt-paper">
                   <div className="receipt-header">
-                    <div className="receipt-title">نظام الصرافة والخزنات</div>
+                    <div className="receipt-title">{settings?.companyName || 'نظام الصرافة والخزنات'}</div>
                     <div style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>إيصال عملية صرافة</div>
                   </div>
                   <div className="receipt-row"><span>رقم العملية:</span><span>{lastReceipt.txId}</span></div>
