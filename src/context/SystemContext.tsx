@@ -222,7 +222,9 @@ interface SystemContextType {
   addAuditLog: (action: string, entity: string, details: string, oldValue?: string, newValue?: string) => void;
 }
 
-const API_BASE = "http://localhost:8000/api";
+// Use the Vite proxy in the browser so login works in the preview and in local development.
+// A deployment can override this with VITE_API_BASE_URL when the API is hosted separately.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
 export async function fetchAPI(endpoint: string, options?: RequestInit) {
   try {
@@ -1181,7 +1183,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       addAuditLog(
         isBuy ? 'شراء عملة' : isSell ? 'بيع عملة' : 'تبديل عملة',
         'TRANSACTION',
-        `تم تنفيذ عملية صرافة رقم ${txId} بنجاح: العميل يدفع (${cashierReceiveAmount} ${cashierReceiveCurrency})، العميل يستلم (${cashierPayAmount} ${cashierPayCurrency}) بقيمة عمولة ${commission} د.ل`
+        `تم تنفيذ عملية صرافة رقم ${txId} بنجاح: العميل يدفع (${cashierReceiveAmount} ${cashierReceiveCurrency})، العميل يستلم (${cashierPayAmount} ${cashierPayCurrency}) بقيمة عم��لة ${commission} د.ل`
       );
 
       return { success: true, txId };
