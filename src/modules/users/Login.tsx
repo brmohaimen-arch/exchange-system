@@ -29,70 +29,46 @@ export default function Login({ showToast }: LoginProps) {
   };
 
   return (
-    <div className="login-bg">
-      {/* Decorative circles */}
-      <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-        {[...Array(5)].map((_, i) => (
-          <div key={i} style={{
-            position: 'absolute', borderRadius: '50%',
-            background: `rgba(173,138,61,${0.025 + i * 0.008})`,
-            width: `${300 + i * 120}px`, height: `${300 + i * 120}px`,
-            top: `${10 + i * 15}%`, right: `${-5 + i * 10}%`,
-          }} />
-        ))}
-      </div>
-
-      <div className="login-card">
-        {/* Logo */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{
-            width: 64, height: 64, borderRadius: 16,
-            background: 'linear-gradient(150deg, var(--gold) 0%, #8A6B26 100%)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 8px 24px rgba(173,138,61,0.3)'
-          }}>
-            <Landmark size={32} color="var(--primary)" />
+    <main className="login-bg">
+      <div className="login-ambient login-ambient-one" />
+      <div className="login-ambient login-ambient-two" />
+      <section className="login-card">
+        <div className="login-brand-panel">
+          <div className="login-brand-mark"><Landmark size={22} /></div>
+          <span className="login-brand-name">صرافة أفق</span>
+          <span className="login-brand-kicker">منصة العمليات المالية</span>
+          <div className="login-orbit"><span>د</span><span>€</span><span>$</span></div>
+          <div className="login-brand-copy">
+            <span className="dashboard-eyebrow">ثقة · دقة · سيولة</span>
+            <h1>حرّك أموالك<br /><em>بثقة أكبر.</em></h1>
+            <p>مساحة عمل موحّدة لإدارة الصناديق والعملات والحسابات البنكية في لحظة واحدة.</p>
           </div>
-          <div className="login-title-subtitle">
-            <div className="login-main-title">نظام إدارة الصرافة</div>
-            <div className="login-sub-title">الخزنات والحسابات البنكية — للموظفين فقط</div>
-          </div>
+          <div className="login-trust-line"><span className="login-live-dot" /> النظام التشغيلي آمن ومتاح الآن</div>
         </div>
 
-        {/* Manual Login */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div className="form-group">
-            <label className="form-label">اسم المستخدم</label>
-            <input
-              className="form-input" type="text" placeholder="أدخل اسم المستخدم"
-              value={username} onChange={e => setUsername(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleLogin()}
-            />
+        <div className="login-form-panel">
+          <div className="login-form-heading">
+            <span className="login-overline">بوابة الموظفين</span>
+            <h2>مرحباً بعودتك</h2>
+            <p>سجّل الدخول لمتابعة عمليات الصرافة اليومية.</p>
           </div>
-          <div className="form-group">
-            <label className="form-label">كلمة المرور</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                className="form-input" type={showPw ? 'text' : 'password'}
-                placeholder="أدخل كلمة المرور" value={password}
-                onChange={e => setPassword(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                style={{ paddingLeft: '2.5rem' }}
-              />
-              <button onClick={() => setShowPw(s => !s)} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gray)' }}>
-                {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
+          <div className="login-form-fields">
+            <div className="form-group">
+              <label className="form-label">اسم المستخدم</label>
+              <input className="form-input" type="text" placeholder="أدخل اسم المستخدم" value={username} onChange={e => setUsername(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229 && handleLogin()} />
             </div>
+            <div className="form-group">
+              <label className="form-label">كلمة المرور</label>
+              <div className="login-password-wrap">
+                <input className="form-input" type={showPw ? 'text' : 'password'} placeholder="أدخل كلمة المرور" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229 && handleLogin()} />
+                <button className="login-password-toggle" type="button" aria-label={showPw ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'} onClick={() => setShowPw(s => !s)}>{showPw ? <EyeOff size={17} /> : <Eye size={17} />}</button>
+              </div>
+            </div>
+            <button className="btn btn-primary login-submit" onClick={handleLogin} disabled={loading}><LogIn size={17} />{loading ? 'جاري التحقق...' : 'الدخول إلى مساحة العمل'}</button>
           </div>
-          <button
-            className="btn btn-primary" onClick={handleLogin} disabled={loading}
-            style={{ marginTop: '0.5rem', fontSize: '1rem', padding: '0.85rem' }}
-          >
-            <LogIn size={18} />
-            {loading ? 'جاري التحقق...' : 'تسجيل الدخول'}
-          </button>
+          <div className="login-form-footer"><span>الوصول مخصص للموظفين المعتمدين</span><span className="login-lock">محمي</span></div>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
