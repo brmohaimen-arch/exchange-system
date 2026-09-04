@@ -129,24 +129,22 @@ export default function Dashboard({ showToast, onNavigate }: Props & { onNavigat
   };
 
   return (
-    <div className="page-content" style={{ gap: '1.5rem' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--primary)', marginBottom: '0.25rem' }}>
-            لوحة التحكم الرئيسية
-          </h1>
-          <p style={{ color: 'var(--gray)', fontSize: '0.875rem' }}>
-            مرحباً {currentUser} — نظرة شاملة على حركة اليوم
-          </p>
+    <div className="page-content dashboard-page">
+      <section className="dashboard-hero">
+        <div className="dashboard-hero-copy">
+          <span className="dashboard-eyebrow">مركز العمليات · {new Date().toLocaleDateString('ar-LY', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+          <h1>لوحة التحكم الرئيسية</h1>
+          <p>مرحباً {currentUser} — كل ما تحتاجه لمراقبة السيولة وحركة الصرافة اليوم.</p>
         </div>
-        {activeShift && (
-          <div style={{ background: 'var(--success-bg)', border: '1px solid var(--success)', borderRadius: 8, padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' }} />
-            <span style={{ color: 'var(--success)', fontWeight: 700, fontSize: '0.85rem' }}>صندوق الصراف مفتوح — {activeShift.vaultName}</span>
-          </div>
-        )}
-      </div>
+        <div className="dashboard-hero-status">
+          <div className={`hero-status-dot ${activeShift ? 'is-live' : ''}`} />
+          <div><strong>{activeShift ? 'الصندوق يعمل الآن' : 'لا يوجد صندوق مفتوح'}</strong><span>{activeShift ? activeShift.vaultName : 'ابدأ وردية جديدة للمتابعة'}</span></div>
+          <Clock size={20} />
+        </div>
+      </section>
+
+      <section className="dashboard-overview">
+        <div className="overview-heading"><div><span className="dashboard-eyebrow">لقطة مالية</span><h2>ملخص اليوم</h2></div><span className="overview-date">آخر تحديث · الآن</span></div>
 
       {/* KPI Stats */}
       <div className="dashboard-kpis-grid">
@@ -193,6 +191,7 @@ export default function Dashboard({ showToast, onNavigate }: Props & { onNavigat
           <div className="kpi-value">{buyToday + sellToday}</div>
         </div>
       </div>
+      </section>
 
       {/* Debt Alerts */}
       {debtAlerts.length > 0 && (

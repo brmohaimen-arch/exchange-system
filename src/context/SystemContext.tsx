@@ -224,7 +224,7 @@ interface SystemContextType {
 
 // Use the Vite proxy in the browser so login works in the preview and in local development.
 // A deployment can override this with VITE_API_BASE_URL when the API is hosted separately.
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
+const API_BASE = "/api";
 
 export async function fetchAPI(endpoint: string, options?: RequestInit) {
   try {
