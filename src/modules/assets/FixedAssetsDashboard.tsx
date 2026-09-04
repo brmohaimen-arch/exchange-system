@@ -14,7 +14,7 @@ interface Props {
   showToast: (type: ToastMessage['type'], message: string) => void;
 }
 
-const COLORS = ['var(--primary)', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#3B82F6'];
+const COLORS = ['var(--accent)', '#089981', '#FF9800', '#F23645', '#7C5CFC', '#00BCD4', '#131722'];
 
 export default function FixedAssetsDashboard({ showToast: _showToast }: Props) {
   const { fixedAssets, assetDocuments, depreciationRecords } = useSystem();
@@ -107,7 +107,7 @@ export default function FixedAssetsDashboard({ showToast: _showToast }: Props) {
           </div>
         </div>
 
-        <div className="kpi-card" style={{ borderLeft: '4px solid #10B981' }}>
+        <div className="kpi-card" style={{ borderLeft: '4px solid #089981' }}>
           <div className="kpi-card-header">
             <span>إجمالي قيمة الأصول</span>
             <div className="kpi-icon-wrapper green"><DollarSign size={18} /></div>
@@ -120,7 +120,7 @@ export default function FixedAssetsDashboard({ showToast: _showToast }: Props) {
           </div>
         </div>
 
-        <div className="kpi-card" style={{ borderLeft: '4px solid #3B82F6' }}>
+        <div className="kpi-card" style={{ borderLeft: '4px solid #1652F0' }}>
           <div className="kpi-card-header">
             <span>عدد السيارات</span>
             <div className="kpi-icon-wrapper blue"><Car size={18} /></div>
@@ -142,7 +142,7 @@ export default function FixedAssetsDashboard({ showToast: _showToast }: Props) {
           </div>
         </div>
 
-        <div className="kpi-card" style={{ borderLeft: '4px solid #EF4444' }}>
+        <div className="kpi-card" style={{ borderLeft: '4px solid #F23645' }}>
           <div className="kpi-card-header">
             <span>أصول قيد الصيانة</span>
             <div className="kpi-icon-wrapper red"><Wrench size={18} /></div>
@@ -153,7 +153,7 @@ export default function FixedAssetsDashboard({ showToast: _showToast }: Props) {
           </div>
         </div>
 
-        <div className="kpi-card" style={{ borderLeft: '4px solid #F59E0B' }}>
+        <div className="kpi-card" style={{ borderLeft: '4px solid #FF9800' }}>
           <div className="kpi-card-header">
             <span>مستندات قاربت على الانتهاء</span>
             <div className="kpi-icon-wrapper yellow"><FileWarning size={18} /></div>

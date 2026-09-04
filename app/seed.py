@@ -99,7 +99,7 @@ def seed_database(db: Session):
 
     # 6. Essential Settings
     settings = [
-        SystemSetting(key="companyName", value={"val": "نظام الواحة الدولي للصرافة والخدمات المالية"}),
+        SystemSetting(key="companyName", value={"val": "منظومة المحلية للصرافة"}),
         SystemSetting(key="logoUrl", value={"val": ""}),
         SystemSetting(key="primaryColor", value={"val": "#1E40AF"}),
         SystemSetting(key="address", value={"val": "شارع الميزران، طرابلس، ليبيا"}),

@@ -117,7 +117,7 @@ export default function SellCurrency({ showToast: _showToast }: Props) {
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
         <div style={{
           width: 48, height: 48, borderRadius: 12,
-          background: 'linear-gradient(135deg, #3B82F6, #1E40AF)',
+          background: 'linear-gradient(135deg, #1652F0, #0D3FC7)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 4px 14px rgba(59,130,246,0.35)'
         }}>

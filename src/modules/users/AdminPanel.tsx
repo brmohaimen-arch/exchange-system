@@ -400,7 +400,7 @@ export default function AdminPanel({ showToast, mode }: Props) {
                         alignItems: 'center',
                         padding: '0.75rem 1rem',
                         borderRadius: '10px',
-                        background: isActive ? 'linear-gradient(135deg, var(--accent), #1e40af)' : 'var(--input)',
+                        background: isActive ? 'linear-gradient(135deg, var(--accent), #0D3FC7)' : 'var(--input)',
                         color: isActive ? '#FFFFFF' : 'var(--foreground)',
                         cursor: 'pointer',
                         transition: 'var(--transition)',

@@ -49,7 +49,7 @@ export default function NotificationCenter({ isOpen, onClose }: NotificationCent
       case 'success': return <CheckCircle2 size={15} color="var(--success)" />;
       case 'error':   return <AlertCircle size={15} color="var(--danger)" />;
       case 'warning': return <AlertTriangle size={15} color="var(--warning)" />;
-      default:        return <Info size={15} color="var(--info, #3b82f6)" />;
+      default:        return <Info size={15} color="var(--info, #1652f0)" />;
     }
   };
 

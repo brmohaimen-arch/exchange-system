@@ -1,55 +1,59 @@
 /* Arabic fonts loaded via <link> in index.html for reliable loading */
 
 :root {
-  /* ── Private-vault palette ──────────────────────────────────────────────
-     Ink + brass + deep teal, built for a currency-exchange back office:
-     precision and trust over consumer-app flash. Brass is the one accent —
-     used sparingly (active nav, key numbers, premium CTA) rather than
-     smeared across every icon and badge. */
-  --background: #F1F2F5;
-  --foreground: #12161F;
+  /* ── Light SaaS-admin palette ────────────────────────────────────────────
+     Adminator-referenced: off-white canvas, white cards, a light sidebar with
+     a tinted (not solid-fill) active state, one indigo accent for actions,
+     and avatar/badge colors that carry identity and status at a glance. */
+  --background: #F7F8FA;
+  --foreground: #15171F;
 
-  --primary: #0E1420;       /* Ink — sidebar, headings, high-emphasis text */
-  --primary-light: #1B2434;
-  --accent: #1C5266;        /* Deep teal — the one interactive color: buttons, links, focus */
-  --accent-hover: #164154;
-  --gold: #AD8A3D;          /* Brass — sparing premium accent */
-  --gold-bg: rgba(173, 138, 61, 0.12);
-  --gold-hover: #96762F;
+  --primary: #15171F;       /* Ink — headings, high-emphasis text */
+  --primary-light: #2A2E3A;
+  --accent: #4A5FEC;        /* Indigo-blue — the one interactive color */
+  --accent-hover: #3B4ED8;
+  --accent-bg: rgba(74, 95, 236, 0.09);
 
   --card: #FFFFFF;
-  --border: #E3E5EA;
-  --input: #F4F5F7;
+  --border: #E8EAEF;
+  --input: #F3F4F7;
 
   /* Status Colors */
-  --success: #0E7C5A;       /* Deep emerald */
-  --success-bg: rgba(14, 124, 90, 0.1);
-  --danger: #B3261E;        /* Deep brick red */
-  --danger-bg: rgba(179, 38, 30, 0.1);
-  --warning: #B8790E;       /* Warm amber */
-  --warning-bg: rgba(184, 121, 14, 0.1);
-  --info: #1C5266;
-  --info-bg: rgba(28, 82, 102, 0.1);
-  --gray: #5B6472;
-  --gray-bg: rgba(91, 100, 114, 0.1);
+  --success: #17A673;
+  --success-bg: rgba(23, 166, 115, 0.1);
+  --danger: #E14C4C;
+  --danger-bg: rgba(225, 76, 76, 0.1);
+  --warning: #F5A524;
+  --warning-bg: rgba(245, 165, 36, 0.12);
+  --info: #4A5FEC;
+  --info-bg: rgba(74, 95, 236, 0.09);
+  --gray: #8A93A6;
+  --gray-bg: rgba(138, 147, 166, 0.1);
+
+  /* Avatar/role identity colors — a small fixed set, cycled by role or id */
+  --avatar-1: #4A5FEC;
+  --avatar-2: #17A673;
+  --avatar-3: #F5A524;
+  --avatar-4: #A855F7;
+  --avatar-5: #EC4899;
+  --avatar-6: #14B8A6;
 
   /* Fonts */
-  --font-arabic: 'IBM Plex Sans Arabic', 'Segoe UI', 'Tahoma', sans-serif;
-  --font-display: 'Lalezar', var(--font-arabic);
+  --font-arabic: 'Readex Pro', 'Segoe UI', 'Tahoma', sans-serif;
+  --font-display: var(--font-arabic);
 
   /* Sizing & Layout Constants */
-  --sidebar-width: 258px;
-  --sidebar-collapsed-width: 72px;
-  --topbar-height: 68px;
+  --sidebar-width: 246px;
+  --sidebar-collapsed-width: 68px;
+  --topbar-height: 64px;
   --radius: 10px;
-  --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 
-  /* Shadows — tight, low-diffusion. Premium fintech uses barely-there elevation,
-     not the soft ambient SaaS-card shadow. */
-  --shadow-sm: 0 1px 2px rgba(14, 20, 32, 0.06);
-  --shadow-md: 0 2px 8px rgba(14, 20, 32, 0.08);
-  --shadow-lg: 0 8px 24px -4px rgba(14, 20, 32, 0.14);
-  --shadow-premium: 0 24px 48px -12px rgba(14, 20, 32, 0.28);
+  /* Shadows — tight, low-diffusion */
+  --shadow-sm: 0 1px 2px rgba(21, 23, 31, 0.04);
+  --shadow-md: 0 4px 14px rgba(21, 23, 31, 0.07);
+  --shadow-lg: 0 12px 28px -6px rgba(21, 23, 31, 0.14);
+  --shadow-premium: 0 24px 48px -8px rgba(21, 23, 31, 0.2);
 }
 
 /* Global Reset */
@@ -129,13 +133,13 @@ textarea:focus-visible,
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────
-   Ink surface, minimized by default footprint, brass-accented active state
-   (a left indicator bar + brass icon tint) rather than a solid color-block
-   pill — reads as a private-bank rail, not a generic SaaS nav. */
+   A dark icon rail against a bright white app — the recognizable
+   trading-terminal pattern of a near-black nav strip anchoring a light,
+   data-dense workspace. Active state is a solid blue tab, not a tint. */
 .sidebar {
   width: var(--sidebar-width);
-  background-color: var(--primary);
-  color: #FFFFFF;
+  background-color: #FFFFFF;
+  color: var(--primary);
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -144,9 +148,9 @@ textarea:focus-visible,
   top: 0;
   z-index: 100;
   transition: var(--transition);
-  box-shadow: -1px 0 0 rgba(0, 0, 0, 0.2);
   overflow-y: auto;
   overflow-x: hidden;
+  border-left: 1px solid var(--border);
 }
 
 .sidebar.collapsed {
@@ -155,11 +159,11 @@ textarea:focus-visible,
 
 .sidebar-header {
   height: var(--topbar-height);
-  padding: 0 1.35rem;
+  padding: 0 1.25rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border);
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -167,32 +171,28 @@ textarea:focus-visible,
 .logo-wrapper {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.65rem;
   white-space: nowrap;
 }
 
 .logo-icon {
-  background: linear-gradient(150deg, var(--gold) 0%, #8A6B26 100%);
-  color: var(--primary);
-  width: 36px;
-  height: 36px;
+  background: var(--accent);
+  color: #FFFFFF;
+  width: 34px;
+  height: 34px;
   border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.1rem;
-  font-weight: 800;
-  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 700;
   flex-shrink: 0;
-  box-shadow: 0 2px 8px rgba(173, 138, 61, 0.35);
 }
 
 .logo-text {
-  font-family: var(--font-display);
-  font-size: 1.15rem;
-  font-weight: 400;
-  letter-spacing: 0.3px;
-  color: #F4F0E6;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -207,9 +207,9 @@ textarea:focus-visible,
 }
 
 .sidebar-collapse-btn {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--input);
   border: none;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--gray);
   width: 28px;
   height: 28px;
   border-radius: 7px;
@@ -222,13 +222,13 @@ textarea:focus-visible,
 }
 
 .sidebar-collapse-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #FFFFFF;
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 
 .sidebar-menu {
   flex: 1;
-  padding: 1rem 0.65rem;
+  padding: 0.85rem 0.6rem;
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
@@ -237,24 +237,25 @@ textarea:focus-visible,
 .sidebar-menu-section {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.1rem;
 }
 
 .sidebar-menu-section-title {
-  color: rgba(255, 255, 255, 0.32);
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  padding: 0 0.65rem 0.4rem;
+  color: #A6ADBB;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 0 0.6rem 0.4rem;
 }
 
 .sidebar-nav-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.62rem 0.7rem;
+  padding: 0.56rem 0.65rem;
   border-radius: 7px;
-  color: rgba(255, 255, 255, 0.62);
+  color: #565D6D;
   cursor: pointer;
   transition: var(--transition);
   border: none;
@@ -262,40 +263,29 @@ textarea:focus-visible,
   width: 100%;
   text-align: right;
   position: relative;
+  font-weight: 500;
 }
 
 .sidebar-nav-item:hover {
-  background-color: rgba(255, 255, 255, 0.045);
-  color: #FFFFFF;
+  background-color: var(--input);
+  color: var(--primary);
 }
 
 .sidebar-nav-item.active {
-  background-color: rgba(173, 138, 61, 0.14);
-  color: #FFFFFF;
+  background-color: var(--accent-bg);
+  color: var(--accent);
   font-weight: 700;
 }
 
-.sidebar-nav-item.active::before {
-  content: '';
-  position: absolute;
-  right: -0.7rem;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 60%;
-  background: var(--gold);
-  border-radius: 3px;
-}
-
 .sidebar-nav-item.active .sidebar-nav-item-content svg {
-  color: var(--gold);
   opacity: 1;
+  color: var(--accent);
 }
 
 .sidebar-nav-item-content {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.65rem;
   overflow: hidden;
 }
 
@@ -303,22 +293,21 @@ textarea:focus-visible,
   flex-shrink: 0;
   width: 17px;
   height: 17px;
-  opacity: 0.8;
+  opacity: 0.75;
 }
 
 .nav-badge {
   background-color: var(--danger);
   color: white;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 99px;
 }
 
 .sidebar-footer {
-  padding: 1rem 1.25rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(0, 0, 0, 0.15);
+  padding: 1rem 1.15rem;
+  border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -383,7 +372,8 @@ textarea:focus-visible,
   font-size: 0.82rem;
   background-color: var(--input);
   padding: 0.4rem 0.7rem;
-  border-radius: 7px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 .topbar-actions {
@@ -393,9 +383,9 @@ textarea:focus-visible,
 }
 
 .topbar-action-btn {
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: #FFFFFF;
   display: flex;
@@ -409,7 +399,8 @@ textarea:focus-visible,
 
 .topbar-action-btn:hover {
   background-color: var(--input);
-  border-color: #D3D7DE;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .btn-badge {
@@ -425,7 +416,7 @@ textarea:focus-visible,
 
 .topbar-divider {
   width: 1px;
-  height: 28px;
+  height: 26px;
   background-color: var(--border);
 }
 
@@ -436,16 +427,16 @@ textarea:focus-visible,
 }
 
 .user-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: linear-gradient(150deg, var(--accent), var(--primary));
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--accent);
   color: white;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 800;
-  font-size: 1.05rem;
+  font-size: 1rem;
 }
 
 .user-details {
@@ -491,6 +482,66 @@ textarea:focus-visible,
   gap: 1.5rem;
 }
 
+/* ── Ticker Tape ────────────────────────────────────────────────────────
+   Live-feeling scrolling strip of currency pairs — the single most
+   characteristic visual of this domain, borrowed straight from the
+   trading-terminal vernacular. */
+.ticker-tape {
+  background-color: var(--primary);
+  border-radius: var(--radius);
+  overflow: hidden;
+  position: relative;
+  padding: 0.7rem 0;
+}
+
+.ticker-tape-track {
+  display: flex;
+  gap: 2.5rem;
+  width: max-content;
+  animation: ticker-scroll 32s linear infinite;
+}
+
+.ticker-tape:hover .ticker-tape-track {
+  animation-play-state: paused;
+}
+
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.ticker-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  color: #FFFFFF;
+  padding: 0 0.25rem;
+}
+
+.ticker-pair {
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.ticker-price {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.ticker-delta {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-weight: 700;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ticker-delta.up { color: var(--success); }
+.ticker-delta.down { color: var(--danger); }
+
 /* Financial Dashboard Cards Grid */
 .dashboard-kpis-grid {
   display: grid;
@@ -514,7 +565,7 @@ textarea:focus-visible,
 
 .kpi-card:hover {
   box-shadow: var(--shadow-md);
-  border-color: #D3D7DE;
+  border-color: var(--accent);
 }
 
 .kpi-card-header {
@@ -527,9 +578,9 @@ textarea:focus-visible,
 }
 
 .kpi-icon-wrapper {
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -540,10 +591,10 @@ textarea:focus-visible,
 .kpi-icon-wrapper.red { background-color: var(--danger-bg); color: var(--danger); }
 .kpi-icon-wrapper.yellow { background-color: var(--warning-bg); color: var(--warning); }
 .kpi-icon-wrapper.gray { background-color: var(--gray-bg); color: var(--gray); }
-.kpi-icon-wrapper.gold { background-color: var(--gold-bg); color: var(--gold); }
+.kpi-icon-wrapper.gold { background-color: var(--warning-bg); color: var(--warning); }
 
 .kpi-value {
-  font-size: 1.55rem;
+  font-size: 1.6rem;
   font-weight: 800;
   color: var(--primary);
   margin-top: 0.2rem;
@@ -555,7 +606,12 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
+
+.kpi-footer.up { color: var(--success); }
+.kpi-footer.down { color: var(--danger); }
 
 /* Sections Containers */
 .dashboard-row-grid {
@@ -610,7 +666,7 @@ textarea:focus-visible,
 
 .currency-balance-card {
   background-color: var(--input);
-  border-radius: 9px;
+  border-radius: 7px;
   padding: 0.9rem 1rem;
   display: flex;
   flex-direction: column;
@@ -621,7 +677,7 @@ textarea:focus-visible,
 
 .currency-balance-card:hover {
   background-color: #FFFFFF;
-  border-color: var(--border);
+  border-color: var(--accent);
   box-shadow: var(--shadow-sm);
 }
 
@@ -646,6 +702,40 @@ textarea:focus-visible,
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Avatar circles + status dots ───────────────────────────────────────
+   A colored initials circle for a name gives identity at a glance in a
+   table row; a colored dot next to plain text reads as live status without
+   the visual weight of another pill next to the role badge. */
+.avatar-circle {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFFFFF;
+  font-weight: 700;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+.status-dot-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.status-dot-label::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
 /* Status Badges */
 .badge {
   display: inline-flex;
@@ -654,7 +744,7 @@ textarea:focus-visible,
   font-size: 0.75rem;
   font-weight: 700;
   padding: 0.25rem 0.6rem;
-  border-radius: 6px;
+  border-radius: 5px;
   white-space: nowrap;
 }
 
@@ -704,7 +794,7 @@ textarea:focus-visible,
   width: 100%;
   background-color: var(--input);
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 0.6rem 2.5rem 0.6rem 1rem;
   color: var(--foreground);
   transition: var(--transition);
@@ -713,7 +803,7 @@ textarea:focus-visible,
 .search-input-wrapper input:focus {
   background-color: #FFFFFF;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(28, 82, 102, 0.14);
+  box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
 .search-icon {
@@ -738,7 +828,7 @@ textarea:focus-visible,
   color: var(--primary);
   font-weight: 700;
   padding: 0.6rem 1rem;
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   transition: var(--transition);
 }
@@ -756,19 +846,20 @@ textarea:focus-visible,
 
 .financial-table th {
   background-color: var(--input);
-  color: var(--primary);
+  color: var(--gray);
   font-weight: 700;
-  padding: 0.8rem 1.2rem;
-  font-size: 0.82rem;
+  padding: 0.75rem 1.2rem;
+  font-size: 0.78rem;
   border-bottom: 1px solid var(--border);
 }
 
 .financial-table td {
-  padding: 0.8rem 1.2rem;
+  padding: 0.75rem 1.2rem;
   border-bottom: 1px solid var(--border);
-  font-size: 0.88rem;
+  font-size: 0.87rem;
   color: var(--foreground);
   vertical-align: middle;
+  font-variant-numeric: tabular-nums;
 }
 
 .financial-table tr:last-child td {
@@ -818,7 +909,7 @@ textarea:focus-visible,
   gap: 0.4rem;
   background-color: var(--input);
   padding: 0.3rem;
-  border-radius: 9px;
+  border-radius: 7px;
 }
 
 .pos-tab-btn {
@@ -828,7 +919,7 @@ textarea:focus-visible,
   color: var(--gray);
   font-weight: 700;
   padding: 0.6rem;
-  border-radius: 7px;
+  border-radius: 6px;
   cursor: pointer;
   transition: var(--transition);
   display: flex;
@@ -838,9 +929,8 @@ textarea:focus-visible,
 }
 
 .pos-tab-btn.active {
-  background-color: #FFFFFF;
-  color: var(--primary);
-  box-shadow: var(--shadow-sm);
+  background-color: var(--accent);
+  color: #FFFFFF;
 }
 
 .form-group-grid {
@@ -866,7 +956,7 @@ textarea:focus-visible,
   background-color: var(--input);
   border: 1px solid transparent;
   padding: 0.7rem 0.95rem;
-  border-radius: 8px;
+  border-radius: 7px;
   width: 100%;
   color: var(--foreground);
   transition: var(--transition);
@@ -875,11 +965,11 @@ textarea:focus-visible,
 .form-input:focus, .form-select:focus {
   background-color: #FFFFFF;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(28, 82, 102, 0.14);
+  box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
 .auto-calc-panel {
-  background: linear-gradient(160deg, var(--primary) 0%, #050810 100%);
+  background: var(--primary);
   color: #FFFFFF;
   border-radius: var(--radius);
   padding: 1.4rem;
@@ -890,20 +980,12 @@ textarea:focus-visible,
   overflow: hidden;
 }
 
-.auto-calc-panel::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 100% 0%, rgba(173, 138, 61, 0.14), transparent 55%);
-  pointer-events: none;
-}
-
 .auto-calc-title {
   font-weight: 700;
   font-size: 0.95rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   padding-bottom: 0.5rem;
-  color: var(--gold);
+  color: #6C97FF;
 }
 
 .auto-calc-row {
@@ -927,14 +1009,15 @@ textarea:focus-visible,
 
 .calc-value {
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 .calc-value.profit {
-  color: #3DDC97;
+  color: #23D4A9;
 }
 
 .calc-value.warning-text {
-  color: #E8B44C;
+  color: #FFB74D;
 }
 
 /* Validation Alerts */
@@ -942,7 +1025,7 @@ textarea:focus-visible,
   background-color: var(--warning-bg);
   border: 1px dashed var(--warning);
   color: var(--warning);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 0.7rem 1rem;
   font-size: 0.84rem;
   display: flex;
@@ -958,12 +1041,11 @@ textarea:focus-visible,
 }
 
 /* ── Buttons ────────────────────────────────────────────────────────────
-   Real hover depth (lift + shadow), not just a darker fill. A distinct gold
-   variant exists for the one standout CTA per screen — not for every button. */
+   Solid, saturated fills with real hover depth. */
 .btn {
   flex: 1;
   border: none;
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 0.7rem 1rem;
   font-weight: 700;
   cursor: pointer;
@@ -978,17 +1060,17 @@ textarea:focus-visible,
 .btn-primary:hover { background-color: var(--accent-hover); box-shadow: var(--shadow-md); transform: translateY(-1px); }
 .btn-primary:active { transform: translateY(0); }
 
-.btn-gold { background-color: var(--gold); color: var(--primary); }
-.btn-gold:hover { background-color: var(--gold-hover); color: white; box-shadow: 0 4px 14px rgba(173, 138, 61, 0.3); transform: translateY(-1px); }
+.btn-gold { background-color: var(--warning); color: white; }
+.btn-gold:hover { background-color: #E68900; box-shadow: 0 4px 14px rgba(255, 152, 0, 0.3); transform: translateY(-1px); }
 
 .btn-success { background-color: var(--success); color: white; }
-.btn-success:hover { background-color: #0A5C43; box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.btn-success:hover { background-color: #067A68; box-shadow: var(--shadow-md); transform: translateY(-1px); }
 
 .btn-secondary { background-color: var(--input); color: var(--primary); }
-.btn-secondary:hover { background-color: #E7E9ED; }
+.btn-secondary:hover { background-color: #E4E9F5; }
 
 .btn-danger { background-color: var(--danger); color: white; }
-.btn-danger:hover { background-color: #8F1F19; box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.btn-danger:hover { background-color: #C41E2B; box-shadow: var(--shadow-md); transform: translateY(-1px); }
 
 .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
 
@@ -996,7 +1078,7 @@ textarea:focus-visible,
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(14, 20, 32, 0.6);
+  background-color: rgba(19, 23, 34, 0.6);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -1154,7 +1236,7 @@ textarea:focus-visible,
 .toast {
   background-color: #FFFFFF;
   border-right: 4px solid var(--accent);
-  border-radius: 8px;
+  border-radius: 7px;
   box-shadow: var(--shadow-lg);
   padding: 1rem 1.25rem;
   display: flex;
@@ -1181,53 +1263,229 @@ textarea:focus-visible,
 .toast.danger { border-right-color: var(--danger); }
 .toast.warning { border-right-color: var(--warning); }
 
-/* Login Page Stylings */
+/* ── Login: split card on a bright gradient ─────────────────────────────── */
 .login-bg {
   min-height: 100vh;
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(circle at 15% 15%, rgba(173, 138, 61, 0.10) 0%, transparent 45%),
-    radial-gradient(circle at 85% 85%, rgba(28, 82, 102, 0.14) 0%, transparent 50%),
-    var(--primary);
+  padding: 2rem;
+  background: linear-gradient(135deg, #33D6E0 0%, #2F7CF6 55%, #1652F0 100%);
   position: relative;
   overflow: hidden;
 }
 
+.login-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 85% 15%, rgba(255, 255, 255, 0.18) 0%, transparent 45%),
+    radial-gradient(circle at 10% 90%, rgba(255, 255, 255, 0.12) 0%, transparent 40%);
+  pointer-events: none;
+}
+
 .login-card {
-  background-color: rgba(255, 255, 255, 0.97);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
+  background-color: #0C111D;
+  border-radius: 28px;
   width: 100%;
-  max-width: 420px;
-  padding: 2.5rem;
-  box-shadow: var(--shadow-premium);
+  max-width: 880px;
+  box-shadow: 0 40px 80px -20px rgba(9, 14, 26, 0.55);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  animation: scale-up 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+}
+
+/* Left panel — brand mark + icon collage */
+.login-illustration-panel {
+  padding: 2.25rem;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
-  animation: scale-up 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  gap: 2rem;
+  position: relative;
+}
+
+.login-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.login-brand-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(140deg, #33D6E0, #1652F0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  flex-shrink: 0;
+}
+
+.login-brand-name {
+  color: #FFFFFF;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.login-illustration {
+  flex: 1;
+  position: relative;
+  min-height: 260px;
+}
+
+.login-illustration-glow {
+  position: absolute;
+  width: 260px;
+  height: 260px;
+  border-radius: 50%;
+  top: 50%;
+  right: 50%;
+  transform: translate(50%, -50%);
+  background: radial-gradient(circle, rgba(47, 124, 246, 0.35) 0%, transparent 70%);
+  filter: blur(4px);
+}
+
+.login-orbit-badge {
+  position: absolute;
+  border-radius: 16px;
+  background: #151C2C;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 12px 24px -8px rgba(0, 0, 0, 0.5);
+}
+
+/* Right panel — the form itself */
+.login-form-panel {
+  background-color: #0F1520;
+  padding: 2.75rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1.6rem;
 }
 
 .login-title-subtitle {
-  text-align: center;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
 }
 
 .login-main-title {
-  font-family: var(--font-display);
-  font-size: 1.7rem;
-  font-weight: 400;
-  color: var(--primary);
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #FFFFFF;
 }
 
 .login-sub-title {
-  color: var(--gray);
+  color: #8B93A7;
   font-size: 0.85rem;
+}
+
+.login-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.login-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.login-input-icon {
+  position: absolute;
+  right: 1.1rem;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(47, 124, 246, 0.14);
+  color: #5B93F8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.login-input {
+  width: 100%;
+  background: #151C2C;
+  border: 1px solid #262E42;
+  border-radius: 999px;
+  padding: 0.85rem 3.4rem 0.85rem 1.3rem;
+  color: #FFFFFF;
+  font-size: 0.9rem;
+  transition: var(--transition);
+}
+
+.login-input::placeholder {
+  color: #5A6274;
+}
+
+.login-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(22, 82, 240, 0.25);
+}
+
+.login-input-toggle {
+  position: absolute;
+  left: 1.1rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #5A6274;
+  display: flex;
+}
+
+.login-input-toggle:hover {
+  color: #FFFFFF;
+}
+
+.login-submit-btn {
+  width: 100%;
+  border: none;
+  border-radius: 999px;
+  padding: 0.9rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #FFFFFF;
+  background: linear-gradient(90deg, #1652F0, #4A8CFF);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: var(--transition);
+}
+
+.login-submit-btn:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 10px 24px -6px rgba(22, 82, 240, 0.5);
+  transform: translateY(-1px);
+}
+
+.login-submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+@media (max-width: 760px) {
+  .login-card {
+    grid-template-columns: 1fr;
+    max-width: 420px;
+  }
+  .login-illustration-panel {
+    display: none;
+  }
 }
 
 /* Tabs & Drawers general styling */
@@ -1300,7 +1558,7 @@ textarea:focus-visible,
 
 .report-mini-kpi {
   background-color: var(--input);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 1rem;
   display: flex;
   flex-direction: column;
@@ -1335,8 +1593,7 @@ textarea:focus-visible,
 }
 
 /* ── Loading Screen ─────────────────────────────────────────────────────
-   Shown once, while the initial data hydration completes — ink background,
-   the brass mark, and a single deliberate reveal rather than a spinner. */
+   Ink background with a market-blue mark and a live sweeping bar. */
 .loading-screen {
   position: fixed;
   inset: 0;
@@ -1353,30 +1610,31 @@ textarea:focus-visible,
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(circle at 20% 20%, rgba(173, 138, 61, 0.12) 0%, transparent 45%),
-    radial-gradient(circle at 80% 80%, rgba(28, 82, 102, 0.18) 0%, transparent 50%);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
   pointer-events: none;
 }
 
 .loading-mark {
-  width: 72px;
-  height: 72px;
-  border-radius: 18px;
-  background: linear-gradient(150deg, var(--gold) 0%, #8A6B26 100%);
+  width: 68px;
+  height: 68px;
+  border-radius: 14px;
+  background: var(--accent);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--primary);
+  color: #FFFFFF;
   position: relative;
   z-index: 1;
 }
 
 .loading-wordmark {
-  font-family: var(--font-display);
-  font-size: 1.9rem;
-  color: #F4F0E6;
-  letter-spacing: 0.5px;
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: #FFFFFF;
+  letter-spacing: 0.3px;
   position: relative;
   z-index: 1;
 }
@@ -1394,7 +1652,7 @@ textarea:focus-visible,
 .loading-bar-fill {
   height: 100%;
   width: 40%;
-  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
   border-radius: 99px;
   animation: loading-sweep 1.2s ease-in-out infinite;
 }

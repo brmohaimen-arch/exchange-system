@@ -114,7 +114,7 @@ export default function BuyCurrency({ showToast: _showToast }: Props) {
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
         <div style={{
           width: 48, height: 48, borderRadius: 12,
-          background: 'linear-gradient(135deg, #10B981, #059669)',
+          background: 'linear-gradient(135deg, #089981, #067A68)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 4px 14px rgba(16,185,129,0.35)'
         }}>

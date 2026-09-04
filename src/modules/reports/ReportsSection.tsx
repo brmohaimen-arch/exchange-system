@@ -15,7 +15,7 @@ interface Props {
   section?: ReportKey;
 }
 
-const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+const COLORS = ['#1652F0', '#089981', '#FF9800', '#F23645', '#7C5CFC', '#00BCD4'];
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -304,8 +304,8 @@ export default function ReportsSection({ showToast, section }: Props) {
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `${(v / 1000).toFixed(0)}k`} />
                 <Tooltip contentStyle={{ fontFamily: 'var(--font-arabic)', borderRadius: 8 }} formatter={(v: any) => [Number(v).toLocaleString()]} />
                 <Legend wrapperStyle={{ fontFamily: 'var(--font-arabic)', fontSize: '0.82rem' }} />
-                <Bar dataKey="LYD" name="دينار ليبي" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="USD" name="دولار أمريكي" fill="#10B981" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="LYD" name="دينار ليبي" fill="#1652F0" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="USD" name="دولار أمريكي" fill="#089981" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

@@ -3,12 +3,14 @@ import { useSystem } from '../../context/SystemContext';
 import { ToastMessage } from '../../App';
 import {
   Banknote, TrendingUp, TrendingDown, ArrowLeftRight, AlertTriangle,
-  Clock, CheckCircle, XCircle, Building2, ArrowUpDown, Wallet, Landmark
+  Clock, CheckCircle, XCircle, Building2, ArrowUpDown, Wallet, Landmark,
+  Download, Plus
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend
 } from 'recharts';
+import TickerTape from '../../components/TickerTape';
 
 interface Props { showToast: (type: ToastMessage['type'], message: string) => void; }
 
@@ -128,24 +130,43 @@ export default function Dashboard({ showToast, onNavigate }: Props & { onNavigat
     transfer: 'تحويل', reversal: 'عكسي', exchange: 'تبديل'
   };
 
+  const avatarColors = ['var(--avatar-1)', 'var(--avatar-2)', 'var(--avatar-3)', 'var(--avatar-4)', 'var(--avatar-5)', 'var(--avatar-6)'];
+  const avatarColor = (name: string) => {
+    const hash = name.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
+    return avatarColors[hash % avatarColors.length];
+  };
+  const initials = (name: string) => name.trim().split(' ').map(w => w[0]).slice(0, 2).join('');
+  const statusColor = (status: string) => status === 'approved' ? 'var(--success)' : status === 'pending' ? 'var(--warning)' : 'var(--gray)';
+  const statusText = (status: string) => status === 'approved' ? 'منفَّذة' : status === 'pending' ? 'معلقة' : status === 'reversed' ? 'ملغاة' : 'مرفوضة';
+
   return (
     <div className="page-content" style={{ gap: '1.5rem' }}>
+      <TickerTape />
+
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--primary)', marginBottom: '0.25rem' }}>
-            لوحة التحكم الرئيسية
+          <h1 style={{ fontSize: '2.1rem', fontWeight: 700, color: 'var(--primary)', marginBottom: '0.4rem', letterSpacing: '-0.5px' }}>
+            لوحة التحكم
           </h1>
-          <p style={{ color: 'var(--gray)', fontSize: '0.875rem' }}>
+          <p style={{ color: 'var(--gray)', fontSize: '0.9rem' }}>
             مرحباً {currentUser} — نظرة شاملة على حركة اليوم
           </p>
         </div>
-        {activeShift && (
-          <div style={{ background: 'var(--success-bg)', border: '1px solid var(--success)', borderRadius: 8, padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' }} />
-            <span style={{ color: 'var(--success)', fontWeight: 700, fontSize: '0.85rem' }}>صندوق الصراف مفتوح — {activeShift.vaultName}</span>
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {activeShift && (
+            <div style={{ background: 'var(--success-bg)', borderRadius: 8, padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' }} />
+              <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: '0.82rem' }}>صندوق الصراف مفتوح — {activeShift.vaultName}</span>
+            </div>
+          )}
+          <button className="btn btn-secondary" style={{ flex: 'none', border: '1px solid var(--border)' }} onClick={() => onNavigate('reports-hub')}>
+            <Download size={16} />تصدير تقرير
+          </button>
+          <button className="btn btn-primary" style={{ flex: 'none' }} onClick={() => onNavigate('exchange-pos')}>
+            <Plus size={16} />عملية جديدة
+          </button>
+        </div>
       </div>
 
       {/* KPI Stats */}
@@ -204,7 +225,7 @@ export default function Dashboard({ showToast, onNavigate }: Props & { onNavigat
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: 150, overflowY: 'auto' }}>
             {debtAlerts.map((alert, i) => (
               <div key={i} style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: alert.type === 'danger' ? '#991B1B' : '#92400E', fontWeight: alert.type === 'danger' ? 'bold' : 'normal' }}>
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: alert.type === 'danger' ? '#EF4444' : '#F59E0B', flexShrink: 0 }} />
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: alert.type === 'danger' ? '#F23645' : '#FF9800', flexShrink: 0 }} />
                 <span>{alert.text}</span>
               </div>
             ))}
@@ -222,7 +243,7 @@ export default function Dashboard({ showToast, onNavigate }: Props & { onNavigat
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: 150, overflowY: 'auto' }}>
             {assetAlerts.map((alert, i) => (
               <div key={i} style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: alert.type === 'danger' ? '#991B1B' : '#92400E', fontWeight: alert.type === 'danger' ? 'bold' : 'normal' }}>
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: alert.type === 'danger' ? '#EF4444' : '#F59E0B', flexShrink: 0 }} />
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: alert.type === 'danger' ? '#F23645' : '#FF9800', flexShrink: 0 }} />
                 <span>{alert.text}</span>
               </div>
             ))}
@@ -401,13 +422,22 @@ export default function Dashboard({ showToast, onNavigate }: Props & { onNavigat
                         {txTypeLabel[t.type] || t.type}
                       </span>
                     </td>
-                    <td style={{ fontWeight: 600 }}>{t.customerName || '—'}</td>
+                    <td>
+                      {t.customerName ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                          <div className="avatar-circle" style={{ background: avatarColor(t.customerName), width: 28, height: 28, fontSize: '0.68rem' }}>
+                            {initials(t.customerName)}
+                          </div>
+                          <span style={{ fontWeight: 600 }}>{t.customerName}</span>
+                        </div>
+                      ) : '—'}
+                    </td>
                     <td style={{ fontWeight: 700, fontFamily: 'monospace' }}>{t.amount.toLocaleString()}</td>
                     <td>{t.fromCurrency} → {t.toCurrency}</td>
                     <td style={{ fontSize: '0.8rem', color: 'var(--gray)' }}>{t.vaultName || '—'}</td>
                     <td>
-                      <span className={`badge ${t.status === 'approved' ? 'active' : t.status === 'pending' ? 'pending' : 'inactive'}`}>
-                        {t.status === 'approved' ? 'منفَّذة' : t.status === 'pending' ? 'معلقة' : t.status === 'reversed' ? 'ملغاة' : 'مرفوضة'}
+                      <span className="status-dot-label" style={{ color: statusColor(t.status) }}>
+                        {statusText(t.status)}
                       </span>
                     </td>
                   </tr>

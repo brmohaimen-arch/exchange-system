@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useSystem } from '../../context/SystemContext';
 import { ToastMessage } from '../../App';
-import { LogIn, Landmark, Eye, EyeOff } from 'lucide-react';
+import { LogIn, Landmark, Eye, EyeOff, User, KeyRound, ShieldCheck, Lock, ArrowLeftRight, Banknote } from 'lucide-react';
 
 interface LoginProps {
   showToast: (type: ToastMessage['type'], message: string) => void;
@@ -30,64 +30,69 @@ export default function Login({ showToast }: LoginProps) {
 
   return (
     <div className="login-bg">
-      {/* Decorative circles */}
-      <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-        {[...Array(5)].map((_, i) => (
-          <div key={i} style={{
-            position: 'absolute', borderRadius: '50%',
-            background: `rgba(173,138,61,${0.025 + i * 0.008})`,
-            width: `${300 + i * 120}px`, height: `${300 + i * 120}px`,
-            top: `${10 + i * 15}%`, right: `${-5 + i * 10}%`,
-          }} />
-        ))}
-      </div>
-
       <div className="login-card">
-        {/* Logo */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{
-            width: 64, height: 64, borderRadius: 16,
-            background: 'linear-gradient(150deg, var(--gold) 0%, #8A6B26 100%)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 8px 24px rgba(173,138,61,0.3)'
-          }}>
-            <Landmark size={32} color="var(--primary)" />
+        {/* Left: brand + icon collage */}
+        <div className="login-illustration-panel">
+          <div className="login-brand-row">
+            <div className="login-brand-mark"><Landmark size={18} /></div>
+            <span className="login-brand-name">{settings?.companyName || 'نظام الصرافة'}</span>
           </div>
-          <div className="login-title-subtitle">
-            <div className="login-main-title">نظام إدارة الصرافة</div>
-            <div className="login-sub-title">الخزنات والحسابات البنكية — للموظفين فقط</div>
+
+          <div className="login-illustration">
+            <div className="login-illustration-glow" />
+            <div className="login-orbit-badge" style={{ width: 88, height: 88, top: 88, right: 100, transform: 'rotate(-5deg)' }}>
+              <Landmark size={38} color="#5B93F8" />
+            </div>
+            <div className="login-orbit-badge" style={{ width: 60, height: 60, top: 8, right: 16, transform: 'rotate(8deg)' }}>
+              <ShieldCheck size={26} color="#33D6E0" />
+            </div>
+            <div className="login-orbit-badge" style={{ width: 52, height: 52, top: 14, right: 190, transform: 'rotate(-10deg)' }}>
+              <Lock size={22} color="#FFFFFF" />
+            </div>
+            <div className="login-orbit-badge" style={{ width: 58, height: 58, top: 178, right: 195, transform: 'rotate(6deg)' }}>
+              <ArrowLeftRight size={24} color="#5B93F8" />
+            </div>
+            <div className="login-orbit-badge" style={{ width: 54, height: 54, top: 186, right: 24, transform: 'rotate(-8deg)' }}>
+              <Banknote size={22} color="#33D6E0" />
+            </div>
+            <div className="login-orbit-badge" style={{ width: 42, height: 42, top: 130, right: 4, transform: 'rotate(12deg)' }}>
+              <KeyRound size={18} color="#FFFFFF" />
+            </div>
           </div>
         </div>
 
-        {/* Manual Login */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div className="form-group">
-            <label className="form-label">اسم المستخدم</label>
-            <input
-              className="form-input" type="text" placeholder="أدخل اسم المستخدم"
-              value={username} onChange={e => setUsername(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleLogin()}
-            />
+        {/* Right: login form */}
+        <div className="login-form-panel">
+          <div className="login-title-subtitle">
+            <div className="login-main-title">تسجيل الدخول</div>
+            <div className="login-sub-title">أدخل بيانات حسابك للوصول إلى النظام</div>
           </div>
-          <div className="form-group">
-            <label className="form-label">كلمة المرور</label>
-            <div style={{ position: 'relative' }}>
+
+          <div className="login-input-group">
+            <div className="login-input-wrap">
               <input
-                className="form-input" type={showPw ? 'text' : 'password'}
-                placeholder="أدخل كلمة المرور" value={password}
+                className="login-input" type="text" placeholder="اسم المستخدم"
+                value={username} onChange={e => setUsername(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              />
+              <span className="login-input-icon"><User size={14} /></span>
+            </div>
+            <div className="login-input-wrap">
+              <input
+                className="login-input" type={showPw ? 'text' : 'password'}
+                placeholder="كلمة المرور" value={password}
                 onChange={e => setPassword(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                style={{ paddingLeft: '2.5rem' }}
+                style={{ paddingLeft: '2.75rem' }}
               />
-              <button onClick={() => setShowPw(s => !s)} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gray)' }}>
+              <span className="login-input-icon"><KeyRound size={14} /></span>
+              <button className="login-input-toggle" onClick={() => setShowPw(s => !s)} type="button">
                 {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </div>
-          <button
-            className="btn btn-primary" onClick={handleLogin} disabled={loading}
-            style={{ marginTop: '0.5rem', fontSize: '1rem', padding: '0.85rem' }}
-          >
+
+          <button className="login-submit-btn" onClick={handleLogin} disabled={loading}>
             <LogIn size={18} />
             {loading ? 'جاري التحقق...' : 'تسجيل الدخول'}
           </button>

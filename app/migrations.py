@@ -24,7 +24,7 @@ from .models import User, SystemSetting
 # This came up for real: amlThresholdLYD being absent made AML flagging silently
 # do nothing on this project's own dev database.
 DEFAULT_SETTINGS = {
-    "companyName": "نظام الواحة الدولي للصرافة والخدمات المالية",
+    "companyName": "منظومة المحلية للصرافة",
     "logoUrl": "",
     "primaryColor": "#1E40AF",
     "address": "شارع الميزران، طرابلس، ليبيا",
