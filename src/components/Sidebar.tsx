@@ -125,16 +125,12 @@ export default function Sidebar({ activePage, onNavigate, collapsed, onToggleCol
 
       {/* Footer */}
       <div className="sidebar-footer">
-        <div className="user-avatar" style={{ width: 36, height: 36, fontSize: '0.85rem', flexShrink: 0 }}>
+        <div className="user-avatar sidebar-user-avatar">
           {initials}
         </div>
-        <div className="sidebar-footer-text" style={{ overflow: 'hidden' }}>
-          <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#FFFFFF', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {currentUser}
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.45)' }}>
-            {currentRole} · {currentBranch}
-          </div>
+        <div className="sidebar-footer-text">
+          <div className="sidebar-user-name">{currentUser}</div>
+          <div className="sidebar-user-meta">{currentRole} · {currentBranch}</div>
         </div>
       </div>
     </div>
