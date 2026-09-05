@@ -72,7 +72,7 @@ NEW_COLUMNS = [
     ("shifts", "approved_by", "VARCHAR(100)"),
     ("transactions", "shift_id", "VARCHAR(50)"),
     ("users", "mfa_secret", "VARCHAR(64)"),
-    ("users", "mfa_enabled", "BOOLEAN DEFAULT 0"),
+    ("users", "mfa_enabled", "BOOLEAN DEFAULT FALSE"),
     ("backups", "file_path", "VARCHAR(500)"),
 ]
 

@@ -9,4 +9,4 @@ openpyxl
 reportlab
 arabic-reshaper
 python-bidi
-sqlalchemy-libsql
+psycopg2-binary
