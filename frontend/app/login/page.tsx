@@ -1,9 +1,16 @@
 'use client'
 
-import { useState, FormEvent } from 'react'
+import { useState, useEffect, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
-import { LogIn, Landmark, ShieldCheck } from 'lucide-react'
+import { LogIn, Landmark, ShieldCheck, Clock } from 'lucide-react'
 import { useAuth, ApiError, MfaRequiredError } from '@/lib/auth-provider'
+import { api } from '@/lib/api-client'
+
+interface TrialStatus {
+  expired: boolean
+  daysRemaining: number
+  trialDurationDays: number
+}
 
 export default function LoginPage() {
   const { login, completeMfaLogin } = useAuth()
@@ -14,6 +21,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [mfaUserId, setMfaUserId] = useState<string | null>(null)
   const [mfaCode, setMfaCode] = useState('')
+  const [trial, setTrial] = useState<TrialStatus | null>(null)
+
+  useEffect(() => {
+    api.get<TrialStatus>('/setup/trial').then(setTrial).catch(() => {})
+  }, [])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -45,6 +57,24 @@ export default function LoginPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  if (trial?.expired) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-secondary/30 px-4">
+        <div className="w-full max-w-sm rounded-xl border border-border bg-card p-8 shadow-lg text-center">
+          <div className="mb-6 flex flex-col items-center gap-2">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-danger/10 text-danger">
+              <Clock className="h-7 w-7" />
+            </div>
+            <h1 className="text-xl font-bold text-foreground">انتهت الفترة التجريبية</h1>
+            <p className="text-sm text-muted-foreground">
+              انتهت الفترة التجريبية المجانية ({trial.trialDurationDays} يوماً) لهذا النظام. يرجى التواصل مع مزود الخدمة لتفعيل الاشتراك.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   if (mfaUserId) {
@@ -127,6 +157,13 @@ export default function LoginPage() {
 
           {error && (
             <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>
+          )}
+
+          {trial && !trial.expired && trial.daysRemaining <= 5 && (
+            <p className="flex items-center gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">
+              <Clock className="h-3.5 w-3.5 shrink-0" />
+              تنتهي الفترة التجريبية بعد {trial.daysRemaining} {trial.daysRemaining === 1 ? 'يوم' : 'أيام'}
+            </p>
           )}
 
           <button

@@ -53,9 +53,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const detail = body?.detail ?? body
     const messageAr = detail?.message_ar || 'حدث خطأ غير متوقع'
     const code = detail?.code || 'UNKNOWN_ERROR'
-    if (res.status === 401 && typeof window !== 'undefined') {
+    if ((res.status === 401 || code === 'TRIAL_EXPIRED') && typeof window !== 'undefined') {
       localStorage.removeItem('auth_token')
       localStorage.removeItem('auth_user')
+      if (code === 'TRIAL_EXPIRED' && window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
     }
     throw new ApiError(messageAr, code, res.status)
   }

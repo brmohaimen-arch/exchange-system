@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -10,6 +11,32 @@ def scheduled_notification_job():
     db = SessionLocal()
     try:
         run_notification_checks(db)
+    finally:
+        db.close()
+
+
+def scheduled_trial_check_job():
+    """Disables every user account once the free trial has expired. The API
+    itself already refuses every request once expired (auth_deps.get_current_user),
+    so this doesn't gate access on its own — it's the literal 'disable all users'
+    action, and it's what makes an expired trial visible in the Users list
+    rather than just an invisible API-level block. Safe to re-run — setting an
+    already-inactive user to inactive again is a no-op."""
+    from .models import User
+    from .trial import is_trial_expired
+    from sqlalchemy import select
+
+    db = SessionLocal()
+    try:
+        if not is_trial_expired(db):
+            return
+        users = db.scalars(select(User).where(User.is_active == True)).all()
+        if not users:
+            return
+        for u in users:
+            u.is_active = False
+        db.commit()
+        print(f"[trial] Trial expired — disabled {len(users)} active user account(s)")
     finally:
         db.close()
 
@@ -121,6 +148,13 @@ def scheduled_whatsapp_summary_job():
 
 
 def start_scheduler():
+    # On Vercel (or any serverless host), each request is a fresh, short-lived
+    # invocation — there's no persistent process for an in-loop scheduler to
+    # run inside. Vercel sets VERCEL=1 automatically; periodic work there goes
+    # through /api/cron/* (routers/cron.py) triggered by Vercel Cron instead.
+    if os.environ.get("VERCEL"):
+        return
+
     scheduler.add_job(
         scheduled_notification_job,
         trigger="interval",
@@ -140,6 +174,13 @@ def start_scheduler():
         trigger="interval",
         minutes=30,
         id="whatsapp_daily_summary",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_trial_check_job,
+        trigger="interval",
+        minutes=30,
+        id="trial_check",
         replace_existing=True,
     )
     scheduler.start()

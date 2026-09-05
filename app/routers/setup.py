@@ -23,6 +23,7 @@ from ..models import Branch, Currency, SystemSetting, User, Vault
 from ..seed import seed_roles
 from ..tracking import create_audit_log
 from ..models import AuditAction
+from ..trial import trial_status
 
 router = APIRouter(prefix="/setup", tags=["First-run Setup"])
 
@@ -46,6 +47,13 @@ class SetupInitRequest(BaseModel):
 def get_setup_status(db: Session = Depends(get_db)):
     initialized = db.query(User).count() > 0
     return success_response(data={"initialized": initialized})
+
+
+@router.get("/trial")
+def get_trial_status(db: Session = Depends(get_db)):
+    """Public and unauthenticated on purpose: a user locked out by an expired
+    trial still needs to see *why* without being able to log in to ask."""
+    return success_response(data=trial_status(db))
 
 
 @router.post("/initialize")

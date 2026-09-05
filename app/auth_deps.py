@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from .core.errors import APIError
 from .database import get_db
 from .models import Role, SystemSetting, User
+from .trial import is_trial_expired
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 12
@@ -87,6 +88,14 @@ def get_current_user(
             message_en="Authentication required",
             status_code=401,
         )
+    if is_trial_expired(db):
+        raise APIError(
+            code="TRIAL_EXPIRED",
+            message_ar="انتهت الفترة التجريبية المجانية. يرجى التواصل مع مزود الخدمة لتفعيل الاشتراك",
+            message_en="The free trial period has ended. Contact your provider to activate a subscription",
+            status_code=403,
+        )
+
     token = authorization.split(" ", 1)[1]
     secret = get_jwt_secret(db)
     try:

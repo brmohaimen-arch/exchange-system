@@ -16,9 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .scheduler import start_scheduler, stop_scheduler
 from .database import engine, Base, SessionLocal
 from .seed import seed_database
-from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings
+from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings, seed_trial_start_date
 from .request_context import set_request_meta, extract_client_ip
-from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp
+from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp, cron
 
 # Create any brand-new tables, then patch any new columns onto pre-existing tables
 Base.metadata.create_all(bind=engine)
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
         seed_database(db)
         migrate_plaintext_passwords(db)
         seed_missing_system_settings(db)
+        seed_trial_start_date(db)
     finally:
         db.close()
     
@@ -73,6 +74,7 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(setup.router, prefix="/api")
 app.include_router(compliance.router, prefix="/api")
 app.include_router(whatsapp.router, prefix="/api")
+app.include_router(cron.router, prefix="/api")
 
 @app.get("/")
 def read_root():

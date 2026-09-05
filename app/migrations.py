@@ -10,6 +10,8 @@ explicit list rather than a fully generic schema-diff engine — safer to reason
 for a handful of columns than to get clever with introspecting every SQLAlchemy type.
 """
 
+from datetime import datetime
+
 from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -55,6 +57,7 @@ DEFAULT_SETTINGS = {
     "whatsappDailySummaryEnabled": False,
     "whatsappDailySummaryHour": 20,
     "lastWhatsappDailySummaryAt": "",
+    "trialDurationDays": 20,
 }
 
 # (table, column, sqlite_column_definition)
@@ -116,3 +119,16 @@ def seed_missing_system_settings(db: Session) -> None:
     if added:
         db.commit()
         print(f"[migrations] Seeded {added} missing system setting(s)")
+
+
+def seed_trial_start_date(db: Session) -> None:
+    """Stamps the trial clock the very first time this deployment boots — covers
+    both a brand-new /setup/initialize install and an existing database that's
+    only now getting this feature. Never touched again after that, by design:
+    only the operator pushing this value forward directly in the database can
+    extend a trial, not anything reachable through the running app."""
+    if db.get(SystemSetting, "trialStartDate") is not None:
+        return
+    db.add(SystemSetting(key="trialStartDate", value={"val": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}))
+    db.commit()
+    print("[migrations] Stamped trial start date")

@@ -11,10 +11,21 @@ from ..core.errors import APIError
 from ..auth_deps import hash_password, verify_password, create_access_token, get_current_user, require_permission
 from ..id_gen import new_id
 from ..request_context import get_client_ip, get_client_device
+from ..trial import is_trial_expired, trial_status
 from .. import mfa
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+def _raise_if_trial_expired(db: Session):
+    if is_trial_expired(db):
+        raise APIError(
+            code="TRIAL_EXPIRED",
+            message_ar="انتهت الفترة التجريبية المجانية. يرجى التواصل مع مزود الخدمة لتفعيل الاشتراك",
+            message_en="The free trial period has ended. Contact your provider to activate a subscription",
+            status_code=403,
+        )
 
 class LoginRequest(BaseModel):
     username: str
@@ -85,6 +96,8 @@ class UserCreate(BaseModel):
 
 @router.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
+    _raise_if_trial_expired(db)
+
     user = db.scalar(
         select(User).where(
             User.username == data.username,
@@ -111,6 +124,8 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/mfa/login-verify")
 def mfa_login_verify(data: MfaLoginVerifyRequest, db: Session = Depends(get_db)):
+    _raise_if_trial_expired(db)
+
     user = db.get(User, data.userId)
     if not user or not user.is_active or not user.mfa_enabled or not user.mfa_secret:
         raise APIError(code="INVALID_MFA_STATE", message_ar="طلب غير صالح", message_en="Invalid MFA verification request", status_code=400)

@@ -204,7 +204,21 @@ def _format_size(num_bytes: int) -> str:
 def perform_backup(db: Session, *, actor_name: str, backup_type: str, retention_count: int | None = None) -> Backup:
     """Copies the live DB file and records a Backup row. Shared by the manual
     'إنشاء نسخة احتياطية الآن' button and the scheduled automatic backup job so
-    both go through the exact same, tested code path."""
+    both go through the exact same, tested code path.
+
+    Only works against a local SQLite file — once DATABASE_URL points at a
+    hosted database (Turso, Postgres, ...) there's no local file to copy, and
+    on a serverless host there's nowhere persistent to copy it TO even if
+    there were one. That needs a real DB-level export/dump strategy, not
+    implemented yet — refuses clearly here rather than silently backing up
+    a stale or nonexistent local file."""
+    if os.environ.get("DATABASE_URL"):
+        raise APIError(
+            code="BACKUP_UNSUPPORTED_REMOTE_DB",
+            message_ar="النسخ الاحتياطي بنسخ الملف غير مدعوم مع قاعدة بيانات بعيدة — استخدم أداة النسخ الاحتياطي الخاصة بمزود قاعدة البيانات",
+            message_en="File-copy backup isn't supported against a remote DATABASE_URL — use your database provider's own backup/export tooling instead",
+            status_code=501,
+        )
     if not os.path.exists(DB_FILE_PATH):
         raise APIError(code="DB_FILE_NOT_FOUND", message_ar="تعذر العثور على ملف قاعدة البيانات لعمل نسخة احتياطية", message_en="Database file not found for backup", status_code=500)
 
