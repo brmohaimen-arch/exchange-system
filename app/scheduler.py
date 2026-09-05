@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -148,13 +147,6 @@ def scheduled_whatsapp_summary_job():
 
 
 def start_scheduler():
-    # On Vercel (or any serverless host), each request is a fresh, short-lived
-    # invocation — there's no persistent process for an in-loop scheduler to
-    # run inside. Vercel sets VERCEL=1 automatically; periodic work there goes
-    # through /api/cron/* (routers/cron.py) triggered by Vercel Cron instead.
-    if os.environ.get("VERCEL"):
-        return
-
     scheduler.add_job(
         scheduled_notification_job,
         trigger="interval",
