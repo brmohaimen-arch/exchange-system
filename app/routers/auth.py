@@ -1,12 +1,17 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
-from ..models import User, Role, AuditAction
+from ..models import User, Role, AuditAction, LoginLog
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
 from ..auth_deps import hash_password, verify_password, create_access_token, get_current_user, require_permission
+from ..id_gen import new_id
+from ..request_context import get_client_ip, get_client_device
+from .. import mfa
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -14,6 +19,57 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+class MfaLoginVerifyRequest(BaseModel):
+    userId: str
+    code: str
+
+class MfaEnableRequest(BaseModel):
+    code: str
+
+class MfaDisableRequest(BaseModel):
+    password: str
+
+
+def _record_login(db: Session, *, user: User | None, username_attempted: str, status: str):
+    db.add(LoginLog(
+        id=new_id("ll"),
+        user=user.name if user else username_attempted,
+        role=user.role if user else "-",
+        branch=user.branch if user else "-",
+        login_time=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        ip=get_client_ip(),
+        device=get_client_device(),
+        status=status,
+    ))
+
+
+def _issue_login(db: Session, user: User) -> dict:
+    token = create_access_token(db, user)
+    create_audit_log(
+        db,
+        action=AuditAction.LOGIN,
+        entity_type="USER",
+        entity_id=user.id,
+        description=f"تسجيل دخول ناجح للمستخدم {user.username}",
+        username=user.username,
+        role_name=user.role,
+        branch_id=None,
+    )
+    _record_login(db, user=user, username_attempted=user.username, status="successful")
+    db.commit()
+    return {
+        "id": user.id,
+        "name": user.name,
+        "username": user.username,
+        "email": user.email,
+        "phone": user.phone,
+        "role": user.role,
+        "branch": user.branch,
+        "allowedVaultId": user.allowed_vault_id,
+        "isActive": user.is_active,
+        "token": token,
+    }
 
 class UserCreate(BaseModel):
     id: str
@@ -36,39 +92,36 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         )
     )
     if not user:
+        _record_login(db, user=None, username_attempted=data.username, status="failed")
+        db.commit()
         raise APIError(code="INVALID_CREDENTIALS", message_ar="اسم المستخدم غير صحيح أو الحساب غير نشط", message_en="Invalid username or inactive account", status_code=400)
 
     if not verify_password(data.password, user.password):
+        _record_login(db, user=user, username_attempted=data.username, status="failed")
+        db.commit()
         raise APIError(code="INVALID_PASSWORD", message_ar="كلمة المرور غير صحيحة", message_en="Invalid password", status_code=400)
 
-    token = create_access_token(db, user)
+    if user.mfa_enabled:
+        # Password checks out but a second factor is still required — no token yet.
+        # The frontend shows an OTP step and completes login via /auth/mfa/login-verify.
+        return success_response(data={"mfaRequired": True, "userId": user.id})
 
-    create_audit_log(
-        db,
-        action=AuditAction.LOGIN,
-        entity_type="USER",
-        entity_id=user.id,
-        description=f"تسجيل دخول ناجح للمستخدم {user.username}",
-        username=user.username,
-        role_name=user.role,
-        branch_id=None
-    )
-    db.commit()
+    return success_response(data=_issue_login(db, user))
 
-    # Prepare response user dictionary without password
-    user_dict = {
-        "id": user.id,
-        "name": user.name,
-        "username": user.username,
-        "email": user.email,
-        "phone": user.phone,
-        "role": user.role,
-        "branch": user.branch,
-        "allowedVaultId": user.allowed_vault_id,
-        "isActive": user.is_active,
-        "token": token
-    }
-    return success_response(data=user_dict)
+
+@router.post("/mfa/login-verify")
+def mfa_login_verify(data: MfaLoginVerifyRequest, db: Session = Depends(get_db)):
+    user = db.get(User, data.userId)
+    if not user or not user.is_active or not user.mfa_enabled or not user.mfa_secret:
+        raise APIError(code="INVALID_MFA_STATE", message_ar="طلب غير صالح", message_en="Invalid MFA verification request", status_code=400)
+
+    if not mfa.verify_code(user.mfa_secret, data.code):
+        _record_login(db, user=user, username_attempted=user.username, status="failed")
+        db.commit()
+        raise APIError(code="INVALID_MFA_CODE", message_ar="رمز التحقق غير صحيح", message_en="Invalid verification code", status_code=400)
+
+    return success_response(data=_issue_login(db, user))
+
 
 @router.get("/me")
 def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -83,8 +136,50 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         "branch": current_user.branch,
         "allowedVaultId": current_user.allowed_vault_id,
         "isActive": current_user.is_active,
+        "mfaEnabled": current_user.mfa_enabled,
         "permissions": role.permissions if role else []
     })
+
+
+# ----------------- MFA (TOTP) SELF-SERVICE ENROLLMENT -----------------
+@router.post("/mfa/setup")
+def mfa_setup(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Step 1 of enrollment: generate a secret (not yet active) and return it plus
+    an otpauth:// URI so the user can add it to an authenticator app."""
+    secret = mfa.generate_secret()
+    current_user.mfa_secret = secret
+    db.commit()
+    return success_response(data={
+        "secret": secret,
+        "otpauthUrl": mfa.provisioning_uri(secret, current_user.username),
+    })
+
+
+@router.post("/mfa/enable")
+def mfa_enable(data: MfaEnableRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Step 2: confirm the user actually set the secret up correctly by verifying
+    a live code from their app before turning enforcement on."""
+    if not current_user.mfa_secret:
+        raise APIError(code="MFA_NOT_SETUP", message_ar="يجب إعداد رمز المصادقة أولاً", message_en="Run MFA setup first", status_code=400)
+    if not mfa.verify_code(current_user.mfa_secret, data.code):
+        raise APIError(code="INVALID_MFA_CODE", message_ar="رمز التحقق غير صحيح", message_en="Invalid verification code", status_code=400)
+
+    current_user.mfa_enabled = True
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="USER", entity_id=current_user.id, description=f"قام {current_user.name} بتفعيل المصادقة الثنائية لحسابه", username=current_user.username)
+    db.commit()
+    return success_response(message_ar="تم تفعيل المصادقة الثنائية بنجاح")
+
+
+@router.post("/mfa/disable")
+def mfa_disable(data: MfaDisableRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(data.password, current_user.password):
+        raise APIError(code="INVALID_PASSWORD", message_ar="كلمة المرور غير صحيحة", message_en="Invalid password", status_code=400)
+
+    current_user.mfa_enabled = False
+    current_user.mfa_secret = None
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="USER", entity_id=current_user.id, description=f"قام {current_user.name} بتعطيل المصادقة الثنائية لحسابه", username=current_user.username)
+    db.commit()
+    return success_response(message_ar="تم تعطيل المصادقة الثنائية")
 
 @router.get("/users")
 def get_users(current_user: User = Depends(require_permission("إدارة المستخدمين")), db: Session = Depends(get_db)):

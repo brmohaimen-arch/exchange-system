@@ -4,6 +4,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .models import AuditLog, AuditAction
+from .request_context import get_client_ip, get_client_device
 
 GENESIS_HASH = "0" * 64
 
@@ -33,6 +34,8 @@ def create_audit_log(
     device: str | None = None,
 ):
     entity_id_str = str(entity_id) if entity_id is not None else None
+    ip_address = ip_address or get_client_ip()
+    device = device or get_client_device()
 
     # Tamper-evident hash chain: each entry's hash covers the previous entry's
     # hash plus its own fields, so editing or deleting a past row breaks every

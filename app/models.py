@@ -43,6 +43,8 @@ class User(Base):
     branch: Mapped[str] = mapped_column(String(100), nullable=False)
     allowed_vault_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    mfa_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)  # base32 TOTP secret, set on enrollment
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # only enforced at login once the user confirms a code
 
 class Branch(Base):
     __tablename__ = "branches"
@@ -183,12 +185,15 @@ class Shift(Base):
     branch: Mapped[str] = mapped_column(String(100), ForeignKey("branches.id"))
     vault_id: Mapped[str] = mapped_column(String(50), ForeignKey("vaults.id"))
     vault_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    start_time: Mapped[str] = mapped_column(String(50), nullable=False)
+    start_time: Mapped[str | None] = mapped_column(String(50), nullable=True)  # set once the open request is approved
+    end_time: Mapped[str | None] = mapped_column(String(50), nullable=True)  # set when the shift is closed
     opening_balances: Mapped[dict] = mapped_column(JSON, default=dict)
     expected_balances: Mapped[dict] = mapped_column(JSON, default=dict)
     actual_balances: Mapped[dict] = mapped_column(JSON, default=dict)
     differences: Mapped[dict] = mapped_column(JSON, default=dict)
-    status: Mapped[str] = mapped_column(String(50), default="open")  # open, closed, approved
+    status: Mapped[str] = mapped_column(String(50), default="pending_open")  # pending_open, open, rejected, closed, approved
+    requested_at: Mapped[str | None] = mapped_column(String(50), nullable=True)  # when the cashier asked to open it
+    approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)  # who approved/rejected the open request
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     denomination_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)  # {"USD": {"100": 12, "50": 4}, ...}
 
@@ -198,6 +203,7 @@ class Transaction(Base):
     type: Mapped[str] = mapped_column(String(50), nullable=False)  # buy, sell, exchange, deposit, withdraw
     vault_id: Mapped[str] = mapped_column(String(50), ForeignKey("vaults.id"))
     vault_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    shift_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("shifts.id"), nullable=True)  # the open shift this transaction happened under, if any
     customer_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("customers.id"), nullable=True)
     customer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     from_currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
@@ -453,6 +459,7 @@ class Backup(Base):
     size: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="ناجحة")
     user: Mapped[str] = mapped_column(String(100), nullable=False)
+    file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # absolute path of the .db copy, for retention cleanup
 
 class Role(Base):
     __tablename__ = "roles"
@@ -503,3 +510,43 @@ class CurrencyDenomination(Base):
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
     currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
     value: Mapped[float] = mapped_column(Float, nullable=False)  # e.g. 100, 50, 20, 10, 5, 1
+
+class DailyClosing(Base):
+    """A branch-day or company-day close: a point-in-time snapshot of every vault's
+    balances at that level, taken once every cashier shift under it is settled.
+    Doc requirement: closing must happen at the branch and main-treasury level too,
+    not just per cashier drawer (Shift already covers the cashier level)."""
+    __tablename__ = "daily_closings"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    level: Mapped[str] = mapped_column(String(20), nullable=False)  # branch, company
+    target_id: Mapped[str] = mapped_column(String(100), nullable=False)  # branch id, or "COMPANY" for company-level
+    target_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    date: Mapped[str] = mapped_column(String(20), nullable=False)  # YYYY-MM-DD
+    status: Mapped[str] = mapped_column(String(20), default="closed")  # closed, approved
+    balances_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)  # {vault_id: {"name":..., "balances": {...}}}
+    totals: Mapped[dict] = mapped_column(JSON, default=dict)  # {currency: total} summed across the snapshot
+    closed_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    closed_at: Mapped[str] = mapped_column(String(50), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    approved_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+class CustomerAccountEntry(Base):
+    """Standalone customer deposit/withdrawal — money moving between a customer's
+    account and cash, independent of any currency trade. Doc requirement: distinct
+    'Customer Deposit' / 'Customer Withdrawal' operations, separate from buy/sell."""
+    __tablename__ = "customer_account_entries"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    type: Mapped[str] = mapped_column(String(20), nullable=False)  # deposit, withdraw
+    customer_id: Mapped[str] = mapped_column(String(50), ForeignKey("customers.id"))
+    customer_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    vault_id: Mapped[str] = mapped_column(String(50), ForeignKey("vaults.id"))
+    vault_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    balance_before: Mapped[float] = mapped_column(Float, nullable=False)
+    balance_after: Mapped[float] = mapped_column(Float, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user: Mapped[str] = mapped_column(String(100), nullable=False)
+    shift_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("shifts.id"), nullable=True)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)

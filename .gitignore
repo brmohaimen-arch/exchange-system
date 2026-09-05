@@ -6,3 +6,5 @@ __pycache__/
 backups/
 .claude/
 .superdesign
+.next/
+*.tsbuildinfo

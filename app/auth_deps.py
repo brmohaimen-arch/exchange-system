@@ -139,3 +139,30 @@ def require_permission(permission: str):
         return current_user
 
     return dependency
+
+
+# A role holding either of these effectively operates across every branch — a system
+# admin (إدارة الفروع) or a treasury manager moving cash between branches (إدارة الخزنات).
+# Anyone else (branch manager, cashier, accountant, auditor) is confined to their own
+# branch for the actions this guards. Doc requirement: "role-based AND branch-based
+# access control" — this is the branch half of that.
+COMPANY_WIDE_PERMISSIONS = ("إدارة الفروع", "إدارة الخزنات")
+
+
+def is_company_wide(permissions: list[str]) -> bool:
+    return any(p in permissions for p in COMPANY_WIDE_PERMISSIONS)
+
+
+def check_branch_access(actor: User, db: Session, branch_id: str) -> None:
+    """Raise 403 unless the actor's role is company-wide or the branch is their own."""
+    role = db.get(Role, actor.role)
+    permissions = role.permissions if role else []
+    if is_company_wide(permissions):
+        return
+    if actor.branch != branch_id:
+        raise APIError(
+            code="FORBIDDEN_BRANCH",
+            message_ar=f"لا تملك صلاحية الوصول لفرع غير فرعك ({actor.branch})",
+            message_en="You do not have access to a branch other than your own",
+            status_code=403,
+        )

@@ -4,12 +4,15 @@ from sqlalchemy import select
 from ..database import get_db
 from ..models import (
     Branch, Vault, BankAccount, Shift, Transfer, ApprovalRequest, InventoryCount, Reconciliation,
-    AuditAction, Notification, NotificationType, NotificationStatus, User, Role
+    AuditAction, Notification, NotificationType, NotificationStatus, User, Role, JournalEntry, ExchangeRate,
+    DailyClosing
 )
+from ..id_gen import new_id
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
-from ..auth_deps import get_current_user, require_permission
+from ..auth_deps import get_current_user, require_permission, check_branch_access
+from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
 from .business import apply_transaction_reversal
 from pydantic import BaseModel
 from typing import Dict, Literal
@@ -116,7 +119,10 @@ def shift_to_dict(s: Shift):
         "branch": s.branch,
         "vaultId": s.vault_id,
         "vaultName": s.vault_name,
-        "startTime": s.start_time,
+        "startTime": s.start_time or None,
+        "endTime": s.end_time,
+        "requestedAt": s.requested_at,
+        "approvedBy": s.approved_by,
         "openingBalances": s.opening_balances,
         "expectedBalances": s.expected_balances,
         "actualBalances": s.actual_balances,
@@ -229,20 +235,23 @@ def list_vaults(db: Session = Depends(get_db)):
     return success_response(data=[vault_to_dict(v) for v in res])
 
 @router.post("/vaults")
-def create_vault(data: VaultCreate, db: Session = Depends(get_db)):
+def create_vault(data: VaultCreate, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
     existing = db.get(Vault, data.id)
     if existing:
         raise APIError(code="EXISTS", message_ar="الخزنة موجودة بالفعل", message_en="Vault already exists", status_code=400)
+    check_branch_access(actor, db, data.branch)
     vault = Vault(**data.model_dump())
     db.add(vault)
     db.commit()
     return success_response(data=vault_to_dict(vault))
 
 @router.put("/vaults/{vault_id}")
-def update_vault(vault_id: str, data: VaultCreate, db: Session = Depends(get_db)):
+def update_vault(vault_id: str, data: VaultCreate, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
     vault = db.get(Vault, vault_id)
     if not vault:
         raise APIError(code="NOT_FOUND", message_ar="الخزنة غير موجودة", message_en="Vault not found", status_code=404)
+    check_branch_access(actor, db, vault.branch)
+    check_branch_access(actor, db, data.branch)
     for k, v in data.model_dump().items():
         setattr(vault, k, v)
     db.commit()
@@ -266,16 +275,26 @@ def list_shifts(db: Session = Depends(get_db)):
 
 @router.post("/shifts/open")
 def open_shift(data: ShiftOpen, actor: User = Depends(require_permission("فتح وردية")), db: Session = Depends(get_db)):
+    """Doc requirement: a cashier can never just start transacting on their own —
+    opening a shift is only a *request* until a manager accepts it (POST /approvals/{id}/action).
+    The vault's balances are only touched once that approval lands, so an unapproved
+    opening-balance count can't silently override what's actually in the vault."""
     existing = db.get(Shift, data.id)
     if existing:
         raise APIError(code="EXISTS", message_ar="الوردية مفتوحة بالفعل", message_en="Shift already exists", status_code=400)
-    
-    # Check if there is already an open shift for cashier
+
+    check_branch_access(actor, db, data.branch)
+
+    # Check if there is already an open (or pending) shift for this cashier
     open_shift_exists = db.scalar(
-        select(Shift).where(Shift.cashier == data.cashier, Shift.status == "open")
+        select(Shift).where(Shift.cashier == data.cashier, Shift.status.in_(["open", "pending_open"]))
     )
     if open_shift_exists:
+        if open_shift_exists.status == "pending_open":
+            raise APIError(code="SHIFT_PENDING", message_ar="لديك طلب فتح وردية بانتظار موافقة المدير بالفعل", message_en="You already have a pending shift-open request", status_code=400)
         raise APIError(code="SHIFT_ALREADY_OPEN", message_ar="لديك وردية مفتوحة بالفعل حالياً", message_en="You already have an open shift", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
     shift = Shift(
         id=data.id,
@@ -287,26 +306,47 @@ def open_shift(data: ShiftOpen, actor: User = Depends(require_permission("فتح
         expected_balances=data.opening_balances,
         actual_balances={},
         differences={},
-        status="open",
-        start_time=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        status="pending_open",
+        start_time="",  # the "start_time NOT NULL" constraint predates this column becoming optional; "" reads as unset via shift_to_dict
+        requested_at=timestamp,
         notes=data.notes
     )
     db.add(shift)
 
-    vault = db.get(Vault, data.vault_id)
-    if vault:
-        vault.opening_balances = data.opening_balances
-        vault.balances = data.opening_balances
+    approval = ApprovalRequest(
+        id=f"apr_shiftopen_{shift.id}",
+        type="shift_open",
+        title=f"طلب فتح وردية جديدة — {data.cashier} ({data.vault_name})",
+        amount=0.0,
+        currency=None,
+        requested_by=data.cashier,
+        timestamp=timestamp,
+        status="pending",
+        reference_id=shift.id,
+        details=data.notes
+    )
+    db.add(approval)
 
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="Shift", entity_id=data.id, description=f"قام الصراف {data.cashier} بفتح وردية جديدة")
+    notif = Notification(
+        title="طلب فتح وردية",
+        message=f"طلب الصراف {data.cashier} فتح وردية جديدة على خزنة {data.vault_name} وينتظر الموافقة.",
+        type=NotificationType.INFO,
+        status=NotificationStatus.UNREAD,
+        role_name="مدير النظام"
+    )
+    db.add(notif)
+
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="Shift", entity_id=data.id, description=f"طلب الصراف {data.cashier} فتح وردية جديدة (بانتظار الموافقة)")
     db.commit()
-    return success_response(data=shift_to_dict(shift))
+    return success_response(data=shift_to_dict(shift), message_ar="تم إرسال طلب فتح الوردية للموافقة")
 
 @router.post("/shifts/{shift_id}/close")
 def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_permission("إغلاق وردية")), db: Session = Depends(get_db)):
     shift = db.get(Shift, shift_id)
     if not shift:
         raise APIError(code="NOT_FOUND", message_ar="الوردية غير موجودة", message_en="Shift not found", status_code=404)
+    if shift.status != "open":
+        raise APIError(code="SHIFT_NOT_OPEN", message_ar="لا يمكن إقفال وردية غير مفتوحة", message_en="Cannot close a shift that is not open", status_code=400)
 
     # If a denomination breakdown was submitted for a currency, it must actually
     # add up to the total the cashier entered for that currency — this is the
@@ -335,6 +375,7 @@ def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_p
     shift.actual_balances = data.actual_balances
     shift.differences = diffs
     shift.status = "closed"
+    shift.end_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     shift.notes = data.notes
 
     has_diff = any(v != 0.0 for v in diffs.values())
@@ -352,7 +393,7 @@ def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_p
             details=f"إقفال وردية مع فروقات جرد: {diffs}"
         )
         db.add(approval)
-        
+
         alert = Notification(
             title="فروقات في إقفال الوردية",
             message=f"قام الصراف {shift.cashier} بقفل الوردية وبها فروقات: {diffs}",
@@ -361,6 +402,15 @@ def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_p
             role_name="مدير فرع"
         )
         db.add(alert)
+
+        if get_whatsapp_setting(db, "whatsappAlertShiftDiscrepancy", True):
+            diffs_text = ", ".join(f"{ccy}: {val:+.2f}" for ccy, val in diffs.items() if val != 0.0)
+            send_manager_alert(
+                db,
+                f"⚠️ فروقات في إقفال وردية\nالصراف: {shift.cashier}\nالخزنة: {shift.vault_name}\nالفروقات: {diffs_text}",
+                template_name=get_whatsapp_setting(db, "whatsappTemplateName", "") or None,
+                template_params=[shift.cashier, shift.vault_name, diffs_text],
+            )
     else:
         shift.status = "approved"
 
@@ -374,7 +424,8 @@ def approve_shift(shift_id: str, actor: User = Depends(require_permission("اع�
     if not shift:
         raise APIError(code="NOT_FOUND", message_ar="الوردية غير موجودة", message_en="Shift not found", status_code=404)
     shift.status = "approved"
-    
+    shift.approved_by = actor.name
+
     approval = db.get(ApprovalRequest, f"apr_shift_{shift.id}")
     if approval:
         approval.status = "approved"
@@ -445,6 +496,7 @@ def list_approvals(db: Session = Depends(get_db)):
 APPROVAL_TYPE_PERMISSIONS = {
     "transfer": "الموافقة على التحويلات",
     "shift": "اعتماد الإقفالات",
+    "shift_open": "اعتماد الإقفالات",
     "inventory": "اعتماد الإقفالات",
     "reversal": "إنشاء عملية عكسية",
 }
@@ -490,8 +542,60 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                     if dst:
                         dst.balance += transfer.amount
 
+                # Doc requirement: every financial transaction must produce a balanced
+                # journal entry — transfers moved balances above but never recorded one.
+                equivalent_lyd = transfer.amount
+                if transfer.currency != "LYD":
+                    rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == transfer.currency, ExchangeRate.to_currency == "LYD"))
+                    if rate_row:
+                        equivalent_lyd = transfer.amount * rate_row.sell_rate
+                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+                jv_lines = [
+                    {
+                        "accountName": f"{transfer.dest_name} - {transfer.currency}", "currency": transfer.currency,
+                        "debit": transfer.amount, "credit": 0.0,
+                        "originalAmount": transfer.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
+                    },
+                    {
+                        "accountName": f"{transfer.source_name} - {transfer.currency}", "currency": transfer.currency,
+                        "debit": 0.0, "credit": transfer.amount,
+                        "originalAmount": transfer.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
+                    },
+                ]
+                db.add(JournalEntry(
+                    id=f"JV-{datetime.utcnow().strftime('%Y%m%d')}-{transfer.id}", date=timestamp,
+                    tx_type="تحويل بين الحسابات", reference=transfer.id,
+                    description=f"قيد تلقائي لتحويل {transfer.amount} {transfer.currency} من {transfer.source_name} إلى {transfer.dest_name}",
+                    user=actor.name, status="approved", lines=jv_lines
+                ))
+
         elif approval.type == "reversal":
             apply_transaction_reversal(db, approval.reference_id, actor.name, approval.details or "لم يُذكر سبب")
+
+        elif approval.type == "shift_open":
+            shift = db.get(Shift, approval.reference_id)
+            if shift and shift.status == "pending_open":
+                check_branch_access(actor, db, shift.branch)
+                shift.status = "open"
+                shift.start_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+                shift.approved_by = actor.name
+                vault = db.get(Vault, shift.vault_id)
+                if vault:
+                    vault.opening_balances = shift.opening_balances
+                    vault.balances = shift.opening_balances
+                create_audit_log(db, action=AuditAction.APPROVE, entity_type="Shift", entity_id=shift.id, description=f"تم قبول طلب فتح وردية الصراف {shift.cashier} بواسطة {actor.name}", username=actor.username)
+
+        elif approval.type == "shift":
+            # A shift closed with a count discrepancy — this is the same action
+            # POST /shifts/{id}/approve performs; routed through here too because
+            # the generic Approvals queue lists every pending request (including
+            # this type) and must actually resolve what it shows, not just flip
+            # the ApprovalRequest's own status while leaving the Shift stuck on "closed".
+            shift = db.get(Shift, approval.reference_id)
+            if shift and shift.status == "closed":
+                shift.status = "approved"
+                shift.approved_by = actor.name
+                create_audit_log(db, action=AuditAction.APPROVE, entity_type="Shift", entity_id=shift.id, description=f"تم اعتماد إقفال وردية الصراف {shift.cashier}", username=actor.username)
 
     elif action == "reject":
         approval.status = "rejected"
@@ -499,7 +603,13 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
             transfer = db.get(Transfer, approval.reference_id)
             if transfer:
                 transfer.status = "rejected"
-                
+        elif approval.type == "shift_open":
+            shift = db.get(Shift, approval.reference_id)
+            if shift and shift.status == "pending_open":
+                shift.status = "rejected"
+                shift.approved_by = actor.name
+                create_audit_log(db, action=AuditAction.REJECT, entity_type="Shift", entity_id=shift.id, description=f"تم رفض طلب فتح وردية الصراف {shift.cashier} بواسطة {actor.name}", username=actor.username)
+
     db.commit()
     return success_response(data=approval_to_dict(approval))
 
@@ -583,3 +693,109 @@ def approve_inventory_count(ic_id: str, db: Session = Depends(get_db)):
 def list_reconciliations(db: Session = Depends(get_db)):
     res = db.scalars(select(Reconciliation)).all()
     return success_response(data=[reconciliation_to_dict(r) for r in res])
+
+# ----------------- DAILY CLOSINGS (branch-day / company-day) -----------------
+# Doc requirement: closing must exist at the branch and main-treasury level too,
+# not only per cashier drawer (Shift already covers the cashier level).
+class DailyCloseRequest(BaseModel):
+    notes: str | None = None
+
+def daily_closing_to_dict(d: DailyClosing):
+    return {
+        "id": d.id,
+        "level": d.level,
+        "targetId": d.target_id,
+        "targetName": d.target_name,
+        "date": d.date,
+        "status": d.status,
+        "balancesSnapshot": d.balances_snapshot,
+        "totals": d.totals,
+        "closedBy": d.closed_by,
+        "closedAt": d.closed_at,
+        "approvedBy": d.approved_by,
+        "approvedAt": d.approved_at,
+        "notes": d.notes,
+    }
+
+@router.get("/daily_closings")
+def list_daily_closings(db: Session = Depends(get_db)):
+    res = db.scalars(select(DailyClosing).order_by(DailyClosing.closed_at.desc())).all()
+    return success_response(data=[daily_closing_to_dict(d) for d in res])
+
+@router.post("/daily_closings/branch/{branch_id}/close")
+def close_branch_day(branch_id: str, data: DailyCloseRequest, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
+    branch = db.get(Branch, branch_id)
+    if not branch:
+        raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
+    check_branch_access(actor, db, branch_id)
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    existing = db.scalar(select(DailyClosing).where(DailyClosing.level == "branch", DailyClosing.target_id == branch_id, DailyClosing.date == today))
+    if existing:
+        raise APIError(code="ALREADY_CLOSED", message_ar="تم إقفال يومية هذا الفرع بالفعل اليوم", message_en="This branch's day is already closed", status_code=400)
+
+    vaults = db.scalars(select(Vault).where(Vault.branch == branch_id)).all()
+    vault_ids = [v.id for v in vaults]
+    unsettled = db.scalars(select(Shift).where(Shift.vault_id.in_(vault_ids), Shift.status.in_(["open", "pending_open", "closed"]))).all() if vault_ids else []
+    if unsettled:
+        raise APIError(
+            code="OPEN_SHIFTS_EXIST",
+            message_ar=f"لا يمكن إقفال يومية الفرع، توجد {len(unsettled)} وردية غير مكتملة (مفتوحة أو بانتظار موافقة)",
+            message_en=f"Cannot close the branch day: {len(unsettled)} shift(s) are still open or pending approval",
+            status_code=400
+        )
+
+    snapshot: dict = {}
+    totals: dict = {}
+    for v in vaults:
+        snapshot[v.id] = {"name": v.name, "type": v.type, "balances": v.balances}
+        for ccy, amt in v.balances.items():
+            totals[ccy] = totals.get(ccy, 0.0) + amt
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    dc = DailyClosing(
+        id=new_id(f"dc_branch_{branch_id}"), level="branch", target_id=branch_id, target_name=branch.name,
+        date=today, status="closed", balances_snapshot=snapshot, totals=totals,
+        closed_by=actor.name, closed_at=timestamp, notes=data.notes
+    )
+    db.add(dc)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="DailyClosing", entity_id=dc.id, description=f"تم إقفال يومية فرع {branch.name}", username=actor.username)
+    db.commit()
+    return success_response(data=daily_closing_to_dict(dc), message_ar="تم إقفال يومية الفرع بنجاح")
+
+@router.post("/daily_closings/company/close")
+def close_company_day(data: DailyCloseRequest, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    existing = db.scalar(select(DailyClosing).where(DailyClosing.level == "company", DailyClosing.target_id == "COMPANY", DailyClosing.date == today))
+    if existing:
+        raise APIError(code="ALREADY_CLOSED", message_ar="تم إقفال يومية الشركة بالفعل اليوم", message_en="The company day is already closed", status_code=400)
+
+    branches = db.scalars(select(Branch)).all()
+    closed_branch_ids = set(db.scalars(select(DailyClosing.target_id).where(DailyClosing.level == "branch", DailyClosing.date == today)).all())
+    missing = [b.name for b in branches if b.id not in closed_branch_ids]
+    if missing:
+        raise APIError(
+            code="BRANCHES_NOT_CLOSED",
+            message_ar=f"يجب إقفال يومية جميع الفروع أولاً. الفروع المتبقية: {', '.join(missing)}",
+            message_en=f"All branches must close their day first. Remaining: {', '.join(missing)}",
+            status_code=400
+        )
+
+    vaults = db.scalars(select(Vault)).all()
+    snapshot: dict = {}
+    totals: dict = {}
+    for v in vaults:
+        snapshot[v.id] = {"name": v.name, "branch": v.branch, "balances": v.balances}
+        for ccy, amt in v.balances.items():
+            totals[ccy] = totals.get(ccy, 0.0) + amt
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    dc = DailyClosing(
+        id=new_id("dc_company"), level="company", target_id="COMPANY", target_name="الشركة (جميع الفروع)",
+        date=today, status="closed", balances_snapshot=snapshot, totals=totals,
+        closed_by=actor.name, closed_at=timestamp, notes=data.notes
+    )
+    db.add(dc)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="DailyClosing", entity_id=dc.id, description="تم إقفال يومية الشركة بالكامل", username=actor.username)
+    db.commit()
+    return success_response(data=daily_closing_to_dict(dc), message_ar="تم إقفال يومية الشركة بنجاح")

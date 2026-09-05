@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from ..database import get_db
-from ..models import Transaction, Debt, Customer, ExchangeRate, User
+from ..models import Transaction, Debt, Customer, ExchangeRate, User, ApprovalRequest
 from ..core.responses import success_response
 from ..core.errors import APIError
 from ..auth_deps import require_permission
@@ -84,6 +84,22 @@ def get_profit_report(
             volume_by_currency.get(t.from_currency, 0.0) + t.amount
         )
 
+    # Doc requirement: profit visibility broken down by branch and by cashier,
+    # not just a single office-wide total.
+    profit_by_branch: dict[str, dict] = {}
+    profit_by_cashier: dict[str, dict] = {}
+    for t in txs:
+        b = profit_by_branch.setdefault(t.branch or "—", {"profit": 0.0, "count": 0})
+        b["profit"] += t.expected_profit or 0.0
+        b["count"] += 1
+        c = profit_by_cashier.setdefault(t.user or "—", {"profit": 0.0, "count": 0})
+        c["profit"] += t.expected_profit or 0.0
+        c["count"] += 1
+    for d in profit_by_branch.values():
+        d["profit"] = round(d["profit"], 4)
+    for d in profit_by_cashier.values():
+        d["profit"] = round(d["profit"], 4)
+
     return success_response(
         data={
             "summary": {
@@ -93,6 +109,8 @@ def get_profit_report(
                 "exchangeCount": exchange_count,
                 "totalTx": len(txs),
                 "volumeByCurrency": volume_by_currency,
+                "profitByBranch": profit_by_branch,
+                "profitByCashier": profit_by_cashier,
             },
             "transactions": [_tx_to_dict(t) for t in txs],
         }
@@ -165,3 +183,45 @@ def export_debts_summary(format: str = "xlsx", actor: User = Depends(require_per
     headers = ["رقم الدين", "العميل", "المبلغ", "المتبقي", "العملة", "تاريخ الاستحقاق", "الحالة"]
     rows = [[d.id, d.customer_name, d.amount, d.remaining_amount, d.currency, d.due_date, d.status] for d in all_debts]
     return _export_response(format, "ملخص الديون", headers, rows, "debts_summary")
+
+
+# ----------------- CANCELLED / REVERSED TRANSACTIONS -----------------
+def _cancelled_tx_rows(db: Session) -> list[dict]:
+    txs = db.scalars(
+        select(Transaction).where(Transaction.status == "reversed").order_by(Transaction.timestamp.desc())
+    ).all()
+    # The reversal reason and who requested it live on the ApprovalRequest that
+    # drove the reversal (Transaction itself only knows it ended up reversed).
+    approvals_by_tx = {
+        a.reference_id: a
+        for a in db.scalars(
+            select(ApprovalRequest).where(ApprovalRequest.type == "reversal", ApprovalRequest.reference_id.in_([t.id for t in txs]))
+        ).all()
+    } if txs else {}
+
+    rows = []
+    for t in txs:
+        approval = approvals_by_tx.get(t.id)
+        rows.append({
+            **_tx_to_dict(t),
+            "reversalReason": approval.details if approval else None,
+            "reversalRequestedBy": approval.requested_by if approval else None,
+            "reversalRequestedAt": approval.timestamp if approval else None,
+        })
+    return rows
+
+
+@router.get("/cancelled-transactions")
+def get_cancelled_transactions(actor: User = Depends(require_permission("رؤية التقارير")), db: Session = Depends(get_db)):
+    return success_response(data=_cancelled_tx_rows(db))
+
+
+@router.get("/cancelled-transactions/export")
+def export_cancelled_transactions(format: str = "xlsx", actor: User = Depends(require_permission("رؤية التقارير")), db: Session = Depends(get_db)):
+    rows_data = _cancelled_tx_rows(db)
+    headers = ["رقم العملية", "النوع", "العميل", "المبلغ", "الإجمالي", "بواسطة", "الفرع", "التاريخ", "سبب الإلغاء", "طلب الإلغاء بواسطة"]
+    rows = [[
+        r["id"], r["type"], r["customerName"], r["amount"], r["totalAmount"], r["user"], r["branch"], r["timestamp"],
+        r["reversalReason"] or "—", r["reversalRequestedBy"] or "—",
+    ] for r in rows_data]
+    return _export_response(format, "العمليات الملغاة", headers, rows, "cancelled_transactions")

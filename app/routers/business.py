@@ -4,7 +4,8 @@ from sqlalchemy import select, func
 from ..database import get_db
 from ..models import (
     Bank, BankBranch, BankAccount, Customer, Debt, Transaction, Movement, JournalEntry,
-    Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule
+    Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule,
+    CustomerAccountEntry
 )
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
@@ -12,6 +13,7 @@ from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
 from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
+from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -65,6 +67,7 @@ class CustomerCreate(BaseModel):
     balances: Dict[str, float]
     profit_pct: float = 0.0
     notes: str | None = None
+    is_active: bool = True
 
 class DebtCreate(BaseModel):
     id: str
@@ -179,6 +182,7 @@ def transaction_to_dict(t: Transaction):
         "type": t.type,
         "vaultId": t.vault_id,
         "vaultName": t.vault_name,
+        "shiftId": t.shift_id,
         "customerId": t.customer_id,
         "customerName": t.customer_name,
         "fromCurrency": t.from_currency,
@@ -340,7 +344,14 @@ def update_customer(customer_id: str, data: CustomerCreate, actor: User = Depend
     c.balances = data.balances
     c.profit_pct = data.profit_pct
     c.notes = data.notes
-    create_audit_log(db, action=AuditAction.UPDATE, entity_type="Customer", entity_id=c.id, description=f"تم تعديل بيانات العميل: {c.name}", username=actor.username)
+    was_active = c.is_active
+    c.is_active = data.is_active
+    action_desc = f"تم تعديل بيانات العميل: {c.name}"
+    if was_active and not data.is_active:
+        action_desc = f"تم إيقاف العميل: {c.name}"
+    elif not was_active and data.is_active:
+        action_desc = f"تمت إعادة تفعيل العميل: {c.name}"
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="Customer", entity_id=c.id, description=action_desc, username=actor.username)
     db.commit()
     return success_response(data=customer_to_dict(c))
 
@@ -353,6 +364,161 @@ def delete_customer(customer_id: str, actor: User = Depends(require_permission("
     create_audit_log(db, action=AuditAction.DELETE, entity_type="Customer", entity_id=customer_id, description=f"تم حذف العميل: {customer.name}", username=actor.username)
     db.commit()
     return success_response(data={"deleted": True})
+
+# ----------------- CUSTOMER ACCOUNT: STANDALONE DEPOSIT / WITHDRAWAL -----------------
+# Doc requirement: "Customer Deposit" / "Customer Withdrawal" are their own operations,
+# distinct from a currency trade — money moving between a customer's account and cash
+# with nothing bought or sold. Kept in one currency (no rate involved).
+class CustomerAccountOp(BaseModel):
+    id: str | None = None
+    vault_id: str
+    currency: str
+    amount: float
+    notes: str | None = None
+
+def customer_account_entry_to_dict(e: CustomerAccountEntry):
+    return {
+        "id": e.id,
+        "type": e.type,
+        "customerId": e.customer_id,
+        "customerName": e.customer_name,
+        "vaultId": e.vault_id,
+        "vaultName": e.vault_name,
+        "currency": e.currency,
+        "amount": e.amount,
+        "balanceBefore": e.balance_before,
+        "balanceAfter": e.balance_after,
+        "notes": e.notes,
+        "user": e.user,
+        "shiftId": e.shift_id,
+        "timestamp": e.timestamp,
+    }
+
+def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccountOp, actor: User, db: Session) -> CustomerAccountEntry:
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+
+    customer = db.get(Customer, customer_id)
+    if not customer:
+        raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
+    if not customer.is_active:
+        raise APIError(code="CUSTOMER_INACTIVE", message_ar="لا يمكن تنفيذ عملية على عميل غير نشط", message_en="Cannot operate on an inactive customer", status_code=400)
+
+    vault = db.get(Vault, data.vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+
+    is_deposit = op_type == "deposit"
+    cust_before = customer.balances.get(data.currency, 0.0)
+    vault_before = vault.balances.get(data.currency, 0.0)
+
+    if is_deposit:
+        cust_after = cust_before + data.amount
+        vault_after = vault_before + data.amount  # cash physically comes into the drawer
+    else:
+        if cust_before < data.amount:
+            raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد العميل غير كافٍ ({cust_before} {data.currency})", message_en="Insufficient customer balance", status_code=400)
+        if vault_before < data.amount:
+            raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الخزنة غير كافٍ لصرف المبلغ ({vault_before} {data.currency})", message_en="Insufficient vault balance to pay out", status_code=400)
+        cust_after = cust_before - data.amount
+        vault_after = vault_before - data.amount  # cash physically leaves the drawer
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    entry_id = data.id or new_id(f"cae_{op_type}")
+
+    cust_bals = customer.balances.copy()
+    cust_bals[data.currency] = cust_after
+    customer.balances = cust_bals
+
+    v_bals = vault.balances.copy()
+    v_bals[data.currency] = vault_after
+    vault.balances = v_bals
+    vault.last_movement = timestamp
+
+    shift = db.scalar(select(Shift).where(Shift.vault_id == vault.id, Shift.status == "open"))
+    if shift:
+        expected = shift.expected_balances.copy()
+        expected[data.currency] = expected.get(data.currency, 0.0) + (data.amount if is_deposit else -data.amount)
+        shift.expected_balances = expected
+
+    entry = CustomerAccountEntry(
+        id=entry_id, type=op_type, customer_id=customer.id, customer_name=customer.name,
+        vault_id=vault.id, vault_name=vault.name, currency=data.currency, amount=data.amount,
+        balance_before=cust_before, balance_after=cust_after, notes=data.notes, user=actor.name,
+        shift_id=shift.id if shift else None, timestamp=timestamp
+    )
+    db.add(entry)
+
+    db.add(Movement(
+        id=new_id(f"m_cust_{entry_id}"), timestamp=timestamp, entity_type="customer", entity_id=customer.id,
+        entity_name=customer.name, currency=data.currency,
+        type="إيداع حساب عميل" if is_deposit else "سحب من حساب عميل",
+        amount_in=data.amount if is_deposit else 0.0, amount_out=0.0 if is_deposit else data.amount,
+        balance_before=cust_before, balance_after=cust_after, reference_id=entry_id, user=actor.name
+    ))
+    db.add(Movement(
+        id=new_id(f"m_vault_{entry_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
+        entity_name=vault.name, currency=data.currency,
+        type="إيداع نقدي من عميل" if is_deposit else "سحب نقدي لعميل",
+        amount_in=data.amount if is_deposit else 0.0, amount_out=0.0 if is_deposit else data.amount,
+        balance_before=vault_before, balance_after=vault_after, reference_id=entry_id, user=actor.name
+    ))
+
+    # Also recorded as a Transaction so it shows up in the same history/reports/shift-session view as buy/sell/exchange
+    db.add(Transaction(
+        id=entry_id, type=op_type, vault_id=vault.id, vault_name=vault.name, shift_id=shift.id if shift else None,
+        customer_id=customer.id, customer_name=customer.name, from_currency=data.currency, to_currency=data.currency,
+        amount=data.amount, rate=1.0, commission=0.0, total_amount=data.amount, payment_method="cash",
+        status="approved", notes=data.notes, user=actor.name, branch=vault.branch, timestamp=timestamp, expected_profit=0.0
+    ))
+
+    equivalent_lyd = data.amount
+    if data.currency != "LYD":
+        rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == data.currency, ExchangeRate.to_currency == "LYD"))
+        if rate_row:
+            equivalent_lyd = data.amount * rate_row.sell_rate
+
+    lines = [
+        {
+            "accountName": f"خزينة {vault.name} - {data.currency}", "currency": data.currency,
+            "debit": data.amount if is_deposit else 0.0, "credit": 0.0 if is_deposit else data.amount,
+            "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
+        },
+        {
+            "accountName": f"حساب العميل {customer.name} - {data.currency}", "currency": data.currency,
+            "debit": 0.0 if is_deposit else data.amount, "credit": data.amount if is_deposit else 0.0,
+            "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
+        },
+    ]
+    db.add(JournalEntry(
+        id=f"JV-{datetime.utcnow().strftime('%Y%m%d')}-{entry_id}", date=timestamp,
+        tx_type="إيداع حساب عميل" if is_deposit else "سحب من حساب عميل", reference=entry_id,
+        description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {data.currency} {'في' if is_deposit else 'من'} حساب العميل {customer.name}",
+        user=actor.name, status="approved", lines=lines
+    ))
+
+    create_audit_log(
+        db, action=AuditAction.CREATE, entity_type="CustomerAccountEntry", entity_id=entry_id,
+        description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {data.currency} {'في' if is_deposit else 'من'} حساب العميل {customer.name} عبر خزنة {vault.name}",
+        username=actor.username
+    )
+    db.commit()
+    return entry
+
+@router.post("/customers/{customer_id}/deposit")
+def deposit_to_customer(customer_id: str, data: CustomerAccountOp, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    entry = _run_customer_account_op("deposit", customer_id, data, actor, db)
+    return success_response(data=customer_account_entry_to_dict(entry), message_ar="تم تسجيل الإيداع بنجاح")
+
+@router.post("/customers/{customer_id}/withdraw")
+def withdraw_from_customer(customer_id: str, data: CustomerAccountOp, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    entry = _run_customer_account_op("withdraw", customer_id, data, actor, db)
+    return success_response(data=customer_account_entry_to_dict(entry), message_ar="تم تسجيل السحب بنجاح")
+
+@router.get("/customer_account_entries")
+def list_customer_account_entries(db: Session = Depends(get_db)):
+    res = db.scalars(select(CustomerAccountEntry).order_by(CustomerAccountEntry.timestamp.desc())).all()
+    return success_response(data=[customer_account_entry_to_dict(e) for e in res])
 
 # ----------------- CUSTOMER KYC DOCUMENTS -----------------
 class CustomerDocumentCreate(BaseModel):
@@ -815,6 +981,7 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
         type=data.type,
         vault_id=vault.id,
         vault_name=vault.name,
+        shift_id=shift.id if shift else None,
         customer_id=customer.id,
         customer_name=customer.name,
         from_currency=data.fromCurrency,
@@ -952,6 +1119,14 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
             )
             db.add(flag)
             create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="ComplianceFlag", entity_id=flag.id, description=f"تم رصد عملية كبيرة تستدعي المراجعة: {tx_id} بقيمة {lyd_equivalent:.2f} د.ل")
+
+            if get_whatsapp_setting(db, "whatsappAlertCompliance", True):
+                send_manager_alert(
+                    db,
+                    f"⚠️ عملية تستوجب المراجعة\nرقم العملية: {tx_id}\nالعميل: {customer.name}\nالقيمة: {lyd_equivalent:.2f} د.ل\nالسبب: تجاوزت حد الإبلاغ ({threshold} د.ل)",
+                    template_name=get_whatsapp_setting(db, "whatsappTemplateName", "") or None,
+                    template_params=[tx_id, customer.name, f"{lyd_equivalent:.2f}"],
+                )
 
     db.commit()
     return success_response(data=transaction_to_dict(tx))

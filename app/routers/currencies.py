@@ -93,7 +93,7 @@ def list_rates(db: Session = Depends(get_db)):
 
 @router.get("/rate_histories")
 def list_histories(db: Session = Depends(get_db)):
-    histories = db.scalars(select(RateHistory)).all()
+    histories = db.scalars(select(RateHistory).order_by(RateHistory.timestamp.desc())).all()
     res_list = []
     for h in histories:
         res_list.append({

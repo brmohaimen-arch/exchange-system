@@ -201,8 +201,10 @@ def _format_size(num_bytes: int) -> str:
         size /= 1024
     return f"{size:.1f} TB"
 
-@router.post("/backups")
-def trigger_backup(actor: User = Depends(require_permission("إدارة الإعدادات")), db: Session = Depends(get_db)):
+def perform_backup(db: Session, *, actor_name: str, backup_type: str, retention_count: int | None = None) -> Backup:
+    """Copies the live DB file and records a Backup row. Shared by the manual
+    'إنشاء نسخة احتياطية الآن' button and the scheduled automatic backup job so
+    both go through the exact same, tested code path."""
     if not os.path.exists(DB_FILE_PATH):
         raise APIError(code="DB_FILE_NOT_FOUND", message_ar="تعذر العثور على ملف قاعدة البيانات لعمل نسخة احتياطية", message_en="Database file not found for backup", status_code=500)
 
@@ -218,13 +220,38 @@ def trigger_backup(actor: User = Depends(require_permission("إدارة الإع
     b = Backup(
         id=backup_id,
         timestamp=timestamp,
-        type="نسخة احتياطية يدوية (كاملة)",
+        type=backup_type,
         size=_format_size(real_size),
         status="ناجحة",
-        user=actor.name
+        user=actor_name,
+        file_path=backup_file_path,
     )
     db.add(b)
 
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="Backup", entity_id=b.id, description=f"قام {actor.name} بإنشاء نسخة احتياطية يدوية: {backup_file_path}", username=actor.username)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="Backup", entity_id=b.id, description=f"قام {actor_name} بإنشاء نسخة احتياطية: {backup_file_path}", username=actor_name)
+
+    db.flush()  # session has autoflush disabled — without this, the retention query below won't see the row just added
+
+    if retention_count and retention_count > 0:
+        _enforce_backup_retention(db, retention_count)
+
+    return b
+
+
+def _enforce_backup_retention(db: Session, keep: int) -> None:
+    """Deletes the oldest backups (file + row) beyond the configured retention count."""
+    all_backups = db.scalars(select(Backup).order_by(Backup.timestamp.desc())).all()
+    for old in all_backups[keep:]:
+        if old.file_path and os.path.exists(old.file_path):
+            try:
+                os.remove(old.file_path)
+            except OSError:
+                pass
+        db.delete(old)
+
+
+@router.post("/backups")
+def trigger_backup(actor: User = Depends(require_permission("إدارة الإعدادات")), db: Session = Depends(get_db)):
+    b = perform_backup(db, actor_name=actor.name, backup_type="نسخة احتياطية يدوية (كاملة)")
     db.commit()
     return success_response(data=backup_to_dict(b), message_ar="تم إنشاء النسخة الاحتياطية بنجاح")

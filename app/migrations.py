@@ -39,6 +39,22 @@ DEFAULT_SETTINGS = {
     "smsGatewayProvider": "none",
     "smsGatewayApiKey": "",
     "smsRemindersEnabled": False,
+    "autoBackupEnabled": False,
+    "autoBackupIntervalHours": 24,
+    "autoBackupRetentionCount": 14,
+    "lastAutoBackupAt": "",
+    "whatsappEnabled": False,
+    "whatsappAccessToken": "",
+    "whatsappPhoneNumberId": "",
+    "whatsappManagerPhone": "",
+    "whatsappTemplateName": "",
+    "whatsappVerifyToken": "",
+    "whatsappAppSecret": "",
+    "whatsappAlertCompliance": True,
+    "whatsappAlertShiftDiscrepancy": True,
+    "whatsappDailySummaryEnabled": False,
+    "whatsappDailySummaryHour": 20,
+    "lastWhatsappDailySummaryAt": "",
 }
 
 # (table, column, sqlite_column_definition)
@@ -48,6 +64,13 @@ NEW_COLUMNS = [
     ("inventory_counts", "denomination_breakdown", "TEXT DEFAULT '{}'"),
     ("audit_logs", "prev_hash", "VARCHAR(64)"),
     ("audit_logs", "hash", "VARCHAR(64)"),
+    ("shifts", "end_time", "VARCHAR(50)"),
+    ("shifts", "requested_at", "VARCHAR(50)"),
+    ("shifts", "approved_by", "VARCHAR(100)"),
+    ("transactions", "shift_id", "VARCHAR(50)"),
+    ("users", "mfa_secret", "VARCHAR(64)"),
+    ("users", "mfa_enabled", "BOOLEAN DEFAULT 0"),
+    ("backups", "file_path", "VARCHAR(500)"),
 ]
 
 
