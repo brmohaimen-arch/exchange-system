@@ -4,6 +4,7 @@ import { useEffect, useState, FormEvent } from 'react'
 import { Plus, Pencil, Trash2, X, Loader2, Coins } from 'lucide-react'
 import { api, Currency } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 function emptyForm() {
   return { code: '', nameAr: '', nameEn: '', symbol: '', country: '', flag: '', decimalPlaces: '2', isActive: true }
@@ -11,6 +12,7 @@ function emptyForm() {
 
 export default function CurrenciesPage() {
   const { hasPermission } = useAuth()
+  const confirmDialog = useConfirm()
   const canManage = hasPermission('إدارة العملات')
 
   const [currencies, setCurrencies] = useState<Currency[]>([])
@@ -87,7 +89,7 @@ export default function CurrenciesPage() {
   }
 
   const handleDelete = async (c: Currency) => {
-    if (!confirm(`هل تريد حذف عملة ${c.nameAr}؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف عملة ${c.nameAr}؟`))) return
     try {
       await api.delete(`/currencies/${c.code}`)
       await load()

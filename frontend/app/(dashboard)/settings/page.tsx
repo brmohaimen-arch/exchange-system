@@ -1,9 +1,11 @@
 'use client'
 
-import { useEffect, useState, FormEvent } from 'react'
-import { Save, User, Shield, Building2, Plus, Pencil, Trash2, X, Loader2, KeyRound, ShieldCheck, Percent, History, DatabaseBackup, ShieldAlert, CheckCircle2, Smartphone, XCircle, MessageCircle, Send } from 'lucide-react'
+import { useEffect, useMemo, useState, FormEvent } from 'react'
+import { Save, User, Shield, Building2, Plus, Pencil, Trash2, X, Loader2, KeyRound, ShieldCheck, Percent, History, DatabaseBackup, ShieldAlert, CheckCircle2, Smartphone, XCircle, MessageCircle, Send, Bot, Link2 } from 'lucide-react'
 import { api, newId, ALL_PERMISSIONS, Currency, RoleDTO, UserDTO, CommissionRule, AuditLogEntry, LoginLogEntry, BackupEntry, API_BASE } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { useConfirm } from '@/components/ConfirmProvider'
+import { TablePagination, paginate } from '@/components/TablePagination'
 
 interface Branch { id: string; name: string; city: string }
 interface VaultLite { id: string; name: string }
@@ -33,6 +35,7 @@ function emptyUserForm() {
 
 export default function SettingsPage() {
   const { user: me, hasPermission, refreshUser } = useAuth()
+  const confirmDialog = useConfirm()
   const canManageSettings = hasPermission('إدارة الإعدادات')
   const canManageUsers = hasPermission('إدارة المستخدمين')
 
@@ -77,6 +80,12 @@ export default function SettingsPage() {
   const [backups, setBackups] = useState<BackupEntry[]>([])
   const [creatingBackup, setCreatingBackup] = useState(false)
 
+  const [usersPage, setUsersPage] = useState(1)
+  const [rulesPage, setRulesPage] = useState(1)
+  const [auditLogsPage, setAuditLogsPage] = useState(1)
+  const [loginLogsPage, setLoginLogsPage] = useState(1)
+  const [backupsPage, setBackupsPage] = useState(1)
+
   // MFA (self-service, own account)
   const [mfaSecret, setMfaSecret] = useState('')
   const [mfaOtpauthUrl, setMfaOtpauthUrl] = useState('')
@@ -90,6 +99,12 @@ export default function SettingsPage() {
   // WhatsApp assistant
   const [sendingWhatsappTest, setSendingWhatsappTest] = useState(false)
   const [whatsappTestResult, setWhatsappTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  // Telegram assistant
+  const [sendingTelegramTest, setSendingTelegramTest] = useState(false)
+  const [telegramTestResult, setTelegramTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [registeringTelegramWebhook, setRegisteringTelegramWebhook] = useState(false)
+  const [telegramWebhookResult, setTelegramWebhookResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   const load = async () => {
     try {
@@ -129,6 +144,21 @@ export default function SettingsPage() {
     const r = roles.find((x) => x.name === selectedRole)
     setRolePerms(r ? [...r.permissions] : [])
   }, [selectedRole, roles])
+
+  const sortedUsers = useMemo(() => [...users].reverse(), [users])
+  const pagedUsers = paginate(sortedUsers, usersPage)
+
+  const sortedRules = useMemo(() => [...rules].reverse(), [rules])
+  const pagedRules = paginate(sortedRules, rulesPage)
+
+  const sortedAuditLogs = useMemo(() => [...auditLogs].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [auditLogs])
+  const pagedAuditLogs = paginate(sortedAuditLogs, auditLogsPage)
+
+  const sortedLoginLogs = useMemo(() => [...loginLogs].sort((a, b) => (a.loginTime < b.loginTime ? 1 : -1)), [loginLogs])
+  const pagedLoginLogs = paginate(sortedLoginLogs, loginLogsPage)
+
+  const sortedBackups = useMemo(() => [...backups].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [backups])
+  const pagedBackups = paginate(sortedBackups, backupsPage)
 
   const setField = (key: string, value: any) => setSettings((s) => ({ ...s, [key]: value }))
 
@@ -201,7 +231,7 @@ export default function SettingsPage() {
   }
 
   const deleteUser = async (u: UserDTO) => {
-    if (!confirm(`هل تريد حذف المستخدم ${u.name}؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف المستخدم ${u.name}؟`))) return
     try {
       await api.delete(`/auth/users/${u.id}`)
       await load()
@@ -242,7 +272,7 @@ export default function SettingsPage() {
   }
 
   const deleteRole = async (name: string) => {
-    if (!confirm(`هل تريد حذف الدور "${name}"؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف الدور "${name}"؟`))) return
     try {
       await api.delete(`/auth/roles/${encodeURIComponent(name)}`)
       await load()
@@ -291,7 +321,7 @@ export default function SettingsPage() {
   }
 
   const deleteRule = async (r: CommissionRule) => {
-    if (!confirm(`هل تريد حذف قاعدة "${r.name}"؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف قاعدة "${r.name}"؟`))) return
     try {
       await api.delete(`/commission_rules/${r.id}`)
       await load()
@@ -389,6 +419,37 @@ export default function SettingsPage() {
   }
 
   const whatsappWebhookUrl = `${API_BASE}/whatsapp/webhook`
+
+  // ---------------- Telegram assistant ----------------
+  const sendTelegramTest = async () => {
+    setSendingTelegramTest(true)
+    setTelegramTestResult(null)
+    try {
+      // Same reasoning as the WhatsApp test: save whatever is typed first so
+      // the test can't run against stale server-side settings.
+      await api.post('/settings', { settings })
+      await api.post('/telegram/test')
+      setTelegramTestResult({ ok: true, message: 'تم حفظ الإعدادات وإرسال رسالة الاختبار بنجاح — تحقق من تيليجرام' })
+    } catch (err) {
+      setTelegramTestResult({ ok: false, message: err instanceof ApiError ? err.message : 'تعذر إرسال رسالة الاختبار' })
+    } finally {
+      setSendingTelegramTest(false)
+    }
+  }
+
+  const registerTelegramWebhook = async () => {
+    setRegisteringTelegramWebhook(true)
+    setTelegramWebhookResult(null)
+    try {
+      await api.post('/settings', { settings })
+      await api.post('/telegram/register-webhook')
+      setTelegramWebhookResult({ ok: true, message: 'تم تسجيل الويب هوك بنجاح لدى تيليجرام' })
+    } catch (err) {
+      setTelegramWebhookResult({ ok: false, message: err instanceof ApiError ? err.message : 'تعذر تسجيل الويب هوك' })
+    } finally {
+      setRegisteringTelegramWebhook(false)
+    }
+  }
 
   if (loading) {
     return <div className="flex h-64 items-center justify-center text-muted-foreground text-sm">جاري التحميل...</div>
@@ -730,9 +791,9 @@ export default function SettingsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {users.length === 0 ? (
+                {sortedUsers.length === 0 ? (
                   <tr><td colSpan={7} className="px-6 py-8 text-center text-muted-foreground">لا يوجد مستخدمون</td></tr>
-                ) : users.map((u) => (
+                ) : pagedUsers.map((u) => (
                   <tr key={u.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{u.name}</td>
                     <td className="px-6 py-4 text-muted-foreground" dir="ltr">{u.username}</td>
@@ -762,6 +823,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={usersPage} totalItems={sortedUsers.length} onPageChange={setUsersPage} />
         </div>
       )}
 
@@ -795,9 +857,9 @@ export default function SettingsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {rules.length === 0 ? (
+                {sortedRules.length === 0 ? (
                   <tr><td colSpan={7} className="px-6 py-8 text-center text-muted-foreground">لا توجد قواعد عمولة</td></tr>
-                ) : rules.map((r) => (
+                ) : pagedRules.map((r) => (
                   <tr key={r.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{r.name}</td>
                     <td className="px-6 py-4 text-muted-foreground">{r.currency || 'الكل'}</td>
@@ -815,6 +877,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={rulesPage} totalItems={sortedRules.length} onPageChange={setRulesPage} />
         </div>
       )}
 
@@ -838,9 +901,9 @@ export default function SettingsPage() {
               </div>
             )}
             <div className="max-h-96 overflow-y-auto divide-y divide-border">
-              {auditLogs.length === 0 ? (
+              {sortedAuditLogs.length === 0 ? (
                 <p className="px-6 py-8 text-center text-muted-foreground text-sm">لا توجد سجلات</p>
-              ) : auditLogs.slice(0, 50).map((log) => (
+              ) : pagedAuditLogs.map((log) => (
                 <div key={log.id} className="px-6 py-3 text-right">
                   <div className="flex justify-between items-center">
                     <span className="text-xs text-muted-foreground">{log.timestamp}</span>
@@ -851,6 +914,7 @@ export default function SettingsPage() {
                 </div>
               ))}
             </div>
+            <TablePagination page={auditLogsPage} totalItems={sortedAuditLogs.length} onPageChange={setAuditLogsPage} />
           </div>
 
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -868,9 +932,9 @@ export default function SettingsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {loginLogs.length === 0 ? (
+                  {sortedLoginLogs.length === 0 ? (
                     <tr><td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">لا توجد سجلات دخول</td></tr>
-                  ) : loginLogs.map((log) => (
+                  ) : pagedLoginLogs.map((log) => (
                     <tr key={log.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-6 py-3 font-medium text-foreground">{log.user}</td>
                       <td className="px-6 py-3 text-muted-foreground">{log.loginTime}</td>
@@ -886,6 +950,7 @@ export default function SettingsPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination page={loginLogsPage} totalItems={sortedLoginLogs.length} onPageChange={setLoginLogsPage} />
           </div>
         </div>
       )}
@@ -1021,6 +1086,93 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* Telegram Assistant */}
+      {canManageSettings && (
+        <div className="rounded-xl border border-border bg-card shadow-sm p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="rounded-full bg-primary/10 p-2 text-primary">
+              <Bot className="h-5 w-5" />
+            </div>
+            <h3 className="text-lg font-semibold text-foreground">تنبيهات تيليجرام للمدير</h3>
+          </div>
+          <p className="text-xs text-muted-foreground mb-4">
+            قناة إضافية بجانب واتساب — لا تحتاج حساباً تجارياً ولا قوالب رسائل. أنشئ بوت عبر
+            {' '}<span dir="ltr" className="font-mono">@BotFather</span> على تيليجرام واحصل على الـ Token، ثم راسل البوت من حساب المدير واحصل على معرف المحادثة عبر
+            {' '}<span dir="ltr" className="font-mono">@userinfobot</span>.
+          </p>
+
+          <fieldset className="space-y-4 text-right">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-foreground">تفعيل تنبيهات تيليجرام</span>
+              <Toggle checked={!!settings.telegramEnabled} onChange={(v) => setField('telegramEnabled', v)} />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">Bot Token</label>
+              <input
+                type="password"
+                value={settings.telegramBotToken || ''}
+                onChange={(e) => setField('telegramBotToken', e.target.value)}
+                dir="ltr"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">معرف محادثة المدير (Chat ID)</label>
+              <input
+                value={settings.telegramManagerChatId || ''}
+                onChange={(e) => setField('telegramManagerChatId', e.target.value)}
+                dir="ltr"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">Webhook Secret (اختياري — للتحقق من الطلبات الواردة)</label>
+              <input
+                type="password"
+                value={settings.telegramWebhookSecret || ''}
+                onChange={(e) => setField('telegramWebhookSecret', e.target.value)}
+                dir="ltr"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+
+            <p className="text-xs text-muted-foreground pt-2 border-t border-border">
+              تُرسل تنبيهات الالتزام (AML) وفروقات إقفال الوردية وملخص نهاية اليوم — المفعّلة أعلاه في قسم واتساب — إلى تيليجرام تلقائياً أيضاً طالما التفعيل هنا مفعّل.
+            </p>
+
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={registerTelegramWebhook}
+                disabled={registeringTelegramWebhook}
+                className="flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-60"
+              >
+                {registeringTelegramWebhook ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+                تسجيل الويب هوك
+              </button>
+              <button
+                type="button"
+                onClick={sendTelegramTest}
+                disabled={sendingTelegramTest}
+                className="flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-60"
+              >
+                {sendingTelegramTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                إرسال رسالة اختبار
+              </button>
+            </div>
+            {telegramWebhookResult && (
+              <p className={`text-sm ${telegramWebhookResult.ok ? 'text-success' : 'text-danger'}`}>{telegramWebhookResult.message}</p>
+            )}
+            {telegramTestResult && (
+              <p className={`text-sm ${telegramTestResult.ok ? 'text-success' : 'text-danger'}`}>{telegramTestResult.message}</p>
+            )}
+          </fieldset>
+        </div>
+      )}
+
       {/* Backups */}
       {canManageSettings && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -1050,9 +1202,9 @@ export default function SettingsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {backups.length === 0 ? (
+                {sortedBackups.length === 0 ? (
                   <tr><td colSpan={5} className="px-6 py-8 text-center text-muted-foreground">لا توجد نسخ احتياطية بعد</td></tr>
-                ) : backups.map((b) => (
+                ) : pagedBackups.map((b) => (
                   <tr key={b.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 text-muted-foreground">{b.timestamp}</td>
                     <td className="px-6 py-4">{b.type}</td>
@@ -1066,6 +1218,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={backupsPage} totalItems={sortedBackups.length} onPageChange={setBackupsPage} />
         </div>
       )}
 

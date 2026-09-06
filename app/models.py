@@ -294,16 +294,16 @@ class InventoryCount(Base):
     approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     denomination_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
 
-class Reconciliation(Base):
-    __tablename__ = "reconciliations"
+class DailyExpense(Base):
+    __tablename__ = "daily_expenses"
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
-    type: Mapped[str] = mapped_column(String(50), nullable=False)  # vault, bank, customer, inventory
-    target_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    date: Mapped[str] = mapped_column(String(20), nullable=False)  # YYYY-MM-DD
+    category: Mapped[str] = mapped_column(String(50), nullable=False)  # rent, salaries, electricity, maintenance, other
     amount: Mapped[float] = mapped_column(Float, nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(50), default="approved")
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
 
 class ApprovalRequest(Base):
     __tablename__ = "approvals"

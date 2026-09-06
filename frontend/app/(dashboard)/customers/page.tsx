@@ -1,9 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState, FormEvent, ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react'
 import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
-import { api, newId, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault } from '@/lib/api-client'
+import { api, newId, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { TablePagination, paginate } from '@/components/TablePagination'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 const typeLabels: Record<string, string> = { individual: 'فرد', company: 'شركة' }
 const debtStatusClass: Record<string, string> = {
@@ -35,6 +37,7 @@ const docStatusClass: Record<string, string> = {
 
 export default function CustomersPage() {
   const { hasPermission } = useAuth()
+  const confirmDialog = useConfirm()
   const [tab, setTab] = useState<'customers' | 'debts' | 'documents'>('customers')
 
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -43,6 +46,7 @@ export default function CustomersPage() {
   const [documents, setDocuments] = useState<CustomerDocument[]>([])
   const [vaults, setVaults] = useState<Vault[]>([])
   const [accountEntries, setAccountEntries] = useState<CustomerAccountEntry[]>([])
+  const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [importMsg, setImportMsg] = useState('')
@@ -80,18 +84,25 @@ export default function CustomersPage() {
 
   const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null)
 
+  const [customersPage, setCustomersPage] = useState(1)
+  const [debtsPage, setDebtsPage] = useState(1)
+  const [documentsPage, setDocumentsPage] = useState(1)
+  const [statementPage, setStatementPage] = useState(1)
+  const [statementTxPage, setStatementTxPage] = useState(1)
+
   const canManage = hasPermission('إدارة العملاء')
   const canManageDebts = hasPermission('إدارة الديون')
 
   const load = async () => {
     try {
-      const [custs, debtsData, currs, docs, v, ae] = await Promise.all([
+      const [custs, debtsData, currs, docs, v, ae, tx] = await Promise.all([
         api.get<Customer[]>('/customers'),
         api.get<Debt[]>('/debts'),
         api.get<Currency[]>('/currencies'),
         api.get<CustomerDocument[]>('/customer_documents'),
         api.get<Vault[]>('/vaults'),
         api.get<CustomerAccountEntry[]>('/customer_account_entries'),
+        api.get<Transaction[]>('/transactions'),
       ])
       setCustomers(custs)
       setDebts(debtsData)
@@ -99,6 +110,7 @@ export default function CustomersPage() {
       setDocuments(docs)
       setVaults(v)
       setAccountEntries(ae)
+      setTransactions(tx)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل بيانات العملاء')
     } finally {
@@ -183,7 +195,7 @@ export default function CustomersPage() {
   }
 
   const deleteCustomer = async (c: Customer) => {
-    if (!confirm(`هل تريد حذف العميل ${c.name}؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف العميل ${c.name}؟`))) return
     try {
       await api.delete(`/customers/${c.id}`)
       await load()
@@ -370,6 +382,30 @@ export default function CustomersPage() {
 
   const openDebtsCount = debts.filter((d) => d.status !== 'paid').length
 
+  // Newest-first, capped to a page — lists arrive in insertion order from the
+  // server, so reversing (or sorting by timestamp where one exists) puts the
+  // newest record first before slicing to a page.
+  const sortedCustomers = useMemo(() => [...customers].reverse(), [customers])
+  const pagedCustomers = paginate(sortedCustomers, customersPage)
+
+  const sortedDebts = useMemo(() => [...debts].reverse(), [debts])
+  const pagedDebts = paginate(sortedDebts, debtsPage)
+
+  const sortedDocuments = useMemo(() => [...documents].reverse(), [documents])
+  const pagedDocuments = paginate(sortedDocuments, documentsPage)
+
+  const statementEntries = useMemo(
+    () => accountEntries.filter((e) => e.customerId === statementCustomer?.id).sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
+    [accountEntries, statementCustomer]
+  )
+  const pagedStatementEntries = paginate(statementEntries, statementPage)
+
+  const statementTransactions = useMemo(
+    () => transactions.filter((t) => t.customerId === statementCustomer?.id && ['buy', 'sell', 'exchange'].includes(t.type)).sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
+    [transactions, statementCustomer]
+  )
+  const pagedStatementTransactions = paginate(statementTransactions, statementTxPage)
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -467,7 +503,7 @@ export default function CustomersPage() {
                   <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
                 ) : customers.length === 0 ? (
                   <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">لا يوجد عملاء بعد</td></tr>
-                ) : customers.map((customer) => (
+                ) : pagedCustomers.map((customer) => (
                   <tr key={customer.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{customer.id}</td>
                     <td className="px-6 py-4">{customer.name}</td>
@@ -491,7 +527,7 @@ export default function CustomersPage() {
                         <button onClick={() => setSelected(customer)} title="عرض" className="text-primary hover:text-primary/80 transition-colors p-1">
                           <Eye className="h-4 w-4" />
                         </button>
-                        <button onClick={() => setStatementCustomer(customer)} title="كشف الحساب" className="text-muted-foreground hover:text-primary transition-colors p-1">
+                        <button onClick={() => { setStatementCustomer(customer); setStatementPage(1); setStatementTxPage(1) }} title="كشف الحساب" className="text-muted-foreground hover:text-primary transition-colors p-1">
                           <FileText className="h-4 w-4" />
                         </button>
                         {canManage && customer.isActive && (
@@ -521,6 +557,7 @@ export default function CustomersPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={customersPage} totalItems={sortedCustomers.length} onPageChange={setCustomersPage} />
         </div>
       )}
 
@@ -542,7 +579,7 @@ export default function CustomersPage() {
               <tbody className="divide-y divide-border">
                 {debts.length === 0 ? (
                   <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد ديون مسجلة</td></tr>
-                ) : debts.map((d) => (
+                ) : pagedDebts.map((d) => (
                   <tr key={d.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{d.customerName}</td>
                     <td className="px-6 py-4">{d.amount.toLocaleString()} {d.currency}</td>
@@ -568,6 +605,7 @@ export default function CustomersPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={debtsPage} totalItems={sortedDebts.length} onPageChange={setDebtsPage} />
         </div>
       )}
 
@@ -587,7 +625,7 @@ export default function CustomersPage() {
               <tbody className="divide-y divide-border">
                 {documents.length === 0 ? (
                   <tr><td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
-                ) : documents.map((d) => (
+                ) : pagedDocuments.map((d) => (
                   <tr key={d.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{d.customerName}</td>
                     <td className="px-6 py-4">{d.documentType}</td>
@@ -601,6 +639,7 @@ export default function CustomersPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={documentsPage} totalItems={sortedDocuments.length} onPageChange={setDocumentsPage} />
         </div>
       )}
 
@@ -1137,39 +1176,84 @@ export default function CustomersPage() {
                   ))}
                 </div>
               </div>
-              <div className="rounded-md border border-border overflow-hidden">
-                <table className="w-full text-xs text-right">
-                  <thead className="bg-secondary/50 text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2 font-medium">النوع</th>
-                      <th className="px-3 py-2 font-medium">المبلغ</th>
-                      <th className="px-3 py-2 font-medium">الرصيد قبل</th>
-                      <th className="px-3 py-2 font-medium">الرصيد بعد</th>
-                      <th className="px-3 py-2 font-medium">الخزنة</th>
-                      <th className="px-3 py-2 font-medium">بواسطة</th>
-                      <th className="px-3 py-2 font-medium">التاريخ</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {accountEntries.filter((e) => e.customerId === statementCustomer.id).length === 0 ? (
-                      <tr><td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">لا توجد حركات إيداع أو سحب مسجلة</td></tr>
-                    ) : accountEntries.filter((e) => e.customerId === statementCustomer.id).map((e) => (
-                      <tr key={e.id}>
-                        <td className="px-3 py-2">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${e.type === 'deposit' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}`}>
-                            {e.type === 'deposit' ? 'إيداع' : 'سحب'}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 font-medium">{e.amount.toLocaleString()} {e.currency}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{e.balanceBefore.toLocaleString()}</td>
-                        <td className="px-3 py-2 font-medium">{e.balanceAfter.toLocaleString()}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{e.vaultName}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{e.user}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{e.timestamp}</td>
+              <div className="mb-4">
+                <p className="text-sm font-medium text-foreground mb-2">معاملات الصرافة (شراء / بيع / تبديل)</p>
+                <div className="rounded-md border border-border overflow-hidden">
+                  <table className="w-full text-xs text-right">
+                    <thead className="bg-secondary/50 text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">رقم العملية</th>
+                        <th className="px-3 py-2 font-medium">النوع</th>
+                        <th className="px-3 py-2 font-medium">المبلغ</th>
+                        <th className="px-3 py-2 font-medium">السعر</th>
+                        <th className="px-3 py-2 font-medium">الإجمالي</th>
+                        <th className="px-3 py-2 font-medium">الحالة</th>
+                        <th className="px-3 py-2 font-medium">بواسطة</th>
+                        <th className="px-3 py-2 font-medium">التاريخ</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {statementTransactions.length === 0 ? (
+                        <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">لا توجد معاملات صرافة مسجلة</td></tr>
+                      ) : pagedStatementTransactions.map((t) => (
+                        <tr key={t.id}>
+                          <td className="px-3 py-2 font-medium text-foreground">{t.id}</td>
+                          <td className="px-3 py-2">{typeLabels[t.type] || t.type}</td>
+                          <td className="px-3 py-2">{t.amount.toLocaleString()} {t.type === 'sell' ? t.toCurrency : t.fromCurrency}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{t.rate}</td>
+                          <td className="px-3 py-2 font-medium">{t.totalAmount.toLocaleString()}</td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${t.status === 'reversed' ? 'bg-danger/10 text-danger' : t.status === 'pending' ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'}`}>
+                              {t.status === 'reversed' ? 'ملغي' : t.status === 'pending' ? 'قيد المعالجة' : 'مكتمل'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">{t.user}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{t.timestamp}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePagination page={statementTxPage} totalItems={statementTransactions.length} onPageChange={setStatementTxPage} />
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-foreground mb-2">حركات الإيداع والسحب على الحساب</p>
+                <div className="rounded-md border border-border overflow-hidden">
+                  <table className="w-full text-xs text-right">
+                    <thead className="bg-secondary/50 text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">النوع</th>
+                        <th className="px-3 py-2 font-medium">المبلغ</th>
+                        <th className="px-3 py-2 font-medium">الرصيد قبل</th>
+                        <th className="px-3 py-2 font-medium">الرصيد بعد</th>
+                        <th className="px-3 py-2 font-medium">الخزنة</th>
+                        <th className="px-3 py-2 font-medium">بواسطة</th>
+                        <th className="px-3 py-2 font-medium">التاريخ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {statementEntries.length === 0 ? (
+                        <tr><td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">لا توجد حركات إيداع أو سحب مسجلة</td></tr>
+                      ) : pagedStatementEntries.map((e) => (
+                        <tr key={e.id}>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${e.type === 'deposit' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}`}>
+                              {e.type === 'deposit' ? 'إيداع' : 'سحب'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 font-medium">{e.amount.toLocaleString()} {e.currency}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{e.balanceBefore.toLocaleString()}</td>
+                          <td className="px-3 py-2 font-medium">{e.balanceAfter.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{e.vaultName}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{e.user}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{e.timestamp}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePagination page={statementPage} totalItems={statementEntries.length} onPageChange={setStatementPage} />
               </div>
             </div>
           </div>

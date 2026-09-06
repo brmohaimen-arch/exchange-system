@@ -5,7 +5,7 @@ from .auth_deps import hash_password
 from .models import (
     User, Branch, Currency, ExchangeRate, RateHistory, Vault, Customer, Debt,
     Bank, BankBranch, BankAccount, Shift, Transaction, Movement, JournalEntry,
-    AuditLog, LoginLog, InventoryCount, Reconciliation, ApprovalRequest, Transfer,
+    AuditLog, LoginLog, InventoryCount, ApprovalRequest, Transfer,
     FixedAsset, Vehicle, RealEstate, MaintenanceRecord, DepreciationRecord, AssetDocument,
     SystemSetting, Backup, AuditAction, NotificationType, NotificationStatus, Role,
     CurrencyDenomination

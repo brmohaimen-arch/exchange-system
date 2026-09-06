@@ -1,10 +1,21 @@
 'use client'
 
-import { useState, useEffect, FormEvent } from 'react'
+import { useState, useEffect, FormEvent, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
-import { LogIn, Landmark, ShieldCheck, Clock } from 'lucide-react'
+import Image from 'next/image'
+import { LogIn, ShieldCheck, Clock, Zap } from 'lucide-react'
 import { useAuth, ApiError, MfaRequiredError } from '@/lib/auth-provider'
 import { api } from '@/lib/api-client'
+
+function LoginBackdrop({ children }: { children: ReactNode }) {
+  return (
+    <div className="relative flex min-h-screen items-center justify-center px-4 overflow-hidden">
+      <Image src="/login-bg.jpg" alt="" fill priority className="object-cover" />
+      <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/30 to-black/60" />
+      <div className="relative z-10 w-full flex flex-col items-center">{children}</div>
+    </div>
+  )
+}
 
 interface TrialStatus {
   expired: boolean
@@ -61,8 +72,8 @@ export default function LoginPage() {
 
   if (trial?.expired) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-secondary/30 px-4">
-        <div className="w-full max-w-sm rounded-xl border border-border bg-card p-8 shadow-lg text-center">
+      <LoginBackdrop>
+        <div className="w-full max-w-sm rounded-xl border border-white/10 bg-card/95 backdrop-blur p-8 shadow-2xl text-center">
           <div className="mb-6 flex flex-col items-center gap-2">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-danger/10 text-danger">
               <Clock className="h-7 w-7" />
@@ -73,14 +84,14 @@ export default function LoginPage() {
             </p>
           </div>
         </div>
-      </div>
+      </LoginBackdrop>
     )
   }
 
   if (mfaUserId) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-secondary/30 px-4">
-        <div className="w-full max-w-sm rounded-xl border border-border bg-card p-8 shadow-lg">
+      <LoginBackdrop>
+        <div className="w-full max-w-sm rounded-xl border border-white/10 bg-card/95 backdrop-blur p-8 shadow-2xl">
           <div className="mb-6 flex flex-col items-center gap-2 text-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
               <ShieldCheck className="h-7 w-7" />
@@ -117,18 +128,15 @@ export default function LoginPage() {
             </button>
           </form>
         </div>
-      </div>
+      </LoginBackdrop>
     )
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-secondary/30 px-4">
-      <div className="w-full max-w-sm rounded-xl border border-border bg-card p-8 shadow-lg">
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <Landmark className="h-7 w-7" />
-          </div>
-          <h1 className="text-xl font-bold text-foreground">لوحة التحكم</h1>
+    <LoginBackdrop>
+      <div className="w-full max-w-sm rounded-xl border border-white/10 bg-card/95 backdrop-blur p-8 shadow-2xl">
+        <div className="mb-6 flex flex-col items-center gap-3 text-center">
+          <Image src="/logo.png" alt="شركة واكب" width={200} height={140} priority className="w-40 h-auto" />
           <p className="text-sm text-muted-foreground">تسجيل الدخول إلى نظام الصرافة</p>
         </div>
 
@@ -176,6 +184,17 @@ export default function LoginPage() {
           </button>
         </form>
       </div>
-    </div>
+
+      <div className="mt-6 flex items-center gap-2 rounded-full bg-black/30 backdrop-blur px-4 py-2 text-xs text-white/80">
+        <Image src="/fvg-badge.png" alt="" width={20} height={20} className="rounded-md" />
+        <span className="flex items-center gap-1">
+          <Zap className="h-3 w-3 text-warning" /> سريع
+        </span>
+        <span className="text-white/30">·</span>
+        <span>آمن</span>
+        <span className="text-white/30">·</span>
+        <span>عالمي</span>
+      </div>
+    </LoginBackdrop>
   )
 }
