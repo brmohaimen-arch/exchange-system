@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { FileText, Download, TrendingUp, AlertTriangle, ShieldAlert, Check, BookOpen, ChevronDown, RotateCcw, Building2, User as UserIcon, Ban } from 'lucide-react'
+import { useEffect, useMemo, useState, FormEvent } from 'react'
+import { FileText, Download, TrendingUp, AlertTriangle, ShieldAlert, Check, BookOpen, ChevronDown, RotateCcw, Building2, User as UserIcon, Ban, X, Loader2 } from 'lucide-react'
 import { api, downloadFile, ComplianceFlag, JournalEntry, CancelledTransaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { TablePagination, paginate } from '@/components/TablePagination'
 
 interface BreakdownEntry { profit: number; count: number }
 
@@ -41,8 +42,36 @@ export default function ReportsPage() {
   const [reviewingFlag, setReviewingFlag] = useState<string | null>(null)
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null)
   const [reversingId, setReversingId] = useState<string | null>(null)
+  const [reversingEntry, setReversingEntry] = useState<JournalEntry | null>(null)
+  const [reverseReason, setReverseReason] = useState('')
+  const [reverseError, setReverseError] = useState('')
+
+  const [flagsPage, setFlagsPage] = useState(1)
+  const [journalPage, setJournalPage] = useState(1)
+  const [cancelledPage, setCancelledPage] = useState(1)
+  const [branchPage, setBranchPage] = useState(1)
+  const [cashierPage, setCashierPage] = useState(1)
+  const [volumePage, setVolumePage] = useState(1)
 
   const canReverse = hasPermission('إنشاء عملية عكسية')
+
+  const sortedFlags = useMemo(() => [...flags].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [flags])
+  const pagedFlags = paginate(sortedFlags, flagsPage)
+
+  const sortedJournalEntries = useMemo(() => [...journalEntries].sort((a, b) => (a.date < b.date ? 1 : -1)), [journalEntries])
+  const pagedJournalEntries = paginate(sortedJournalEntries, journalPage)
+
+  const sortedCancelledTx = useMemo(() => [...cancelledTx].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [cancelledTx])
+  const pagedCancelledTx = paginate(sortedCancelledTx, cancelledPage)
+
+  const branchEntries = useMemo(() => Object.entries(profit?.profitByBranch || {}).sort((a, b) => b[1].profit - a[1].profit), [profit])
+  const pagedBranchEntries = paginate(branchEntries, branchPage)
+
+  const cashierEntries = useMemo(() => Object.entries(profit?.profitByCashier || {}).sort((a, b) => b[1].profit - a[1].profit), [profit])
+  const pagedCashierEntries = paginate(cashierEntries, cashierPage)
+
+  const volumeEntries = useMemo(() => Object.entries(profit?.volumeByCurrency || {}), [profit])
+  const pagedVolumeEntries = paginate(volumeEntries, volumePage)
 
   const load = async () => {
     try {
@@ -68,15 +97,26 @@ export default function ReportsPage() {
 
   useEffect(() => { load() }, [])
 
-  const reverseEntry = async (entry: JournalEntry) => {
-    const reason = prompt(`سبب عكس القيد "${entry.id}"؟`)
-    if (!reason) return
-    setReversingId(entry.id)
+  const openReverseEntry = (entry: JournalEntry) => {
+    setReversingEntry(entry)
+    setReverseReason('')
+    setReverseError('')
+  }
+
+  const submitReverseEntry = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!reversingEntry) return
+    if (!reverseReason.trim()) {
+      setReverseError('سبب العكس مطلوب')
+      return
+    }
+    setReversingId(reversingEntry.id)
     try {
-      await api.post(`/journal_entries/${entry.id}/reverse`, { reason })
+      await api.post(`/journal_entries/${reversingEntry.id}/reverse`, { reason: reverseReason.trim() })
+      setReversingEntry(null)
       await load()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'تعذر عكس القيد')
+      setReverseError(err instanceof ApiError ? err.message : 'تعذر عكس القيد')
     } finally {
       setReversingId(null)
     }
@@ -185,7 +225,7 @@ export default function ReportsPage() {
             <tbody className="divide-y divide-border">
               {flags.length === 0 ? (
                 <tr><td colSpan={6} className="px-6 py-8 text-center text-muted-foreground">لا توجد عمليات تستوجب المراجعة</td></tr>
-              ) : flags.map((f) => (
+              ) : pagedFlags.map((f) => (
                 <tr key={f.id} className="hover:bg-muted/50 transition-colors">
                   <td className="px-6 py-4 font-medium text-foreground">{f.customerName || '—'}</td>
                   <td className="px-6 py-4">{f.reason}</td>
@@ -213,6 +253,7 @@ export default function ReportsPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination page={flagsPage} totalItems={sortedFlags.length} onPageChange={setFlagsPage} />
       </div>
 
       {/* Journal Entries */}
@@ -224,7 +265,7 @@ export default function ReportsPage() {
         <div className="divide-y divide-border max-h-[28rem] overflow-y-auto">
           {journalEntries.length === 0 ? (
             <p className="px-6 py-8 text-center text-muted-foreground text-sm">لا توجد قيود محاسبية</p>
-          ) : journalEntries.map((jv) => (
+          ) : pagedJournalEntries.map((jv) => (
             <div key={jv.id}>
               <button
                 onClick={() => setExpandedEntry(expandedEntry === jv.id ? null : jv.id)}
@@ -271,7 +312,7 @@ export default function ReportsPage() {
                   </table>
                   {jv.status === 'approved' && canReverse && (
                     <button
-                      onClick={() => reverseEntry(jv)}
+                      onClick={() => openReverseEntry(jv)}
                       disabled={reversingId === jv.id}
                       className="mt-3 flex items-center gap-1 text-danger hover:text-danger/80 transition-colors text-xs font-medium disabled:opacity-50"
                     >
@@ -283,6 +324,7 @@ export default function ReportsPage() {
             </div>
           ))}
         </div>
+        <TablePagination page={journalPage} totalItems={sortedJournalEntries.length} onPageChange={setJournalPage} />
       </div>
 
       {/* Profit breakdown by branch / cashier */}
@@ -302,9 +344,9 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {!profit || Object.keys(profit.profitByBranch || {}).length === 0 ? (
+                {!profit || branchEntries.length === 0 ? (
                   <tr><td colSpan={3} className="px-6 py-6 text-center text-muted-foreground">لا توجد بيانات بعد</td></tr>
-                ) : Object.entries(profit.profitByBranch).sort((a, b) => b[1].profit - a[1].profit).map(([branch, d]) => (
+                ) : pagedBranchEntries.map(([branch, d]) => (
                   <tr key={branch} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-3 font-medium text-foreground">{branch}</td>
                     <td className="px-6 py-3 text-muted-foreground">{d.count}</td>
@@ -314,6 +356,7 @@ export default function ReportsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={branchPage} totalItems={branchEntries.length} onPageChange={setBranchPage} />
         </div>
 
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -331,9 +374,9 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {!profit || Object.keys(profit.profitByCashier || {}).length === 0 ? (
+                {!profit || cashierEntries.length === 0 ? (
                   <tr><td colSpan={3} className="px-6 py-6 text-center text-muted-foreground">لا توجد بيانات بعد</td></tr>
-                ) : Object.entries(profit.profitByCashier).sort((a, b) => b[1].profit - a[1].profit).map(([cashier, d]) => (
+                ) : pagedCashierEntries.map(([cashier, d]) => (
                   <tr key={cashier} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-3 font-medium text-foreground">{cashier}</td>
                     <td className="px-6 py-3 text-muted-foreground">{d.count}</td>
@@ -343,6 +386,7 @@ export default function ReportsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={cashierPage} totalItems={cashierEntries.length} onPageChange={setCashierPage} />
         </div>
       </div>
 
@@ -368,7 +412,7 @@ export default function ReportsPage() {
             <tbody className="divide-y divide-border">
               {cancelledTx.length === 0 ? (
                 <tr><td colSpan={7} className="px-6 py-8 text-center text-muted-foreground">لا توجد عمليات ملغاة</td></tr>
-              ) : cancelledTx.map((t) => (
+              ) : pagedCancelledTx.map((t) => (
                 <tr key={t.id} className="hover:bg-muted/50 transition-colors">
                   <td className="px-6 py-4 font-medium text-foreground">{t.id}</td>
                   <td className="px-6 py-4">{t.type}</td>
@@ -382,6 +426,7 @@ export default function ReportsPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination page={cancelledPage} totalItems={sortedCancelledTx.length} onPageChange={setCancelledPage} />
       </div>
 
       {/* Volume by currency */}
@@ -400,9 +445,9 @@ export default function ReportsPage() {
             <tbody className="divide-y divide-border">
               {loading ? (
                 <tr><td colSpan={2} className="px-6 py-8 text-center text-muted-foreground">جاري التحميل...</td></tr>
-              ) : !profit || Object.keys(profit.volumeByCurrency).length === 0 ? (
+              ) : volumeEntries.length === 0 ? (
                 <tr><td colSpan={2} className="px-6 py-8 text-center text-muted-foreground">لا توجد بيانات بعد</td></tr>
-              ) : Object.entries(profit.volumeByCurrency).map(([ccy, vol]) => (
+              ) : pagedVolumeEntries.map(([ccy, vol]) => (
                 <tr key={ccy} className="hover:bg-muted/50 transition-colors">
                   <td className="px-6 py-4 font-medium text-foreground">{ccy}</td>
                   <td className="px-6 py-4">{vol.toLocaleString()}</td>
@@ -411,7 +456,44 @@ export default function ReportsPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination page={volumePage} totalItems={volumeEntries.length} onPageChange={setVolumePage} />
       </div>
+
+      {/* Reverse Journal Entry Modal */}
+      {reversingEntry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">عكس القيد "{reversingEntry.id}"</h3>
+              <button onClick={() => setReversingEntry(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitReverseEntry} className="space-y-4 p-6 text-right">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب العكس *</label>
+                <textarea
+                  value={reverseReason}
+                  onChange={(e) => setReverseReason(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {reverseError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{reverseError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setReversingEntry(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button
+                  type="submit"
+                  disabled={reversingId === reversingEntry.id}
+                  className="flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/90 transition-colors disabled:opacity-60"
+                >
+                  {reversingId === reversingEntry.id && <Loader2 className="h-4 w-4 animate-spin" />}
+                  تأكيد العكس
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

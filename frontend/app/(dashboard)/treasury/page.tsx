@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Scale, Lock, Eye } from 'lucide-react'
-import { api, newId, Vault, Currency, Bank, BankAccount, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, ReconciliationDTO, Transaction } from '@/lib/api-client'
+import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye } from 'lucide-react'
+import { api, newId, Vault, Currency, Bank, BankAccount, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { TablePagination, paginate } from '@/components/TablePagination'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 interface TransferRow {
   id: string
@@ -34,7 +36,7 @@ const tabs = [
   { key: 'banks', label: 'البنوك', icon: Building2 },
   { key: 'shifts', label: 'الورديات', icon: Clock },
   { key: 'inventory', label: 'الجرد', icon: ClipboardList },
-  { key: 'reconciliations', label: 'التسويات', icon: Scale },
+  { key: 'expenses', label: 'المصاريف اليومية', icon: Receipt },
   { key: 'approvals', label: 'طلبات الموافقة', icon: ShieldCheck },
 ] as const
 type TabKey = typeof tabs[number]['key']
@@ -59,9 +61,13 @@ function emptyBankAccountForm() {
 function emptyInventoryForm() {
   return { vaultId: '', currency: 'LYD', actualBalance: '', reason: '', notes: '' }
 }
+function emptyExpenseForm() {
+  return { date: new Date().toISOString().slice(0, 10), category: 'rent' as string, amount: '', currency: 'LYD', description: '' }
+}
 
 export default function TreasuryPage() {
   const { user, hasPermission } = useAuth()
+  const confirmDialog = useConfirm()
   const canTransfer = hasPermission('تحويل بين الخزنات')
   const canOpenShift = hasPermission('فتح وردية')
   const canManageVaults = hasPermission('إدارة الخزنات')
@@ -81,7 +87,7 @@ export default function TreasuryPage() {
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
   const [approvals, setApprovals] = useState<ApprovalRequestDTO[]>([])
   const [inventoryCounts, setInventoryCounts] = useState<InventoryCountDTO[]>([])
-  const [reconciliations, setReconciliations] = useState<ReconciliationDTO[]>([])
+  const [expenses, setExpenses] = useState<DailyExpenseDTO[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -116,13 +122,25 @@ export default function TreasuryPage() {
   const [inventoryForm, setInventoryForm] = useState(emptyInventoryForm())
   const [inventoryFormError, setInventoryFormError] = useState('')
 
+  const [showExpenseModal, setShowExpenseModal] = useState(false)
+  const [expenseForm, setExpenseForm] = useState(emptyExpenseForm())
+  const [expenseFormError, setExpenseFormError] = useState('')
+
   const [saving, setSaving] = useState(false)
   const [actingApprovalId, setActingApprovalId] = useState<string | null>(null)
   const [actingInventoryId, setActingInventoryId] = useState<string | null>(null)
+  const [actingExpenseId, setActingExpenseId] = useState<string | null>(null)
+
+  const [transfersPage, setTransfersPage] = useState(1)
+  const [bankAccountsPage, setBankAccountsPage] = useState(1)
+  const [shiftsPage, setShiftsPage] = useState(1)
+  const [inventoryPage, setInventoryPage] = useState(1)
+  const [expensesPage, setExpensesPage] = useState(1)
+  const [approvalsPage, setApprovalsPage] = useState(1)
 
   const load = async () => {
     try {
-      const [v, c, t, br, b, bb, ba, s, ap, ic, rc, tx] = await Promise.all([
+      const [v, c, t, br, b, bb, ba, s, ap, ic, ex, tx] = await Promise.all([
         api.get<Vault[]>('/vaults'),
         api.get<Currency[]>('/currencies'),
         api.get<TransferRow[]>('/transfers'),
@@ -133,11 +151,11 @@ export default function TreasuryPage() {
         api.get<Shift[]>('/shifts'),
         api.get<ApprovalRequestDTO[]>('/approvals'),
         api.get<InventoryCountDTO[]>('/inventory_counts'),
-        api.get<ReconciliationDTO[]>('/reconciliations'),
+        api.get<DailyExpenseDTO[]>('/daily-expenses'),
         api.get<Transaction[]>('/transactions'),
       ])
       setVaults(v); setCurrencies(c); setTransfers(t); setBranches(br); setBanks(b); setBankBranches(bb); setBankAccounts(ba); setShifts(s); setApprovals(ap)
-      setInventoryCounts(ic); setReconciliations(rc); setTransactions(tx)
+      setInventoryCounts(ic); setExpenses(ex); setTransactions(tx)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل بيانات الخزينة')
     } finally {
@@ -153,6 +171,26 @@ export default function TreasuryPage() {
   ], [vaults, bankAccounts])
 
   const accountLabel = (type: 'vault' | 'bank_account', id: string) => accountOptions.find((a) => a.type === type && a.id === id)
+
+  // Newest-first, capped to a page of results — each list is already the full
+  // set fetched from the server, so pagination here is purely client-side.
+  const sortedTransfers = useMemo(() => [...transfers].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [transfers])
+  const pagedTransfers = paginate(sortedTransfers, transfersPage)
+
+  const sortedBankAccounts = useMemo(() => [...bankAccounts].reverse(), [bankAccounts])
+  const pagedBankAccounts = paginate(sortedBankAccounts, bankAccountsPage)
+
+  const sortedShifts = useMemo(() => [...shifts].sort((a, b) => ((a.requestedAt || a.startTime || '') < (b.requestedAt || b.startTime || '') ? 1 : -1)), [shifts])
+  const pagedShifts = paginate(sortedShifts, shiftsPage)
+
+  const sortedInventoryCounts = useMemo(() => [...inventoryCounts].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [inventoryCounts])
+  const pagedInventoryCounts = paginate(sortedInventoryCounts, inventoryPage)
+
+  // expenses already arrive newest-first from the server (ORDER BY timestamp DESC)
+  const pagedExpenses = paginate(expenses, expensesPage)
+
+  const sortedApprovals = useMemo(() => [...approvals].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [approvals])
+  const pagedApprovals = paginate(sortedApprovals, approvalsPage)
 
   // ---------------- Transfers ----------------
   const openTransfer = () => {
@@ -297,7 +335,7 @@ export default function TreasuryPage() {
   }
 
   const deleteBranch = async (b: Branch) => {
-    if (!confirm(`هل تريد حذف فرع "${b.name}"؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف فرع "${b.name}"؟`))) return
     try {
       await api.delete(`/branches/${b.id}`)
       await load()
@@ -352,7 +390,7 @@ export default function TreasuryPage() {
   }
 
   const deleteBank = async (b: Bank) => {
-    if (!confirm(`هل تريد حذف بنك "${b.name}"؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف بنك "${b.name}"؟`))) return
     try {
       await api.delete(`/banks/${b.id}`)
       await load()
@@ -362,7 +400,7 @@ export default function TreasuryPage() {
   }
 
   const deleteBankAccount = async (a: BankAccount) => {
-    if (!confirm(`هل تريد حذف الحساب "${a.accountName}"؟`)) return
+    if (!(await confirmDialog(`هل تريد حذف الحساب "${a.accountName}"؟`))) return
     try {
       await api.delete(`/bank_accounts/${a.id}`)
       await load()
@@ -555,6 +593,53 @@ export default function TreasuryPage() {
     }
   }
 
+  // ---------------- Daily Expenses ----------------
+  const openCreateExpense = () => {
+    setExpenseForm(emptyExpenseForm())
+    setExpenseFormError('')
+    setShowExpenseModal(true)
+  }
+
+  const submitExpense = async (e: FormEvent) => {
+    e.preventDefault()
+    setExpenseFormError('')
+    const amount = parseFloat(expenseForm.amount)
+    if (!expenseForm.date || !expenseForm.category || isNaN(amount) || amount <= 0) {
+      setExpenseFormError('التاريخ والفئة والمبلغ حقول مطلوبة')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.post('/daily-expenses', {
+        id: newId('exp'),
+        date: expenseForm.date,
+        category: expenseForm.category,
+        amount,
+        currency: expenseForm.currency,
+        description: expenseForm.description.trim() || null,
+      })
+      setShowExpenseModal(false)
+      await load()
+    } catch (err) {
+      setExpenseFormError(err instanceof ApiError ? err.message : 'تعذر تسجيل المصروف')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteExpense = async (exp: DailyExpenseDTO) => {
+    if (!(await confirmDialog('هل أنت متأكد من حذف هذا المصروف؟'))) return
+    setActingExpenseId(exp.id)
+    try {
+      await api.delete(`/daily-expenses/${exp.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف المصروف')
+    } finally {
+      setActingExpenseId(null)
+    }
+  }
+
   // ---------------- Approvals ----------------
   const actOnApproval = async (a: ApprovalRequestDTO, action: 'approve' | 'reject') => {
     setActingApprovalId(a.id)
@@ -614,6 +699,11 @@ export default function TreasuryPage() {
           {tab === 'inventory' && (
             <button onClick={openCreateInventory} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
               <Plus className="h-4 w-4" /> تسجيل جرد
+            </button>
+          )}
+          {tab === 'expenses' && canManageVaults && (
+            <button onClick={openCreateExpense} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+              <Plus className="h-4 w-4" /> تسجيل مصروف
             </button>
           )}
         </div>
@@ -704,7 +794,7 @@ export default function TreasuryPage() {
                 <tbody className="divide-y divide-border">
                   {transfers.length === 0 ? (
                     <tr><td colSpan={6} className="px-6 py-8 text-center text-muted-foreground">لا توجد طلبات تحويل</td></tr>
-                  ) : transfers.map((t) => {
+                  ) : pagedTransfers.map((t) => {
                     const st = statusLabels[t.status] || statusLabels.pending
                     return (
                       <tr key={t.id} className="hover:bg-muted/50 transition-colors">
@@ -722,6 +812,7 @@ export default function TreasuryPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination page={transfersPage} totalItems={sortedTransfers.length} onPageChange={setTransfersPage} />
           </div>
         </>
       )}
@@ -820,7 +911,7 @@ export default function TreasuryPage() {
                 <tbody className="divide-y divide-border">
                   {bankAccounts.length === 0 ? (
                     <tr><td colSpan={8} className="px-6 py-8 text-center text-muted-foreground">لا توجد حسابات بنكية</td></tr>
-                  ) : bankAccounts.map((ba) => (
+                  ) : pagedBankAccounts.map((ba) => (
                     <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-6 py-4 font-medium text-foreground">{ba.bankName}</td>
                       <td className="px-6 py-4 text-muted-foreground">{ba.branchName}</td>
@@ -846,6 +937,7 @@ export default function TreasuryPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination page={bankAccountsPage} totalItems={sortedBankAccounts.length} onPageChange={setBankAccountsPage} />
           </div>
         </div>
       )}
@@ -867,7 +959,7 @@ export default function TreasuryPage() {
               <tbody className="divide-y divide-border">
                 {shifts.length === 0 ? (
                   <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد ورديات مسجلة</td></tr>
-                ) : [...shifts].sort((a, b) => (a.requestedAt || a.startTime || '') < (b.requestedAt || b.startTime || '') ? 1 : -1).map((s) => {
+                ) : pagedShifts.map((s) => {
                   const st = statusLabels[s.status] || statusLabels.open
                   const pendingApproval = approvals.find((a) => a.type === 'shift_open' && a.referenceId === s.id && a.status === 'pending')
                   return (
@@ -922,6 +1014,7 @@ export default function TreasuryPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={shiftsPage} totalItems={sortedShifts.length} onPageChange={setShiftsPage} />
         </div>
       )}
 
@@ -944,7 +1037,7 @@ export default function TreasuryPage() {
               <tbody className="divide-y divide-border">
                 {inventoryCounts.length === 0 ? (
                   <tr><td colSpan={8} className="px-6 py-10 text-center text-muted-foreground">لا توجد سجلات جرد</td></tr>
-                ) : inventoryCounts.map((ic) => (
+                ) : pagedInventoryCounts.map((ic) => (
                   <tr key={ic.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{ic.vaultName}</td>
                     <td className="px-6 py-4">{ic.currency}</td>
@@ -972,39 +1065,47 @@ export default function TreasuryPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={inventoryPage} totalItems={sortedInventoryCounts.length} onPageChange={setInventoryPage} />
         </div>
       )}
 
-      {tab === 'reconciliations' && (
+      {tab === 'expenses' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
-                  <th className="px-6 py-4 font-medium">النوع</th>
-                  <th className="px-6 py-4 font-medium">الجهة</th>
+                  <th className="px-6 py-4 font-medium">التاريخ</th>
+                  <th className="px-6 py-4 font-medium">الفئة</th>
                   <th className="px-6 py-4 font-medium">المبلغ</th>
-                  <th className="px-6 py-4 font-medium">السبب</th>
-                  <th className="px-6 py-4 font-medium">الحالة</th>
+                  <th className="px-6 py-4 font-medium">الوصف</th>
+                  <th className="px-6 py-4 font-medium">سجّله</th>
+                  {canManageVaults && <th className="px-6 py-4 font-medium"></th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {reconciliations.length === 0 ? (
-                  <tr><td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">لا توجد تسويات مسجلة</td></tr>
-                ) : reconciliations.map((r) => (
-                  <tr key={r.id} className="hover:bg-muted/50 transition-colors">
-                    <td className="px-6 py-4 font-medium text-foreground">{r.type}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{r.targetId}</td>
-                    <td className="px-6 py-4 font-medium">{r.amount.toLocaleString()} {r.currency}</td>
-                    <td className="px-6 py-4">{r.reason}</td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-success/10 text-success">{r.status}</span>
-                    </td>
+                {expenses.length === 0 ? (
+                  <tr><td colSpan={canManageVaults ? 6 : 5} className="px-6 py-10 text-center text-muted-foreground">لا توجد مصاريف مسجلة</td></tr>
+                ) : pagedExpenses.map((exp) => (
+                  <tr key={exp.id} className="hover:bg-muted/50 transition-colors">
+                    <td className="px-6 py-4 text-muted-foreground">{exp.date}</td>
+                    <td className="px-6 py-4 font-medium text-foreground">{EXPENSE_CATEGORIES.find((c) => c.value === exp.category)?.label || exp.category}</td>
+                    <td className="px-6 py-4 font-medium">{exp.amount.toLocaleString()} {exp.currency}</td>
+                    <td className="px-6 py-4 text-muted-foreground">{exp.description || '—'}</td>
+                    <td className="px-6 py-4 text-muted-foreground">{exp.recordedBy}</td>
+                    {canManageVaults && (
+                      <td className="px-6 py-4">
+                        <button onClick={() => deleteExpense(exp)} disabled={actingExpenseId === exp.id} className="flex items-center gap-1 text-danger hover:text-danger/80 transition-colors text-xs font-medium disabled:opacity-50">
+                          <Trash2 className="h-3.5 w-3.5" /> حذف
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <TablePagination page={expensesPage} totalItems={expenses.length} onPageChange={setExpensesPage} />
         </div>
       )}
 
@@ -1026,7 +1127,7 @@ export default function TreasuryPage() {
               <tbody className="divide-y divide-border">
                 {approvals.length === 0 ? (
                   <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد طلبات موافقة</td></tr>
-                ) : approvals.map((a) => {
+                ) : pagedApprovals.map((a) => {
                   const st = statusLabels[a.status] || statusLabels.pending
                   return (
                     <tr key={a.id} className="hover:bg-muted/50 transition-colors">
@@ -1064,6 +1165,7 @@ export default function TreasuryPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={approvalsPage} totalItems={sortedApprovals.length} onPageChange={setApprovalsPage} />
         </div>
       )}
 
@@ -1441,6 +1543,57 @@ export default function TreasuryPage() {
 
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setShowInventoryModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {saving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Daily Expense Modal */}
+      {showExpenseModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تسجيل مصروف يومي</h3>
+              <button onClick={() => setShowExpenseModal(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitExpense} className="space-y-4 p-6 text-right">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">التاريخ *</label>
+                  <input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">الفئة *</label>
+                  <select value={expenseForm.category} onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                    {EXPENSE_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                  <select value={expenseForm.currency} onChange={(e) => setExpenseForm({ ...expenseForm, currency: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
+                  <input type="number" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">وصف (اختياري)</label>
+                <textarea value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} rows={2} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+
+              {expenseFormError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{expenseFormError}</p>}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setShowExpenseModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {saving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
                 </button>

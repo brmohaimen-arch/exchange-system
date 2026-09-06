@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { ArrowUpRight, DollarSign, Users, Activity, CreditCard, Clock, ShieldCheck, PlayCircle, Lock } from 'lucide-react'
-import { api, Transaction, Customer, Vault, Shift, ApprovalRequestDTO } from '@/lib/api-client'
+import { api, Transaction, Customer, Vault, Shift, ApprovalRequestDTO, ExchangeRate } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 
 const statusLabel: Record<string, { label: string; className: string }> = {
@@ -27,6 +27,7 @@ export default function DashboardPage() {
   const [vaults, setVaults] = useState<Vault[]>([])
   const [shifts, setShifts] = useState<Shift[]>([])
   const [approvals, setApprovals] = useState<ApprovalRequestDTO[]>([])
+  const [rates, setRates] = useState<ExchangeRate[]>([])
   const [profit, setProfit] = useState(0)
 
   const isCashier = hasPermission('تنفيذ بيع عملة') || hasPermission('تنفيذ شراء عملة')
@@ -38,22 +39,25 @@ export default function DashboardPage() {
     let cancelled = false
     async function load() {
       try {
+        const today = new Date().toISOString().slice(0, 10)
         const results = await Promise.allSettled([
           api.get<Transaction[]>('/transactions'),
           api.get<Customer[]>('/customers'),
           api.get<Vault[]>('/vaults'),
-          canSeeProfit ? api.get<{ summary: { totalProfit: number } }>('/reports/profit') : Promise.resolve(null),
+          canSeeProfit ? api.get<{ summary: { totalProfit: number } }>(`/reports/profit?date_from=${today}&date_to=${today}`) : Promise.resolve(null),
           api.get<Shift[]>('/shifts'),
           canApprove ? api.get<ApprovalRequestDTO[]>('/approvals') : Promise.resolve([]),
+          api.get<ExchangeRate[]>('/currencies/rates'),
         ])
         if (cancelled) return
-        const [txs, custs, vlts, profitData, sh, ap] = results
+        const [txs, custs, vlts, profitData, sh, ap, rt] = results
         if (txs.status === 'fulfilled') setTransactions(txs.value)
         if (custs.status === 'fulfilled') setCustomers(custs.value)
         if (vlts.status === 'fulfilled') setVaults(vlts.value)
         if (profitData.status === 'fulfilled' && profitData.value) setProfit(profitData.value.summary.totalProfit)
         if (sh.status === 'fulfilled') setShifts(sh.value)
         if (ap.status === 'fulfilled') setApprovals(ap.value as ApprovalRequestDTO[])
+        if (rt.status === 'fulfilled') setRates(rt.value)
       } catch (err) {
         if (!cancelled) setError(err instanceof ApiError ? err.message : 'تعذر تحميل بيانات لوحة التحكم')
       } finally {
@@ -73,7 +77,17 @@ export default function DashboardPage() {
   const todaysTxCount = transactions.filter((t) => t.timestamp?.startsWith(today)).length
   const myTodaysTx = transactions.filter((t) => t.timestamp?.startsWith(today) && t.vaultId === myVault?.id)
   const activeCustomers = customers.filter((c) => c.isActive).length
-  const mainVaultLYD = vaults.reduce((sum, v) => sum + (v.balances?.LYD || 0), 0)
+  // Vault balances are held in whatever currency was traded — converting each to its
+  // LYD-equivalent at the office's buy rate (what it actually paid to acquire it) before
+  // summing, otherwise a vault sitting on USD/EUR reads as if that cash doesn't exist.
+  const mainVaultLYD = vaults.reduce((sum, v) => {
+    const vaultTotal = Object.entries(v.balances || {}).reduce((vSum, [ccy, amt]) => {
+      if (ccy === 'LYD') return vSum + amt
+      const rate = rates.find((r) => r.fromCurrency === ccy && r.toCurrency === 'LYD')
+      return vSum + (rate ? amt * rate.buyRate : 0)
+    }, 0)
+    return sum + vaultTotal
+  }, 0)
 
   const recent = [...(isCashier && !canSeeReports ? transactions.filter((t) => t.vaultId === myVault?.id) : transactions)]
     .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))

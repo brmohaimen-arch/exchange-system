@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, FormEvent } from 'react'
 import { ArrowRightLeft, DollarSign, Repeat, Loader2, Lock, Clock, PlayCircle, X } from 'lucide-react'
 import { api, newId, Currency, Customer, ExchangeRate, Vault, Transaction, Shift } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { TablePagination, paginate } from '@/components/TablePagination'
 
 const paymentMethodLabels: Record<string, string> = {
   cash: 'نقداً', customer_account: 'حساب العميل', bank_account: 'حساب بنكي', debt: 'دين (آجل)',
@@ -72,6 +73,7 @@ export default function TransactionsPage() {
   const [sellError, setSellError] = useState('')
   const [exchangeError, setExchangeError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
+  const [historyPage, setHistoryPage] = useState(1)
 
   const load = async () => {
     try {
@@ -265,7 +267,8 @@ export default function TransactionsPage() {
     }
   }
 
-  const recent = [...transactions].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)).slice(0, 10)
+  const sortedTransactions = useMemo(() => [...transactions].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [transactions])
+  const pagedTransactions = paginate(sortedTransactions, historyPage)
 
   return (
     <div className="space-y-6">
@@ -630,9 +633,9 @@ export default function TransactionsPage() {
             <tbody className="divide-y divide-border">
               {loading ? (
                 <tr><td colSpan={11} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
-              ) : recent.length === 0 ? (
+              ) : pagedTransactions.length === 0 ? (
                 <tr><td colSpan={11} className="px-6 py-10 text-center text-muted-foreground">لا توجد عمليات بعد</td></tr>
-              ) : recent.map((tx) => {
+              ) : pagedTransactions.map((tx) => {
                 const st = statusLabel[tx.status] || statusLabel.approved
                 return (
                   <tr key={tx.id} className="hover:bg-muted/50 transition-colors">
@@ -655,6 +658,7 @@ export default function TransactionsPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination page={historyPage} totalItems={sortedTransactions.length} onPageChange={setHistoryPage} />
       </div>
 
       {/* Close Shift Modal */}

@@ -14,6 +14,7 @@ from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
 from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
 from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
+from ..telegram_gateway import send_manager_alert as send_telegram_alert
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -960,19 +961,24 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
         shift.expected_balances = expected
 
     # 6. Create Transaction
+    # Commission is real cash the office keeps on top of the rate spread (it directly
+    # reduces the LYD paid out on a buy, or adds to the LYD collected on a sell — see
+    # cashier_pay_amount / cashier_receive_amount above) — it must be added to the
+    # rate-spread component, not left out, or a commission-bearing operation quietly
+    # understates its own profit by exactly the commission charged.
     expected_profit = 0.0
     if is_buy:
         std_rate = db.scalar(
             select(ExchangeRate).where(ExchangeRate.from_currency == data.fromCurrency, ExchangeRate.to_currency == data.toCurrency)
         )
         if std_rate:
-            expected_profit = data.amount * (std_rate.sell_rate - data.rate)
+            expected_profit = data.amount * (std_rate.sell_rate - data.rate) + data.commission
     elif is_sell:
         std_rate = db.scalar(
             select(ExchangeRate).where(ExchangeRate.from_currency == data.toCurrency, ExchangeRate.to_currency == data.fromCurrency)
         )
         if std_rate:
-            expected_profit = data.amount * (data.rate - std_rate.buy_rate)
+            expected_profit = data.amount * (data.rate - std_rate.buy_rate) + data.commission
     elif is_exchange:
         expected_profit = data.commission
 
@@ -1121,12 +1127,13 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
             create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="ComplianceFlag", entity_id=flag.id, description=f"تم رصد عملية كبيرة تستدعي المراجعة: {tx_id} بقيمة {lyd_equivalent:.2f} د.ل")
 
             if get_whatsapp_setting(db, "whatsappAlertCompliance", True):
+                alert_msg = f"⚠️ عملية تستوجب المراجعة\nرقم العملية: {tx_id}\nالعميل: {customer.name}\nالقيمة: {lyd_equivalent:.2f} د.ل\nالسبب: تجاوزت حد الإبلاغ ({threshold} د.ل)"
                 send_manager_alert(
-                    db,
-                    f"⚠️ عملية تستوجب المراجعة\nرقم العملية: {tx_id}\nالعميل: {customer.name}\nالقيمة: {lyd_equivalent:.2f} د.ل\nالسبب: تجاوزت حد الإبلاغ ({threshold} د.ل)",
+                    db, alert_msg,
                     template_name=get_whatsapp_setting(db, "whatsappTemplateName", "") or None,
                     template_params=[tx_id, customer.name, f"{lyd_equivalent:.2f}"],
                 )
+                send_telegram_alert(db, alert_msg)
 
     db.commit()
     return success_response(data=transaction_to_dict(tx))

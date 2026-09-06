@@ -492,16 +492,24 @@ export interface InventoryCountDTO {
   approvedBy: string | null
 }
 
-export interface ReconciliationDTO {
+export interface DailyExpenseDTO {
   id: string
-  type: string
-  targetId: string
-  currency: string
+  date: string
+  category: string
   amount: number
-  reason: string
-  status: string
-  notes: string | null
+  currency: string
+  description: string | null
+  recordedBy: string
+  timestamp: string
 }
+
+export const EXPENSE_CATEGORIES = [
+  { value: 'rent', label: 'إيجار' },
+  { value: 'salaries', label: 'رواتب' },
+  { value: 'electricity', label: 'كهرباء' },
+  { value: 'maintenance', label: 'صيانة' },
+  { value: 'other', label: 'أخرى' },
+] as const
 
 export interface AssetDocument {
   id: string

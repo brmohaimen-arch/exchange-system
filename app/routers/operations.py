@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
 from ..models import (
-    Branch, Vault, BankAccount, Shift, Transfer, ApprovalRequest, InventoryCount, Reconciliation,
+    Branch, Vault, BankAccount, Shift, Transfer, ApprovalRequest, InventoryCount, DailyExpense,
     AuditAction, Notification, NotificationType, NotificationStatus, User, Role, JournalEntry, ExchangeRate,
     DailyClosing
 )
@@ -13,6 +13,7 @@ from ..core.responses import success_response, error_response
 from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission, check_branch_access
 from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
+from ..telegram_gateway import send_manager_alert as send_telegram_alert
 from .business import apply_transaction_reversal
 from pydantic import BaseModel
 from typing import Dict, Literal
@@ -84,6 +85,14 @@ class InventoryCountCreate(BaseModel):
     reason: str
     notes: str | None = None
     reported_by: str
+
+class DailyExpenseCreate(BaseModel):
+    id: str
+    date: str
+    category: Literal["rent", "salaries", "electricity", "maintenance", "other"]
+    amount: float
+    currency: str
+    description: str | None = None
     denomination_breakdown: Dict[str, int] = {}  # {"100": 12, "50": 4} for this currency
 
 # Helpers for serialization
@@ -179,16 +188,16 @@ def inventory_to_dict(ic: InventoryCount):
         "approvedBy": ic.approved_by
     }
 
-def reconciliation_to_dict(r: Reconciliation):
+def daily_expense_to_dict(e: DailyExpense):
     return {
-        "id": r.id,
-        "type": r.type,
-        "targetId": r.target_id,
-        "currency": r.currency,
-        "amount": r.amount,
-        "reason": r.reason,
-        "status": r.status,
-        "notes": r.notes
+        "id": e.id,
+        "date": e.date,
+        "category": e.category,
+        "amount": e.amount,
+        "currency": e.currency,
+        "description": e.description,
+        "recordedBy": e.recorded_by,
+        "timestamp": e.timestamp,
     }
 
 # ----------------- BRANCHES -----------------
@@ -405,12 +414,13 @@ def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_p
 
         if get_whatsapp_setting(db, "whatsappAlertShiftDiscrepancy", True):
             diffs_text = ", ".join(f"{ccy}: {val:+.2f}" for ccy, val in diffs.items() if val != 0.0)
+            alert_msg = f"⚠️ فروقات في إقفال وردية\nالصراف: {shift.cashier}\nالخزنة: {shift.vault_name}\nالفروقات: {diffs_text}"
             send_manager_alert(
-                db,
-                f"⚠️ فروقات في إقفال وردية\nالصراف: {shift.cashier}\nالخزنة: {shift.vault_name}\nالفروقات: {diffs_text}",
+                db, alert_msg,
                 template_name=get_whatsapp_setting(db, "whatsappTemplateName", "") or None,
                 template_params=[shift.cashier, shift.vault_name, diffs_text],
             )
+            send_telegram_alert(db, alert_msg)
     else:
         shift.status = "approved"
 
@@ -688,11 +698,38 @@ def approve_inventory_count(ic_id: str, db: Session = Depends(get_db)):
     db.commit()
     return success_response(data=inventory_to_dict(ic))
 
-# ----------------- RECONCILIATIONS -----------------
-@router.get("/reconciliations")
-def list_reconciliations(db: Session = Depends(get_db)):
-    res = db.scalars(select(Reconciliation)).all()
-    return success_response(data=[reconciliation_to_dict(r) for r in res])
+# ----------------- DAILY EXPENSES -----------------
+@router.get("/daily-expenses")
+def list_daily_expenses(db: Session = Depends(get_db)):
+    res = db.scalars(select(DailyExpense).order_by(DailyExpense.timestamp.desc())).all()
+    return success_response(data=[daily_expense_to_dict(e) for e in res])
+
+@router.post("/daily-expenses")
+def create_daily_expense(data: DailyExpenseCreate, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    expense = DailyExpense(
+        id=data.id,
+        date=data.date,
+        category=data.category,
+        amount=data.amount,
+        currency=data.currency,
+        description=data.description,
+        recorded_by=actor.name,
+        timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+    )
+    db.add(expense)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="DailyExpense", entity_id=expense.id, description=f"تسجيل مصروف يومي: {data.category} بقيمة {data.amount} {data.currency}")
+    db.commit()
+    return success_response(data=daily_expense_to_dict(expense))
+
+@router.delete("/daily-expenses/{expense_id}")
+def delete_daily_expense(expense_id: str, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    expense = db.get(DailyExpense, expense_id)
+    if not expense:
+        raise APIError(code="NOT_FOUND", message_ar="المصروف غير موجود", message_en="Expense not found", status_code=404)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="DailyExpense", entity_id=expense.id, description=f"حذف مصروف يومي: {expense.category} بقيمة {expense.amount} {expense.currency}")
+    db.delete(expense)
+    db.commit()
+    return success_response(message_ar="تم حذف المصروف بنجاح")
 
 # ----------------- DAILY CLOSINGS (branch-day / company-day) -----------------
 # Doc requirement: closing must exist at the branch and main-treasury level too,

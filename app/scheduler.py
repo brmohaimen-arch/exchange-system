@@ -83,13 +83,18 @@ def scheduled_backup_job():
 
 
 def scheduled_whatsapp_summary_job():
-    """Runs every 30 minutes and sends the manager an end-of-day WhatsApp
-    summary once the configured hour has passed and today's summary hasn't
-    gone out yet — same 'poll for due, self-heal' pattern as the backup job.
-    This is a business-initiated message (nobody messaged first), so it goes
-    out as a template if one is configured, matching what Meta requires."""
+    """Runs every 30 minutes and sends the manager an end-of-day summary once
+    the configured hour has passed and today's summary hasn't gone out yet —
+    same 'poll for due, self-heal' pattern as the backup job.
+    whatsappDailySummaryEnabled/Hour remain the single master toggle for the
+    digest event itself, regardless of channel; each gateway (WhatsApp,
+    Telegram) still checks its own `*Enabled` flag before actually sending.
+    The WhatsApp send is business-initiated (nobody messaged first), so it
+    goes out as a template if one is configured, matching what Meta requires
+    — Telegram has no such restriction, so it always sends free text."""
     from .models import Transaction, ApprovalRequest, ComplianceFlag, SystemSetting
     from .whatsapp_gateway import send_manager_alert
+    from .telegram_gateway import send_manager_alert as send_telegram_alert
     from sqlalchemy import select, func
 
     db = SessionLocal()
@@ -136,6 +141,7 @@ def scheduled_whatsapp_summary_job():
             template_name=template_name,
             template_params=[today, str(len(txs)), f"{profit:.2f}", str(pending_approvals), str(open_flags)],
         )
+        send_telegram_alert(db, message)
 
         if last_setting:
             last_setting.value = {"val": today}

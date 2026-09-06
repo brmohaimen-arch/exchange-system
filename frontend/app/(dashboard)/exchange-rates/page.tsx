@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState, FormEvent } from 'react'
+import { useEffect, useMemo, useState, FormEvent } from 'react'
 import { Plus, Edit, X, Loader2, History } from 'lucide-react'
 import { api, newId, Currency, ExchangeRate, RateHistory } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { TablePagination, paginate } from '@/components/TablePagination'
 
 function emptyForm() {
   return { fromCurrency: '', toCurrency: 'LYD', buyRate: '', sellRate: '', minRate: '', maxRate: '' }
@@ -28,6 +29,9 @@ export default function ExchangeRatesPage() {
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
 
+  const [ratesPage, setRatesPage] = useState(1)
+  const [historyPage, setHistoryPage] = useState(1)
+
   const load = async () => {
     try {
       const [r, c, h] = await Promise.all([
@@ -46,6 +50,10 @@ export default function ExchangeRatesPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  const pagedRates = paginate(rates, ratesPage)
+  const sortedHistory = useMemo(() => [...history].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [history])
+  const pagedHistory = paginate(sortedHistory, historyPage)
 
   const currencyName = (code: string) => {
     const c = currencies.find((x) => x.code === code)
@@ -145,7 +153,7 @@ export default function ExchangeRatesPage() {
                 <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
               ) : rates.length === 0 ? (
                 <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد أسعار صرف مسجلة</td></tr>
-              ) : rates.map((rate) => (
+              ) : pagedRates.map((rate) => (
                 <tr key={rate.id} className="hover:bg-muted/50 transition-colors">
                   <td className="px-6 py-4 font-medium text-foreground">
                     {currencyName(rate.fromCurrency)} / {rate.toCurrency}
@@ -172,6 +180,7 @@ export default function ExchangeRatesPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination page={ratesPage} totalItems={rates.length} onPageChange={setRatesPage} />
       </div>
 
       {/* Rate change history */}
@@ -194,7 +203,7 @@ export default function ExchangeRatesPage() {
             <tbody className="divide-y divide-border">
               {history.length === 0 ? (
                 <tr><td colSpan={5} className="px-6 py-8 text-center text-muted-foreground">لا توجد تغييرات مسجلة بعد</td></tr>
-              ) : history.slice(0, 100).map((h) => (
+              ) : pagedHistory.map((h) => (
                 <tr key={h.id} className="hover:bg-muted/50 transition-colors">
                   <td className="px-6 py-4 font-medium text-foreground" dir="ltr">{h.pair}</td>
                   <td className="px-6 py-4">
@@ -214,6 +223,7 @@ export default function ExchangeRatesPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination page={historyPage} totalItems={sortedHistory.length} onPageChange={setHistoryPage} />
       </div>
 
       {showModal && (

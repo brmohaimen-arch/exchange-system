@@ -46,6 +46,18 @@ def unread_notifications(db: Session = Depends(get_db)):
     ).all()
     return success_response(data=[notification_to_dict(n) for n in notifications])
 
+@router.patch("/read-all")
+def mark_all_notifications_read(db: Session = Depends(get_db)):
+    notifications = db.scalars(
+        select(Notification).where(Notification.status == NotificationStatus.UNREAD)
+    ).all()
+    now = datetime.utcnow()
+    for n in notifications:
+        n.status = NotificationStatus.READ
+        n.read_at = now
+    db.commit()
+    return success_response(message_ar=f"تم تحديد {len(notifications)} تنبيه كمقروء")
+
 @router.patch("/{notification_id}/read")
 def mark_notification_read(notification_id: int, db: Session = Depends(get_db)):
     notification = db.get(Notification, notification_id)

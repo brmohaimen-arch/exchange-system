@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState, FormEvent } from 'react'
+import { useEffect, useMemo, useState, FormEvent } from 'react'
 import { Plus, Pencil, Wrench, Car, Building2, Package, X, Loader2, CheckCircle2, DollarSign, ArrowRightLeft, FileText, TrendingDown } from 'lucide-react'
 import { api, newId, FixedAsset, Vehicle, RealEstate, MaintenanceRecord, Currency, AssetDocument, DepreciationRecord } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { TablePagination, paginate } from '@/components/TablePagination'
 
 interface BranchLite { id: string; name: string }
 
@@ -95,6 +96,32 @@ export default function AssetsPage() {
 
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+
+  const [completingMaint, setCompletingMaint] = useState<MaintenanceRecord | null>(null)
+  const [finalCostInput, setFinalCostInput] = useState('')
+  const [completeError, setCompleteError] = useState('')
+  const [completingSaving, setCompletingSaving] = useState(false)
+
+  const sortedAssets = useMemo(() => [...assets].sort((a, b) => (a.purchaseDate < b.purchaseDate ? 1 : -1)), [assets])
+  const sortedVehicles = useMemo(() => [...vehicles].reverse(), [vehicles])
+  const sortedEstates = useMemo(() => [...estates].sort((a, b) => (a.acquisitionDate < b.acquisitionDate ? 1 : -1)), [estates])
+  const sortedMaintenance = useMemo(() => [...maintenance].sort((a, b) => (a.date < b.date ? 1 : -1)), [maintenance])
+  const sortedAssetDocs = useMemo(() => [...documents].reverse(), [documents])
+  const sortedDepreciation = useMemo(() => [...depreciation].sort((a, b) => (a.lastCalculatedDate < b.lastCalculatedDate ? 1 : -1)), [depreciation])
+
+  const [assetsPage, setAssetsPage] = useState(1)
+  const [vehiclesPage, setVehiclesPage] = useState(1)
+  const [estatesPage, setEstatesPage] = useState(1)
+  const [maintenancePage, setMaintenancePage] = useState(1)
+  const [assetDocsPage, setAssetDocsPage] = useState(1)
+  const [depreciationPage, setDepreciationPage] = useState(1)
+
+  const pagedAssets = paginate(sortedAssets, assetsPage)
+  const pagedVehicles = paginate(sortedVehicles, vehiclesPage)
+  const pagedEstates = paginate(sortedEstates, estatesPage)
+  const pagedMaintenance = paginate(sortedMaintenance, maintenancePage)
+  const pagedAssetDocs = paginate(sortedAssetDocs, assetDocsPage)
+  const pagedDepreciation = paginate(sortedDepreciation, depreciationPage)
 
   const load = async () => {
     try {
@@ -309,14 +336,25 @@ export default function AssetsPage() {
     }
   }
 
-  const completeMaintenance = async (m: MaintenanceRecord) => {
-    const finalCost = prompt(`التكلفة النهائية لصيانة "${m.assetName}"`, String(m.cost))
-    if (finalCost === null) return
+  const openCompleteMaintenance = (m: MaintenanceRecord) => {
+    setCompletingMaint(m)
+    setFinalCostInput(String(m.cost))
+    setCompleteError('')
+  }
+
+  const submitCompleteMaintenance = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!completingMaint) return
+    setCompleteError('')
+    setCompletingSaving(true)
     try {
-      await api.post(`/maintenance_records/${m.id}/complete`, { final_cost: parseFloat(finalCost) || m.cost, notes: null })
+      await api.post(`/maintenance_records/${completingMaint.id}/complete`, { final_cost: parseFloat(finalCostInput) || completingMaint.cost, notes: null })
+      setCompletingMaint(null)
       await load()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'تعذر إكمال سجل الصيانة')
+      setCompleteError(err instanceof ApiError ? err.message : 'تعذر إكمال سجل الصيانة')
+    } finally {
+      setCompletingSaving(false)
     }
   }
 
@@ -475,7 +513,7 @@ export default function AssetsPage() {
                     <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
                   ) : assets.length === 0 ? (
                     <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">لا توجد أصول مسجلة</td></tr>
-                  ) : assets.map((a) => (
+                  ) : pagedAssets.map((a) => (
                     <tr key={a.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-6 py-4 font-medium text-foreground">{a.name}</td>
                       <td className="px-6 py-4 text-muted-foreground">{a.type}</td>
@@ -511,6 +549,7 @@ export default function AssetsPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination page={assetsPage} totalItems={sortedAssets.length} onPageChange={setAssetsPage} />
           </div>
         </div>
       )}
@@ -543,7 +582,7 @@ export default function AssetsPage() {
                 <tbody className="divide-y divide-border">
                   {vehicles.length === 0 ? (
                     <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">لا توجد مركبات مسجلة</td></tr>
-                  ) : vehicles.map((v) => (
+                  ) : pagedVehicles.map((v) => (
                     <tr key={v.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-6 py-4 font-medium text-foreground">{v.carName} ({v.color})</td>
                       <td className="px-6 py-4" dir="ltr">{v.plateNumber}</td>
@@ -567,6 +606,7 @@ export default function AssetsPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination page={vehiclesPage} totalItems={sortedVehicles.length} onPageChange={setVehiclesPage} />
           </div>
         </div>
       )}
@@ -583,7 +623,7 @@ export default function AssetsPage() {
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {estates.length === 0 ? (
               <p className="text-muted-foreground text-sm">لا توجد عقارات مسجلة</p>
-            ) : estates.map((r) => (
+            ) : pagedEstates.map((r) => (
               <div key={r.id} className="rounded-xl border border-border bg-card p-6 shadow-sm">
                 <div className="flex items-center justify-between border-b border-border pb-4">
                   <div>
@@ -608,6 +648,7 @@ export default function AssetsPage() {
               </div>
             ))}
           </div>
+          <TablePagination page={estatesPage} totalItems={sortedEstates.length} onPageChange={setEstatesPage} />
         </div>
       )}
 
@@ -637,7 +678,7 @@ export default function AssetsPage() {
                 <tbody className="divide-y divide-border">
                   {maintenance.length === 0 ? (
                     <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد سجلات صيانة</td></tr>
-                  ) : maintenance.map((m) => (
+                  ) : pagedMaintenance.map((m) => (
                     <tr key={m.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-6 py-4 font-medium text-foreground">{m.assetName}</td>
                       <td className="px-6 py-4">{m.maintenanceType}</td>
@@ -651,7 +692,7 @@ export default function AssetsPage() {
                       {canManage && (
                         <td className="px-6 py-4">
                           {m.status !== 'مكتملة' && (
-                            <button onClick={() => completeMaintenance(m)} className="flex items-center gap-1 text-success hover:text-success/80 transition-colors text-xs font-medium">
+                            <button onClick={() => openCompleteMaintenance(m)} className="flex items-center gap-1 text-success hover:text-success/80 transition-colors text-xs font-medium">
                               <CheckCircle2 className="h-3.5 w-3.5" /> إكمال
                             </button>
                           )}
@@ -662,6 +703,7 @@ export default function AssetsPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination page={maintenancePage} totalItems={sortedMaintenance.length} onPageChange={setMaintenancePage} />
           </div>
         </div>
       )}
@@ -690,7 +732,7 @@ export default function AssetsPage() {
                 <tbody className="divide-y divide-border">
                   {documents.length === 0 ? (
                     <tr><td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
-                  ) : documents.map((d) => (
+                  ) : pagedAssetDocs.map((d) => (
                     <tr key={d.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-6 py-4 font-medium text-foreground">{d.assetName}</td>
                       <td className="px-6 py-4">{d.documentType}</td>
@@ -704,6 +746,7 @@ export default function AssetsPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination page={assetDocsPage} totalItems={sortedAssetDocs.length} onPageChange={setAssetDocsPage} />
           </div>
         </div>
       )}
@@ -726,7 +769,7 @@ export default function AssetsPage() {
               <tbody className="divide-y divide-border">
                 {depreciation.length === 0 ? (
                   <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد سجلات إهلاك</td></tr>
-                ) : depreciation.map((d) => (
+                ) : pagedDepreciation.map((d) => (
                   <tr key={d.assetId} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{d.assetName}</td>
                     <td className="px-6 py-4 text-muted-foreground">{d.depreciationMethod}</td>
@@ -740,6 +783,7 @@ export default function AssetsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={depreciationPage} totalItems={sortedDepreciation.length} onPageChange={setDepreciationPage} />
         </div>
       )}
 
@@ -1163,6 +1207,37 @@ export default function AssetsPage() {
                 <button type="button" onClick={() => setShowDocModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {saving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Complete Maintenance Modal */}
+      {completingMaint && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">التكلفة النهائية لصيانة "{completingMaint.assetName}"</h3>
+              <button onClick={() => setCompletingMaint(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitCompleteMaintenance} className="space-y-4 p-6 text-right">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">التكلفة النهائية</label>
+                <input
+                  type="number"
+                  value={finalCostInput}
+                  onChange={(e) => setFinalCostInput(e.target.value)}
+                  autoFocus
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {completeError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{completeError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setCompletingMaint(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={completingSaving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {completingSaving && <Loader2 className="h-4 w-4 animate-spin" />} تأكيد
                 </button>
               </div>
             </form>

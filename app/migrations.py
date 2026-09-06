@@ -57,6 +57,10 @@ DEFAULT_SETTINGS = {
     "whatsappDailySummaryEnabled": False,
     "whatsappDailySummaryHour": 20,
     "lastWhatsappDailySummaryAt": "",
+    "telegramEnabled": False,
+    "telegramBotToken": "",
+    "telegramManagerChatId": "",
+    "telegramWebhookSecret": "",
     "trialDurationDays": 20,
 }
 

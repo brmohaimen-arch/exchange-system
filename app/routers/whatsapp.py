@@ -21,19 +21,16 @@ is configured yet, so nobody is authorized — safe by default.
 import hashlib
 import hmac
 import json
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request, Response
-from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import (
-    Transaction, ApprovalRequest, ComplianceFlag, Notification, NotificationStatus, Vault, User
-)
+from ..models import User
 from ..auth_deps import require_permission
 from ..core.responses import success_response
 from ..core.errors import APIError
+from ..assistant_replies import build_reply
 from ..whatsapp_gateway import send_whatsapp, send_manager_alert, get_setting
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp Assistant"])
@@ -75,60 +72,6 @@ def _authorized_numbers(db: Session) -> set[str]:
     return {n.strip().lstrip("+") for n in raw.split(",") if n.strip()}
 
 
-def _build_reply(db: Session, text: str) -> str:
-    t = text.strip().lower()
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-
-    if any(k in t for k in ["ملخص", "اليوم", "today", "summary"]):
-        txs = db.scalars(select(Transaction).where(Transaction.timestamp.like(f"{today}%"))).all()
-        profit = sum(tx.expected_profit or 0.0 for tx in txs)
-        pending_approvals = db.scalar(select(func.count()).select_from(ApprovalRequest).where(ApprovalRequest.status == "pending")) or 0
-        open_flags = db.scalar(select(func.count()).select_from(ComplianceFlag).where(ComplianceFlag.status == "pending")) or 0
-        return (
-            f"📊 ملخص اليوم ({today})\n"
-            f"عدد العمليات: {len(txs)}\n"
-            f"الأرباح المتوقعة: {profit:.2f} د.ل\n"
-            f"موافقات معلقة: {pending_approvals}\n"
-            f"عمليات تستوجب المراجعة: {open_flags}"
-        )
-
-    if any(k in t for k in ["تنبيه", "alert"]):
-        unread = db.scalars(
-            select(Notification).where(Notification.status == NotificationStatus.UNREAD).order_by(Notification.created_at.desc()).limit(5)
-        ).all()
-        if not unread:
-            return "لا توجد تنبيهات غير مقروءة حالياً ✅"
-        lines = [f"🔔 آخر {len(unread)} تنبيهات:"]
-        lines += [f"- {n.title}: {n.message}" for n in unread]
-        return "\n".join(lines)
-
-    if any(k in t for k in ["موافق", "approval"]):
-        pending = db.scalars(
-            select(ApprovalRequest).where(ApprovalRequest.status == "pending").order_by(ApprovalRequest.timestamp.desc()).limit(5)
-        ).all()
-        if not pending:
-            return "لا توجد طلبات موافقة معلقة حالياً ✅"
-        lines = [f"📝 طلبات الموافقة المعلقة ({len(pending)}):"]
-        lines += [f"- {a.title} ({a.amount} {a.currency or ''})" for a in pending]
-        return "\n".join(lines)
-
-    if any(k in t for k in ["رصيد", "خزن", "balance", "vault"]):
-        vaults = db.scalars(select(Vault).where(Vault.is_active == True)).all()
-        lines = ["💰 أرصدة الخزنات:"]
-        for v in vaults:
-            bal_str = " / ".join(f"{amt:,.0f} {ccy}" for ccy, amt in v.balances.items()) or "—"
-            lines.append(f"- {v.name}: {bal_str}")
-        return "\n".join(lines)
-
-    return (
-        "مرحباً 👋 يمكنك سؤالي عن:\n"
-        "- \"ملخص اليوم\"\n"
-        "- \"التنبيهات\"\n"
-        "- \"الموافقات\"\n"
-        "- \"الأرصدة\""
-    )
-
-
 @router.post("/webhook")
 async def receive_webhook(request: Request, db: Session = Depends(get_db)):
     body = await request.body()
@@ -149,7 +92,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
         text_body = (msg.get("text") or {}).get("body", "")
         if not text_body or not authorized or sender not in authorized:
             continue  # unrecognized sender or non-text message — ignored, not answered
-        send_whatsapp(db, sender, _build_reply(db, text_body))
+        send_whatsapp(db, sender, build_reply(db, text_body))
 
     # Meta requires a 200 response regardless of what we did with the payload,
     # or it will retry delivery and eventually disable the webhook.

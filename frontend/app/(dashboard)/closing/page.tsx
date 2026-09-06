@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState, FormEvent } from 'react'
+import { useEffect, useMemo, useState, FormEvent } from 'react'
 import { Building2, Landmark, Lock, X, Loader2, ChevronDown, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { api, Branch, DailyClosingDTO } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { TablePagination, paginate } from '@/components/TablePagination'
 
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -22,6 +23,7 @@ export default function DailyClosingPage() {
   const [closeError, setCloseError] = useState('')
   const [saving, setSaving] = useState(false)
   const [expandedClosing, setExpandedClosing] = useState<string | null>(null)
+  const [closingsPage, setClosingsPage] = useState(1)
 
   const load = async () => {
     try {
@@ -44,6 +46,9 @@ export default function DailyClosingPage() {
   const closedBranchIds = new Set(todaysClosings.filter((c) => c.level === 'branch').map((c) => c.targetId))
   const companyClosedToday = todaysClosings.some((c) => c.level === 'company')
   const allBranchesClosed = branches.length > 0 && branches.every((b) => closedBranchIds.has(b.id))
+
+  const sortedClosings = useMemo(() => [...closings].sort((a, b) => (a.closedAt < b.closedAt ? 1 : -1)), [closings])
+  const pagedClosings = paginate(sortedClosings, closingsPage)
 
   const openClose = (level: 'branch' | 'company', id: string, name: string) => {
     setClosingTarget({ level, id, name })
@@ -163,7 +168,7 @@ export default function DailyClosingPage() {
         <div className="divide-y divide-border">
           {closings.length === 0 ? (
             <p className="px-6 py-8 text-center text-muted-foreground text-sm">لا توجد إقفالات مسجلة</p>
-          ) : closings.map((c) => (
+          ) : pagedClosings.map((c) => (
             <div key={c.id}>
               <button
                 onClick={() => setExpandedClosing(expandedClosing === c.id ? null : c.id)}
@@ -219,6 +224,7 @@ export default function DailyClosingPage() {
             </div>
           ))}
         </div>
+        <TablePagination page={closingsPage} totalItems={sortedClosings.length} onPageChange={setClosingsPage} />
       </div>
 
       {closingTarget && (

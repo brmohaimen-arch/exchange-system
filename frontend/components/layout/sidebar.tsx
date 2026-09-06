@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { LayoutDashboard, Users, Settings, ArrowRightLeft, TrendingUp, Landmark, FileText, Coins, Package, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -25,8 +26,12 @@ export function Sidebar() {
 
   return (
     <div className="flex h-full w-64 flex-col border-l border-border bg-card shadow-sm">
-      <div className="flex h-16 items-center px-6 border-b border-border">
-        <h1 className="text-xl font-bold text-primary">لوحة التحكم</h1>
+      <div className="flex h-16 items-center gap-2 px-6 border-b border-border">
+        <Image src="/icon.png" alt="شركة واكب" width={32} height={32} className="rounded-lg shrink-0" />
+        <div className="leading-tight">
+          <h1 className="text-base font-bold text-foreground">شركة واكب</h1>
+          <p className="text-[11px] text-muted-foreground">لوحة التحكم</p>
+        </div>
       </div>
       <nav className="flex-1 space-y-1 px-3 py-4">
         {navigation.map((item) => {
