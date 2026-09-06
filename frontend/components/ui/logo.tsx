@@ -15,11 +15,11 @@ export function Logo({ className, width = 120, height = 40, link = true }: LogoP
   const logoContent = (
     <div className={cn("relative flex items-center", className)}>
       <Image
-        src="/CareSys.png"
-        alt="CareSys Logo"
+        src="/logo.png"
+        alt="شعار النظام"
         width={width}
         height={height}
-        className="dark:invert-0 invert transition-all duration-300 object-contain"
+        className="object-contain"
         priority
       />
     </div>
