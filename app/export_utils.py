@@ -40,6 +40,7 @@ _ARABIC_FONT_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoNaskhArabic-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
     "/usr/share/fonts/truetype/kacst/KacstOne.ttf",
+    "/usr/share/fonts/google-droid/DroidSansArabic.ttf",
 ]
 
 _FONT_NAME = "ArabicReportFont"
