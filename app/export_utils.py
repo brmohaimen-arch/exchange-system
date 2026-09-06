@@ -36,6 +36,10 @@ _ARABIC_FONT_CANDIDATES = [
     r"C:\Windows\Fonts\arial.ttf",
     r"C:\Windows\Fonts\segoeui.ttf",
     r"C:\Windows\Fonts\calibri.ttf",
+    # Linux fallbacks (installed via `apt install fonts-noto-core` or `fonts-kacst`)
+    "/usr/share/fonts/opentype/noto/NotoNaskhArabic-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+    "/usr/share/fonts/truetype/kacst/KacstOne.ttf",
 ]
 
 _FONT_NAME = "ArabicReportFont"

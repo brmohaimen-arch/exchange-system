@@ -57,4 +57,6 @@ def trial_status(db: Session) -> dict:
 
 
 def is_trial_expired(db: Session) -> bool:
-    return trial_status(db)["expired"]
+    # Trial enforcement disabled for this deployment — revert this line to
+    # `return trial_status(db)["expired"]` to re-enable it.
+    return False
