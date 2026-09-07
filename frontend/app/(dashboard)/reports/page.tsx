@@ -287,7 +287,7 @@ export default function ReportsPage() {
                 </div>
               </button>
               {expandedEntry === jv.id && (
-                <div className="bg-secondary/20 px-6 py-3">
+                <div className="bg-secondary/20 px-6 py-3 overflow-x-auto">
                   <table className="w-full text-xs text-right">
                     <thead className="text-muted-foreground">
                       <tr>

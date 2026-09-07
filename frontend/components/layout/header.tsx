@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
-import { Bell, LogOut, User, Info, AlertTriangle, AlertCircle, CheckCircle2, CheckCheck, HelpCircle } from 'lucide-react'
+import { Bell, LogOut, User, Info, AlertTriangle, AlertCircle, CheckCircle2, CheckCheck, HelpCircle, Menu } from 'lucide-react'
 import { useAuth } from '@/lib/auth-provider'
 import { api, NotificationItem } from '@/lib/api-client'
 import { GlobalSearch } from '@/components/layout/global-search'
+import { useSidebarState } from '@/lib/sidebar-context'
 
 const pageTitles: Record<string, string> = {
-  '/': 'نظرة عامة',
+  '/dashboard': 'نظرة عامة',
   '/transactions': 'العمليات (بيع وشراء)',
   '/exchange-rates': 'أسعار الصرف',
   '/currencies': 'العملات',
@@ -21,7 +22,7 @@ const pageTitles: Record<string, string> = {
 }
 
 const pageHelp: Record<string, string> = {
-  '/': 'الشاشة الرئيسية: تعرض ملخصاً سريعاً — أرباح اليوم، عدد العملاء، عدد المعاملات، ورصيد الخزنة الرئيسية بالدينار. من هنا يمكن للصراف طلب فتح وردية، وللمدير رؤية طلبات الموافقة المعلقة والذهاب مباشرة لأحدث المعاملات.',
+  '/dashboard': 'الشاشة الرئيسية: تعرض ملخصاً سريعاً — أرباح اليوم، عدد العملاء، عدد المعاملات، ورصيد الخزنة الرئيسية بالدينار. من هنا يمكن للصراف طلب فتح وردية، وللمدير رؤية طلبات الموافقة المعلقة والذهاب مباشرة لأحدث المعاملات.',
   '/transactions': 'تنفيذ عمليات الصرافة: شراء عملة من عميل، بيعها له، أو تبديل عملة بأخرى. يجب فتح وردية أولاً قبل تنفيذ أي عملية. أسفل الصفحة سجل كامل بجميع العمليات المنفذة مع إمكانية التصفح بين الصفحات.',
   '/exchange-rates': 'إدارة أسعار الشراء والبيع لكل عملة أمام الدينار الليبي، وتحديد الحد الأدنى والأقصى المسموح به عند تنفيذ عملية. أسفل الصفحة سجل بكل تعديل سابق على الأسعار ومن قام به.',
   '/currencies': 'إضافة وتعديل العملات المتاحة للتعامل في النظام (الاسم، الرمز، عدد الخانات العشرية) وتفعيلها أو إيقافها.',
@@ -43,6 +44,7 @@ const typeIcon: Record<NotificationItem['type'], { Icon: typeof Info; className:
 export function Header() {
   const pathname = usePathname()
   const { user, logout } = useAuth()
+  const { setMobileOpen } = useSidebarState()
   const title = pageTitles[pathname] || 'نظرة عامة'
   const help = pageHelp[pathname]
 
@@ -98,11 +100,18 @@ export function Header() {
   }
 
   return (
-    <header className="flex h-16 items-center justify-between border-b border-border bg-card px-6 shadow-sm">
-      <div className="flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+    <header className="flex h-16 items-center justify-between border-b border-border bg-card px-3 shadow-sm sm:px-6">
+      <div className="flex min-w-0 items-center gap-1 sm:gap-2">
+        <button
+          onClick={() => setMobileOpen(true)}
+          className="ml-1 shrink-0 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-primary transition-colors lg:hidden"
+          aria-label="فتح القائمة"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+        <h2 className="truncate text-base font-semibold text-foreground sm:text-lg">{title}</h2>
         {help && (
-          <div className="relative" ref={helpRef}>
+          <div className="relative shrink-0" ref={helpRef}>
             <button
               onClick={() => setHelpOpen((v) => !v)}
               title="عن هذه الصفحة"
@@ -111,7 +120,7 @@ export function Header() {
               <HelpCircle className="h-4 w-4" />
             </button>
             {helpOpen && (
-              <div className="absolute right-0 top-8 z-50 w-80 rounded-xl border border-border bg-card shadow-xl p-4 text-right">
+              <div className="absolute right-0 top-8 z-50 w-80 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-card shadow-xl p-4 text-right">
                 <p className="text-sm font-semibold text-foreground mb-1">{title}</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">{help}</p>
               </div>
@@ -119,7 +128,7 @@ export function Header() {
           </div>
         )}
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 sm:gap-4">
         <GlobalSearch />
         <div className="relative" ref={ref}>
           <button
@@ -132,7 +141,7 @@ export function Header() {
             <Bell className="h-5 w-5" />
           </button>
           {open && (
-            <div className="absolute left-0 top-12 z-50 w-80 rounded-xl border border-border bg-card shadow-xl overflow-hidden">
+            <div className="absolute left-0 top-12 z-50 w-80 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-card shadow-xl overflow-hidden">
               <div className="flex items-center justify-between border-b border-border px-4 py-3">
                 <h3 className="text-sm font-semibold text-foreground">التنبيهات</h3>
                 {notifications.length > 0 && (
@@ -169,8 +178,8 @@ export function Header() {
           )}
         </div>
 
-        <div className="flex items-center gap-3 border-r border-border pr-4">
-          <div className="text-left">
+        <div className="flex items-center gap-3 border-r border-border pr-2 sm:pr-4">
+          <div className="hidden text-left sm:block">
             <p className="text-sm font-medium text-foreground leading-tight">{user?.name}</p>
             <p className="text-xs text-muted-foreground leading-tight">{user?.role}</p>
           </div>

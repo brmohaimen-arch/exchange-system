@@ -19,7 +19,7 @@ interface PageEntry {
 }
 
 const PAGES: PageEntry[] = [
-  { label: 'نظرة عامة', href: '/', icon: LayoutDashboard, keywords: 'الرئيسية لوحة التحكم dashboard home' },
+  { label: 'نظرة عامة', href: '/dashboard', icon: LayoutDashboard, keywords: 'الرئيسية لوحة التحكم dashboard home' },
   { label: 'العمليات (بيع وشراء وتبديل)', href: '/transactions', icon: ArrowRightLeft, keywords: 'عملية شراء بيع تبديل transactions buy sell exchange' },
   { label: 'أسعار الصرف', href: '/exchange-rates', icon: TrendingUp, keywords: 'سعر صرف rates' },
   { label: 'العملات', href: '/currencies', icon: Coins, keywords: 'عملة currency currencies' },
@@ -86,11 +86,12 @@ export function GlobalSearch() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-muted-foreground hover:border-primary/50 transition-colors w-56"
+        className="flex items-center justify-center gap-2 rounded-md border border-border bg-background p-2 text-sm text-muted-foreground hover:border-primary/50 transition-colors sm:w-56 sm:justify-start sm:px-3 sm:py-1.5"
+        aria-label="بحث سريع"
       >
         <Search className="h-4 w-4 shrink-0" />
-        <span className="flex-1 text-right">بحث سريع...</span>
-        <CommandShortcut className="ml-0">Ctrl K</CommandShortcut>
+        <span className="hidden flex-1 text-right sm:inline">بحث سريع...</span>
+        <CommandShortcut className="ml-0 hidden sm:inline-flex">Ctrl K</CommandShortcut>
       </button>
 
       <CommandDialog open={open} onOpenChange={setOpen} title="بحث سريع" description="ابحث في صفحات النظام أو العملاء أو المعاملات">

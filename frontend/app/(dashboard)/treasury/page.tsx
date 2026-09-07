@@ -1625,7 +1625,7 @@ export default function TreasuryPage() {
 
               <div>
                 <h4 className="text-sm font-semibold text-foreground mb-2">الأرصدة</h4>
-                <div className="rounded-md border border-border overflow-hidden">
+                <div className="rounded-md border border-border overflow-x-auto">
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>
@@ -1660,7 +1660,7 @@ export default function TreasuryPage() {
                 <h4 className="text-sm font-semibold text-foreground mb-2">
                   عمليات هذه الجلسة ({transactions.filter((t) => t.shiftId === selectedShift.id).length})
                 </h4>
-                <div className="rounded-md border border-border overflow-hidden">
+                <div className="rounded-md border border-border overflow-x-auto">
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>

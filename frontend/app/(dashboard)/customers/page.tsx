@@ -1178,7 +1178,7 @@ export default function CustomersPage() {
               </div>
               <div className="mb-4">
                 <p className="text-sm font-medium text-foreground mb-2">معاملات الصرافة (شراء / بيع / تبديل)</p>
-                <div className="rounded-md border border-border overflow-hidden">
+                <div className="rounded-md border border-border overflow-x-auto">
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>
@@ -1219,7 +1219,7 @@ export default function CustomersPage() {
 
               <div>
                 <p className="text-sm font-medium text-foreground mb-2">حركات الإيداع والسحب على الحساب</p>
-                <div className="rounded-md border border-border overflow-hidden">
+                <div className="rounded-md border border-border overflow-x-auto">
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>

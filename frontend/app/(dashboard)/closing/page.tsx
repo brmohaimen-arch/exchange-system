@@ -199,7 +199,7 @@ export default function DailyClosingPage() {
                   </div>
                   <div>
                     <p className="text-xs font-semibold text-foreground mb-1">تفاصيل الخزنات</p>
-                    <div className="rounded-md border border-border overflow-hidden">
+                    <div className="rounded-md border border-border overflow-x-auto">
                       <table className="w-full text-xs text-right">
                         <thead className="bg-secondary/50 text-muted-foreground">
                           <tr>

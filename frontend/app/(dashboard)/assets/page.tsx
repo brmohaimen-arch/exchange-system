@@ -468,12 +468,12 @@ export default function AssetsPage() {
 
       {error && <p className="rounded-md bg-danger/10 px-4 py-2 text-sm text-danger">{error}</p>}
 
-      <div className="flex items-center gap-1 border-b border-border">
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-border">
         {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            className={`flex shrink-0 items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               tab === t.key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
@@ -497,15 +497,15 @@ export default function AssetsPage() {
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
-                    <th className="px-6 py-4 font-medium">الاسم</th>
-                    <th className="px-6 py-4 font-medium">النوع</th>
-                    <th className="px-6 py-4 font-medium">الفرع</th>
-                    <th className="px-6 py-4 font-medium">تاريخ الشراء</th>
-                    <th className="px-6 py-4 font-medium">سعر الشراء</th>
-                    <th className="px-6 py-4 font-medium">القيمة الحالية</th>
-                    <th className="px-6 py-4 font-medium">المسؤول</th>
-                    <th className="px-6 py-4 font-medium">الحالة</th>
-                    {canManage && <th className="px-6 py-4 font-medium">إجراءات</th>}
+                    <th className="px-3 py-4 font-medium sm:px-6">الاسم</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">النوع</th>
+                    <th className="hidden px-6 py-4 font-medium md:table-cell">الفرع</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">تاريخ الشراء</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">سعر الشراء</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">القيمة الحالية</th>
+                    <th className="hidden px-6 py-4 font-medium md:table-cell">المسؤول</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">الحالة</th>
+                    {canManage && <th className="px-3 py-4 font-medium sm:px-6">إجراءات</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -515,18 +515,18 @@ export default function AssetsPage() {
                     <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">لا توجد أصول مسجلة</td></tr>
                   ) : pagedAssets.map((a) => (
                     <tr key={a.id} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">{a.name}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{a.type}</td>
-                      <td className="px-6 py-4">{a.branch}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{a.purchaseDate}</td>
-                      <td className="px-6 py-4">{a.purchasePrice.toLocaleString()} {a.currency}</td>
-                      <td className="px-6 py-4 font-medium">{a.currentValue.toLocaleString()} {a.currency}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{a.responsible}</td>
-                      <td className="px-6 py-4">
+                      <td className="px-3 py-4 font-medium text-foreground sm:px-6">{a.name}</td>
+                      <td className="px-3 py-4 text-muted-foreground sm:px-6">{a.type}</td>
+                      <td className="hidden px-6 py-4 md:table-cell">{a.branch}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{a.purchaseDate}</td>
+                      <td className="hidden px-6 py-4 lg:table-cell">{a.purchasePrice.toLocaleString()} {a.currency}</td>
+                      <td className="px-3 py-4 font-medium sm:px-6">{a.currentValue.toLocaleString()} {a.currency}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground md:table-cell">{a.responsible}</td>
+                      <td className="px-3 py-4 sm:px-6">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${assetStatusClass[a.status] || 'bg-muted text-muted-foreground'}`}>{a.status}</span>
                       </td>
                       {canManage && (
-                        <td className="px-6 py-4">
+                        <td className="px-3 py-4 sm:px-6">
                           <div className="flex items-center gap-2">
                             <button onClick={() => openEditAsset(a)} title="تعديل" className="text-primary hover:text-primary/80 transition-colors p-1">
                               <Pencil className="h-4 w-4" />
@@ -568,15 +568,15 @@ export default function AssetsPage() {
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
-                    <th className="px-6 py-4 font-medium">السيارة</th>
-                    <th className="px-6 py-4 font-medium">اللوحة</th>
-                    <th className="px-6 py-4 font-medium">الموديل</th>
-                    <th className="px-6 py-4 font-medium">السنة</th>
-                    <th className="px-6 py-4 font-medium">السائق</th>
-                    <th className="px-6 py-4 font-medium">انتهاء التأمين</th>
-                    <th className="px-6 py-4 font-medium">انتهاء الترخيص</th>
-                    <th className="px-6 py-4 font-medium">الحالة</th>
-                    {canManage && <th className="px-6 py-4 font-medium">إجراءات</th>}
+                    <th className="px-3 py-4 font-medium sm:px-6">السيارة</th>
+                    <th className="hidden px-6 py-4 font-medium md:table-cell">اللوحة</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">الموديل</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">السنة</th>
+                    <th className="hidden px-6 py-4 font-medium md:table-cell">السائق</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">انتهاء التأمين</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">انتهاء الترخيص</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">الحالة</th>
+                    {canManage && <th className="px-3 py-4 font-medium sm:px-6">إجراءات</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -584,18 +584,18 @@ export default function AssetsPage() {
                     <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">لا توجد مركبات مسجلة</td></tr>
                   ) : pagedVehicles.map((v) => (
                     <tr key={v.id} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">{v.carName} ({v.color})</td>
-                      <td className="px-6 py-4" dir="ltr">{v.plateNumber}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{v.model}</td>
-                      <td className="px-6 py-4">{v.makeYear}</td>
-                      <td className="px-6 py-4">{v.driver}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{v.insuranceExpiry}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{v.licenseExpiry}</td>
-                      <td className="px-6 py-4">
+                      <td className="px-3 py-4 font-medium text-foreground sm:px-6">{v.carName} ({v.color})</td>
+                      <td className="hidden px-6 py-4 md:table-cell" dir="ltr">{v.plateNumber}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{v.model}</td>
+                      <td className="hidden px-6 py-4 lg:table-cell">{v.makeYear}</td>
+                      <td className="hidden px-6 py-4 md:table-cell">{v.driver}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{v.insuranceExpiry}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{v.licenseExpiry}</td>
+                      <td className="px-3 py-4 sm:px-6">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${assetStatusClass[v.status] || 'bg-muted text-muted-foreground'}`}>{v.status}</span>
                       </td>
                       {canManage && (
-                        <td className="px-6 py-4">
+                        <td className="px-3 py-4 sm:px-6">
                           <button onClick={() => openEditVehicle(v)} title="تعديل" className="text-primary hover:text-primary/80 transition-colors p-1">
                             <Pencil className="h-4 w-4" />
                           </button>
@@ -666,13 +666,13 @@ export default function AssetsPage() {
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
-                    <th className="px-6 py-4 font-medium">الأصل</th>
-                    <th className="px-6 py-4 font-medium">نوع الصيانة</th>
-                    <th className="px-6 py-4 font-medium">التاريخ</th>
-                    <th className="px-6 py-4 font-medium">التكلفة</th>
-                    <th className="px-6 py-4 font-medium">المسؤول</th>
-                    <th className="px-6 py-4 font-medium">الحالة</th>
-                    {canManage && <th className="px-6 py-4 font-medium">إجراءات</th>}
+                    <th className="px-3 py-4 font-medium sm:px-6">الأصل</th>
+                    <th className="hidden px-6 py-4 font-medium md:table-cell">نوع الصيانة</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">التاريخ</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">التكلفة</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">المسؤول</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">الحالة</th>
+                    {canManage && <th className="px-3 py-4 font-medium sm:px-6">إجراءات</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -680,17 +680,17 @@ export default function AssetsPage() {
                     <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد سجلات صيانة</td></tr>
                   ) : pagedMaintenance.map((m) => (
                     <tr key={m.id} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">{m.assetName}</td>
-                      <td className="px-6 py-4">{m.maintenanceType}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{m.date}</td>
-                      <td className="px-6 py-4">{m.cost.toLocaleString()} {m.currency}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{m.responsibleEmployee}</td>
-                      <td className="px-6 py-4">
+                      <td className="px-3 py-4 font-medium text-foreground sm:px-6">{m.assetName}</td>
+                      <td className="hidden px-6 py-4 md:table-cell">{m.maintenanceType}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{m.date}</td>
+                      <td className="px-3 py-4 sm:px-6">{m.cost.toLocaleString()} {m.currency}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{m.responsibleEmployee}</td>
+                      <td className="px-3 py-4 sm:px-6">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                           ${m.status === 'مكتملة' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}`}>{m.status}</span>
                       </td>
                       {canManage && (
-                        <td className="px-6 py-4">
+                        <td className="px-3 py-4 sm:px-6">
                           {m.status !== 'مكتملة' && (
                             <button onClick={() => openCompleteMaintenance(m)} className="flex items-center gap-1 text-success hover:text-success/80 transition-colors text-xs font-medium">
                               <CheckCircle2 className="h-3.5 w-3.5" /> إكمال
@@ -722,11 +722,11 @@ export default function AssetsPage() {
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
-                    <th className="px-6 py-4 font-medium">الأصل</th>
-                    <th className="px-6 py-4 font-medium">نوع المستند</th>
-                    <th className="px-6 py-4 font-medium">اسم الملف</th>
-                    <th className="px-6 py-4 font-medium">تاريخ الانتهاء</th>
-                    <th className="px-6 py-4 font-medium">الحالة</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">الأصل</th>
+                    <th className="hidden px-6 py-4 font-medium md:table-cell">نوع المستند</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">اسم الملف</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">تاريخ الانتهاء</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">الحالة</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -734,11 +734,11 @@ export default function AssetsPage() {
                     <tr><td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
                   ) : pagedAssetDocs.map((d) => (
                     <tr key={d.id} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">{d.assetName}</td>
-                      <td className="px-6 py-4">{d.documentType}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{d.fileName}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{d.expiryDate || '—'}</td>
-                      <td className="px-6 py-4">
+                      <td className="px-3 py-4 font-medium text-foreground sm:px-6">{d.assetName}</td>
+                      <td className="hidden px-6 py-4 md:table-cell">{d.documentType}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{d.fileName}</td>
+                      <td className="px-3 py-4 text-muted-foreground sm:px-6">{d.expiryDate || '—'}</td>
+                      <td className="px-3 py-4 sm:px-6">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${docStatusClass[d.status] || 'bg-muted text-muted-foreground'}`}>{d.status}</span>
                       </td>
                     </tr>
@@ -757,13 +757,13 @@ export default function AssetsPage() {
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
-                  <th className="px-6 py-4 font-medium">الأصل</th>
-                  <th className="px-6 py-4 font-medium">طريقة الإهلاك</th>
-                  <th className="px-6 py-4 font-medium">سعر الشراء</th>
-                  <th className="px-6 py-4 font-medium">الإهلاك السنوي</th>
-                  <th className="px-6 py-4 font-medium">الإهلاك المتراكم</th>
-                  <th className="px-6 py-4 font-medium">القيمة الدفترية الحالية</th>
-                  <th className="px-6 py-4 font-medium">آخر تحديث</th>
+                  <th className="px-3 py-4 font-medium sm:px-6">الأصل</th>
+                  <th className="hidden px-6 py-4 font-medium lg:table-cell">طريقة الإهلاك</th>
+                  <th className="hidden px-6 py-4 font-medium lg:table-cell">سعر الشراء</th>
+                  <th className="hidden px-6 py-4 font-medium md:table-cell">الإهلاك السنوي</th>
+                  <th className="hidden px-6 py-4 font-medium md:table-cell">الإهلاك المتراكم</th>
+                  <th className="px-3 py-4 font-medium sm:px-6">القيمة الدفترية الحالية</th>
+                  <th className="hidden px-6 py-4 font-medium lg:table-cell">آخر تحديث</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -771,13 +771,13 @@ export default function AssetsPage() {
                   <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد سجلات إهلاك</td></tr>
                 ) : pagedDepreciation.map((d) => (
                   <tr key={d.assetId} className="hover:bg-muted/50 transition-colors">
-                    <td className="px-6 py-4 font-medium text-foreground">{d.assetName}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{d.depreciationMethod}</td>
-                    <td className="px-6 py-4">{d.purchasePrice.toLocaleString()}</td>
-                    <td className="px-6 py-4">{d.annualDepreciation.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-danger">{d.accumulatedDepreciation.toLocaleString()}</td>
-                    <td className="px-6 py-4 font-bold">{d.currentBookValue.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{d.lastCalculatedDate}</td>
+                    <td className="px-3 py-4 font-medium text-foreground sm:px-6">{d.assetName}</td>
+                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{d.depreciationMethod}</td>
+                    <td className="hidden px-6 py-4 lg:table-cell">{d.purchasePrice.toLocaleString()}</td>
+                    <td className="hidden px-6 py-4 md:table-cell">{d.annualDepreciation.toLocaleString()}</td>
+                    <td className="hidden px-6 py-4 text-danger md:table-cell">{d.accumulatedDepreciation.toLocaleString()}</td>
+                    <td className="px-3 py-4 font-bold sm:px-6">{d.currentBookValue.toLocaleString()}</td>
+                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{d.lastCalculatedDate}</td>
                   </tr>
                 ))}
               </tbody>
@@ -839,7 +839,7 @@ export default function AssetsPage() {
                   <input value={assetForm.responsible} onChange={(e) => setAssetForm({ ...assetForm, responsible: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء *</label>
                   <input type="number" value={assetForm.purchasePrice} onChange={(e) => setAssetForm({ ...assetForm, purchasePrice: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
@@ -907,7 +907,7 @@ export default function AssetsPage() {
                   <input value={vehicleForm.plateNumber} onChange={(e) => setVehicleForm({ ...vehicleForm, plateNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الموديل</label>
                   <input value={vehicleForm.model} onChange={(e) => setVehicleForm({ ...vehicleForm, model: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
