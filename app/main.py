@@ -24,18 +24,20 @@ from .routers import currencies, notifications, auth, operations, business, asse
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
 
+# Plain module-level code, not the lifespan hook below — this must run under
+# WSGI deployments too (e.g. cPanel Passenger via a2wsgi), which have no
+# mechanism to ever trigger ASGI lifespan startup events.
+_startup_db = SessionLocal()
+try:
+    seed_database(_startup_db)
+    migrate_plaintext_passwords(_startup_db)
+    seed_missing_system_settings(_startup_db)
+    seed_trial_start_date(_startup_db)
+finally:
+    _startup_db.close()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Auto-seed database if empty
-    db = SessionLocal()
-    try:
-        seed_database(db)
-        migrate_plaintext_passwords(db)
-        seed_missing_system_settings(db)
-        seed_trial_start_date(db)
-    finally:
-        db.close()
-    
     start_scheduler()
     yield
     stop_scheduler()
