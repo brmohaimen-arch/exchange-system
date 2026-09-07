@@ -10,20 +10,20 @@
   --card-foreground: #000000;
   --popover: #FFFFFF;
   --popover-foreground: #000000;
-  --primary: #7C3AED;
+  --primary: #2563EB;
   --primary-foreground: #FFFFFF;
   --secondary: #F8FAFC;
   --secondary-foreground: #000000;
   --muted: #F1F5F9;
   --muted-foreground: #64748B;
-  --accent: #F3E8FF;
-  --accent-foreground: #7C3AED;
+  --accent: #DBEAFE;
+  --accent-foreground: #2563EB;
   --destructive: #EF4444;
   --destructive-foreground: #FFFFFF;
   --border: #E2E8F0;
   --input: #E2E8F0;
-  --ring: #7C3AED;
-  --chart-1: #7C3AED;
+  --ring: #2563EB;
+  --chart-1: #2563EB;
   --chart-2: #000000;
   --chart-3: #94A3B8;
   --chart-4: #CBD5E1;
@@ -39,12 +39,12 @@
   --info-foreground: #FFFFFF;
   --sidebar: #FFFFFF;
   --sidebar-foreground: #000000;
-  --sidebar-primary: #7C3AED;
+  --sidebar-primary: #2563EB;
   --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #F3E8FF;
-  --sidebar-accent-foreground: #7C3AED;
+  --sidebar-accent: #DBEAFE;
+  --sidebar-accent-foreground: #2563EB;
   --sidebar-border: #E2E8F0;
-  --sidebar-ring: #7C3AED;
+  --sidebar-ring: #2563EB;
 }
 
 .dark {
@@ -147,7 +147,7 @@
     @apply border-border outline-ring/50;
   }
   html {
-    font-size: 14px;
+    font-size: 16px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     scroll-behavior: smooth;
