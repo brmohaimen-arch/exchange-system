@@ -16,6 +16,7 @@ correctly), or a path a deployer configures explicitly.
 
 import io
 import os
+import re
 
 import arabic_reshaper
 from bidi.algorithm import get_display
@@ -66,12 +67,24 @@ def _ensure_font_registered() -> str:
     )
 
 
+_ARABIC_CHAR_RE = re.compile(r'[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]')
+
+
 def shape_arabic(text) -> str:
     """Reshape + bidi-reorder a string for correct PDF rendering. Non-string /
-    empty values pass through as an empty cell rather than raising."""
+    empty values pass through as an empty cell rather than raising.
+
+    Cells with no Arabic characters at all (IDs, dates, currency codes,
+    amounts) skip reshaping/bidi entirely — running them through that
+    pipeline anyway was turning them into strings of NUL glyphs once passed
+    to reportlab's font subsetting, silently blanking every non-Arabic
+    column in every PDF export (numbers, dates, transaction IDs — only
+    genuinely-Arabic cells like customer names survived)."""
     if text is None:
         return ""
     text = str(text)
+    if not _ARABIC_CHAR_RE.search(text):
+        return text
     reshaped = arabic_reshaper.reshape(text)
     return get_display(reshaped)
 
