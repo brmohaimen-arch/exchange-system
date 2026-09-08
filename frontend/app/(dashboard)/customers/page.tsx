@@ -18,7 +18,7 @@ const debtStatusLabel: Record<string, string> = { unpaid: 'غير مسدد', par
 interface BalanceRow { currency: string; amount: string }
 
 function emptyForm() {
-  return { name: '', type: 'individual', phone: '', idNumber: '', address: '', debtLimit: '0', profitPct: '0', notes: '', isActive: true }
+  return { code: '', name: '', type: 'individual', phone: '', idNumber: '', address: '', debtLimit: '0', profitPct: '0', notes: '', isActive: true, bankName: '', bankAccountNumber: '' }
 }
 
 function emptyDebtForm() {
@@ -131,8 +131,9 @@ export default function CustomersPage() {
   const openEdit = (c: Customer) => {
     setEditingCustomer(c)
     setForm({
-      name: c.name, type: c.type, phone: c.phone, idNumber: c.idNumber, address: c.address,
+      code: c.id, name: c.name, type: c.type, phone: c.phone, idNumber: c.idNumber, address: c.address,
       debtLimit: String(c.debtLimit), profitPct: String(c.profitPct), notes: c.notes || '', isActive: c.isActive,
+      bankName: c.bankName || '', bankAccountNumber: c.bankAccountNumber || '',
     })
     setBalanceRows(Object.entries(c.balances).map(([currency, amount]) => ({ currency, amount: String(amount) })))
     setFormError('')
@@ -149,6 +150,10 @@ export default function CustomersPage() {
     setFormError('')
     if (!form.name.trim() || !form.phone.trim()) {
       setFormError('الاسم ورقم الهاتف مطلوبان')
+      return
+    }
+    if (!editingCustomer && !form.code.trim()) {
+      setFormError('رمز العميل مطلوب')
       return
     }
     const balances: Record<string, number> = {}
@@ -170,10 +175,12 @@ export default function CustomersPage() {
           profit_pct: parseFloat(form.profitPct) || 0,
           notes: form.notes.trim() || null,
           is_active: form.isActive,
+          bank_name: form.bankName.trim() || null,
+          bank_account_number: form.bankAccountNumber.trim() || null,
         })
       } else {
         await api.post('/customers', {
-          id: newId('cust'),
+          id: form.code.trim(),
           name: form.name.trim(),
           type: form.type,
           phone: form.phone.trim(),
@@ -183,6 +190,8 @@ export default function CustomersPage() {
           balances,
           profit_pct: parseFloat(form.profitPct) || 0,
           notes: form.notes.trim() || null,
+          bank_name: form.bankName.trim() || null,
+          bank_account_number: form.bankAccountNumber.trim() || null,
         })
       }
       setShowModal(false)
@@ -655,6 +664,18 @@ export default function CustomersPage() {
             </div>
             <form onSubmit={handleSubmit} className="space-y-4 p-6 text-right max-h-[70vh] overflow-y-auto">
               <div>
+                <label className="block text-sm font-medium text-foreground mb-1">رمز العميل *</label>
+                <input
+                  value={form.code}
+                  onChange={(e) => setForm({ ...form, code: e.target.value })}
+                  disabled={!!editingCustomer}
+                  dir="ltr"
+                  placeholder="مثال: C-1024"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:bg-muted disabled:text-muted-foreground"
+                />
+                {!editingCustomer && <p className="mt-1 text-xs text-muted-foreground">الرمز الذي تحدده أنت لهذا العميل — لا يمكن تغييره بعد الإنشاء</p>}
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-foreground mb-1">اسم العميل *</label>
                 <input
                   value={form.name}
@@ -767,6 +788,26 @@ export default function CustomersPage() {
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">اسم بنك العميل</label>
+                  <input
+                    value={form.bankName}
+                    onChange={(e) => setForm({ ...form, bankName: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم حساب العميل البنكي</label>
+                  <input
+                    value={form.bankAccountNumber}
+                    onChange={(e) => setForm({ ...form, bankAccountNumber: e.target.value })}
+                    dir="ltr"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
               </div>
 
               <div>

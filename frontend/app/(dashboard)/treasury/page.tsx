@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye } from 'lucide-react'
+import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import { api, newId, Vault, Currency, Bank, BankAccount, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
@@ -100,6 +100,11 @@ export default function TreasuryPage() {
   const [vaultForm, setVaultForm] = useState(emptyVaultForm())
   const [vaultFormError, setVaultFormError] = useState('')
 
+  const [balanceEditVault, setBalanceEditVault] = useState<Vault | null>(null)
+  const [balanceEditRows, setBalanceEditRows] = useState<{ currency: string; amount: string }[]>([])
+  const [balanceEditError, setBalanceEditError] = useState('')
+  const [savingBalances, setSavingBalances] = useState(false)
+
   const [showBranchModal, setShowBranchModal] = useState(false)
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null)
   const [branchForm, setBranchForm] = useState(emptyBranchForm())
@@ -113,6 +118,12 @@ export default function TreasuryPage() {
   const [showAccountModal, setShowAccountModal] = useState(false)
   const [accountForm, setAccountForm] = useState(emptyBankAccountForm())
   const [accountFormError, setAccountFormError] = useState('')
+
+  const [bankOpAccount, setBankOpAccount] = useState<BankAccount | null>(null)
+  const [bankOpType, setBankOpType] = useState<'deposit' | 'withdraw'>('deposit')
+  const [bankOpForm, setBankOpForm] = useState({ vaultId: '', amount: '', notes: '' })
+  const [bankOpError, setBankOpError] = useState('')
+  const [savingBankOp, setSavingBankOp] = useState(false)
 
   const [closingShift, setClosingShift] = useState<Shift | null>(null)
   const [closeBalances, setCloseBalances] = useState<Record<string, string>>({})
@@ -246,6 +257,32 @@ export default function TreasuryPage() {
     setVaultForm({ id: v.id, name: v.name, type: v.type, branch: v.branch, manager: v.manager })
     setVaultFormError('')
     setShowVaultModal(true)
+  }
+
+  const openEditBalances = (v: Vault) => {
+    setBalanceEditVault(v)
+    setBalanceEditRows(
+      currencies.map((c) => ({ currency: c.code, amount: String(v.balances[c.code] ?? 0) }))
+    )
+    setBalanceEditError('')
+  }
+
+  const submitBalanceEdit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!balanceEditVault) return
+    setBalanceEditError('')
+    setSavingBalances(true)
+    try {
+      const balances: Record<string, number> = {}
+      for (const row of balanceEditRows) balances[row.currency] = parseFloat(row.amount) || 0
+      await api.patch(`/vaults/${balanceEditVault.id}/balances`, { balances })
+      setBalanceEditVault(null)
+      await load()
+    } catch (err) {
+      setBalanceEditError(err instanceof ApiError ? err.message : 'تعذر تعديل الأرصدة')
+    } finally {
+      setSavingBalances(false)
+    }
   }
 
   const submitVault = async (e: FormEvent) => {
@@ -406,6 +443,37 @@ export default function TreasuryPage() {
       await load()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر حذف الحساب البنكي')
+    }
+  }
+
+  const openBankOp = (account: BankAccount, type: 'deposit' | 'withdraw') => {
+    setBankOpAccount(account)
+    setBankOpType(type)
+    setBankOpForm({ vaultId: '', amount: '', notes: '' })
+    setBankOpError('')
+  }
+
+  const submitBankOp = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!bankOpAccount) return
+    setBankOpError('')
+    if (!bankOpForm.vaultId || !bankOpForm.amount || parseFloat(bankOpForm.amount) <= 0) {
+      setBankOpError('الخزنة والمبلغ حقول مطلوبة')
+      return
+    }
+    setSavingBankOp(true)
+    try {
+      await api.post(`/bank_accounts/${bankOpAccount.id}/${bankOpType}`, {
+        vault_id: bankOpForm.vaultId,
+        amount: parseFloat(bankOpForm.amount),
+        notes: bankOpForm.notes.trim() || null,
+      })
+      setBankOpAccount(null)
+      await load()
+    } catch (err) {
+      setBankOpError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
+    } finally {
+      setSavingBankOp(false)
     }
   }
 
@@ -749,9 +817,14 @@ export default function TreasuryPage() {
                     </div>
                   </div>
                   {canManageVaults && (
-                    <button onClick={() => openEditVault(vault)} title="تعديل" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                      <Pencil className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => openEditBalances(vault)} title="تعديل الأرصدة" className="text-muted-foreground hover:text-primary transition-colors p-1">
+                        <Wallet className="h-4 w-4" />
+                      </button>
+                      <button onClick={() => openEditVault(vault)} title="تعديل" className="text-muted-foreground hover:text-primary transition-colors p-1">
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                    </div>
                   )}
                 </div>
                 <div className="pt-4 space-y-3">
@@ -927,9 +1000,17 @@ export default function TreasuryPage() {
                       </td>
                       {canManageBanks && (
                         <td className="px-6 py-4">
-                          <button onClick={() => deleteBankAccount(ba)} title="حذف" className="text-muted-foreground hover:text-danger transition-colors p-1">
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => openBankOp(ba, 'deposit')} title="إيداع" className="text-muted-foreground hover:text-success transition-colors p-1">
+                              <ArrowDownCircle className="h-4 w-4" />
+                            </button>
+                            <button onClick={() => openBankOp(ba, 'withdraw')} title="سحب" className="text-muted-foreground hover:text-warning transition-colors p-1">
+                              <ArrowUpCircle className="h-4 w-4" />
+                            </button>
+                            <button onClick={() => deleteBankAccount(ba)} title="حذف" className="text-muted-foreground hover:text-danger transition-colors p-1">
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -1284,6 +1365,104 @@ export default function TreasuryPage() {
                 <button type="button" onClick={() => setShowVaultModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {saving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {balanceEditVault && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تعديل أرصدة {balanceEditVault.name}</h3>
+              <button onClick={() => setBalanceEditVault(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={submitBalanceEdit} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-warning bg-warning/10 rounded-md px-3 py-2">
+                تحذير: هذا تصحيح مباشر لرصيد الخزنة الفعلي، وليس عملية إيداع أو سحب. استخدمه فقط لتصحيح خطأ في الرصيد.
+              </p>
+              <div className="space-y-2">
+                {balanceEditRows.map((row, idx) => (
+                  <div key={row.currency} className="flex items-center gap-2">
+                    <span className="w-14 text-sm font-medium text-foreground">{row.currency}</span>
+                    <input
+                      type="number"
+                      step="any"
+                      value={row.amount}
+                      onChange={(e) => setBalanceEditRows((rows) => rows.map((r, i) => (i === idx ? { ...r, amount: e.target.value } : r)))}
+                      className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                ))}
+              </div>
+              {balanceEditError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{balanceEditError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setBalanceEditVault(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={savingBalances} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {savingBalances && <Loader2 className="h-4 w-4 animate-spin" />} حفظ الأرصدة
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {bankOpAccount && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">
+                {bankOpType === 'deposit' ? 'إيداع في حساب' : 'سحب من حساب'} {bankOpAccount.accountName}
+              </h3>
+              <button onClick={() => setBankOpAccount(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={submitBankOp} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                {bankOpType === 'deposit'
+                  ? `ستنتقل النقدية من الخزنة المحددة إلى الحساب البنكي (${bankOpAccount.currency})`
+                  : `ستنتقل النقدية من الحساب البنكي إلى الخزنة المحددة (${bankOpAccount.currency})`}
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">الخزنة *</label>
+                <select
+                  value={bankOpForm.vaultId}
+                  onChange={(e) => setBankOpForm({ ...bankOpForm, vaultId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر الخزنة</option>
+                  {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">المبلغ ({bankOpAccount.currency}) *</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={bankOpForm.amount}
+                  onChange={(e) => setBankOpForm({ ...bankOpForm, amount: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={bankOpForm.notes}
+                  onChange={(e) => setBankOpForm({ ...bankOpForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {bankOpError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{bankOpError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setBankOpAccount(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={savingBankOp} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {savingBankOp && <Loader2 className="h-4 w-4 animate-spin" />} تأكيد
                 </button>
               </div>
             </form>

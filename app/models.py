@@ -122,6 +122,8 @@ class Customer(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     profit_pct: Mapped[float] = mapped_column(Float, default=0.0)  # % fee added on each transaction
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(String(150), nullable=True)  # the customer's own external bank, not one of our BankAccount rows
+    bank_account_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 class Debt(Base):
     __tablename__ = "debts"

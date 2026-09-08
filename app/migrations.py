@@ -78,6 +78,8 @@ NEW_COLUMNS = [
     ("users", "mfa_secret", "VARCHAR(64)"),
     ("users", "mfa_enabled", "BOOLEAN DEFAULT FALSE"),
     ("backups", "file_path", "VARCHAR(500)"),
+    ("customers", "bank_name", "VARCHAR(150)"),
+    ("customers", "bank_account_number", "VARCHAR(100)"),
 ]
 
 

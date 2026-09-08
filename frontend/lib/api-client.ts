@@ -167,6 +167,8 @@ export interface Customer {
   isActive: boolean
   profitPct: number
   notes: string | null
+  bankName: string | null
+  bankAccountNumber: string | null
 }
 
 export interface Vault {
