@@ -87,6 +87,24 @@ export const api = {
   blob: requestBlob,
 }
 
+export async function uploadFile<T>(path: string, file: File): Promise<T> {
+  // Deliberately not routed through request() — that always sets
+  // Content-Type: application/json, which would break the multipart
+  // boundary fetch needs to set itself for a FormData body.
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${API_BASE}${path}`, { method: 'POST', headers, body: form })
+  const body = await res.json().catch(() => null)
+  if (!res.ok || (body && body.success === false)) {
+    const detail = body?.detail ?? body
+    throw new ApiError(detail?.message_ar || 'تعذر رفع الملف', detail?.code || 'UPLOAD_FAILED', res.status)
+  }
+  return body?.data as T
+}
+
 export async function downloadFile(path: string, filename: string) {
   const blob = await requestBlob(path)
   const url = window.URL.createObjectURL(blob)
@@ -522,6 +540,7 @@ export interface AssetDocument {
   expiryDate: string | null
   status: string
   notes: string | null
+  hasFile: boolean
 }
 
 export interface DepreciationRecord {
@@ -547,6 +566,7 @@ export interface CustomerDocument {
   expiryDate: string | null
   status: string
   notes: string | null
+  hasFile: boolean
 }
 
 export interface JournalEntry {

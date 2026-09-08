@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from ..database import get_db
@@ -13,9 +15,10 @@ from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
 from ..export_utils import build_excel, build_pdf, build_receipt_pdf, ArabicFontUnavailable
+from ..file_storage import save_upload, resolve_path
 from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
 from ..telegram_gateway import send_manager_alert as send_telegram_alert
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
@@ -624,6 +627,7 @@ def customer_document_to_dict(d: CustomerDocument):
         "expiryDate": d.expiry_date,
         "status": d.status,
         "notes": d.notes,
+        "hasFile": bool(d.stored_path),
     }
 
 @router.get("/customer_documents")
@@ -655,11 +659,36 @@ def update_customer_document(doc_id: str, data: CustomerDocumentCreate, actor: U
     db.commit()
     return success_response(data=customer_document_to_dict(doc), message_ar="تم تعديل المستند بنجاح")
 
+@router.post("/customer_documents/{doc_id}/file")
+async def upload_customer_document_file(doc_id: str, file: UploadFile = File(...), actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    doc = db.get(CustomerDocument, doc_id)
+    if not doc:
+        raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    doc.stored_path = await save_upload("customer_documents", doc_id, file)
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="CustomerDocument", entity_id=doc_id, description=f"تم رفع ملف لمستند العميل {doc.customer_name}", username=actor.username)
+    db.commit()
+    return success_response(data=customer_document_to_dict(doc), message_ar="تم رفع الملف بنجاح")
+
+@router.get("/customer_documents/{doc_id}/file")
+def download_customer_document_file(doc_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = db.get(CustomerDocument, doc_id)
+    if not doc or not doc.stored_path:
+        raise APIError(code="NOT_FOUND", message_ar="لا يوجد ملف مرفوع لهذا المستند", message_en="No file uploaded for this document", status_code=404)
+    path = resolve_path(doc.stored_path)
+    if not os.path.exists(path):
+        raise APIError(code="NOT_FOUND", message_ar="الملف غير موجود على الخادم", message_en="File missing on server", status_code=404)
+    return FileResponse(path, filename=doc.file_name)
+
 @router.delete("/customer_documents/{doc_id}")
 def delete_customer_document(doc_id: str, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
     doc = db.get(CustomerDocument, doc_id)
     if not doc:
         raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    if doc.stored_path:
+        try:
+            os.remove(resolve_path(doc.stored_path))
+        except OSError:
+            pass  # file already gone — don't block deleting the record over it
     db.delete(doc)
     create_audit_log(db, action=AuditAction.DELETE, entity_type="CustomerDocument", entity_id=doc_id, description=f"تم حذف مستند العميل {doc.customer_name}", username=actor.username)
     db.commit()

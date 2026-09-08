@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { Plus, Pencil, Wrench, Car, Building2, Package, X, Loader2, CheckCircle2, DollarSign, ArrowRightLeft, FileText, TrendingDown } from 'lucide-react'
-import { api, newId, FixedAsset, Vehicle, RealEstate, MaintenanceRecord, Currency, AssetDocument, DepreciationRecord } from '@/lib/api-client'
+import { Plus, Pencil, Wrench, Car, Building2, Package, X, Loader2, CheckCircle2, DollarSign, ArrowRightLeft, FileText, TrendingDown, Download } from 'lucide-react'
+import { api, newId, downloadFile, uploadFile, FixedAsset, Vehicle, RealEstate, MaintenanceRecord, Currency, AssetDocument, DepreciationRecord } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 
@@ -48,7 +48,7 @@ function emptyTransferAssetForm() {
   return { toBranch: '', toLocation: '', responsible: '' }
 }
 function emptyDocumentForm() {
-  return { assetId: '', documentType: '', fileName: '', expiryDate: '', status: 'ساري', notes: '' }
+  return { assetId: '', documentType: '', fileName: '', expiryDate: '', status: 'ساري', notes: '', file: null as File | null }
 }
 
 export default function AssetsPage() {
@@ -429,22 +429,24 @@ export default function AssetsPage() {
     e.preventDefault()
     setDocFormError('')
     const asset = assets.find((a) => a.id === docForm.assetId)
-    if (!asset || !docForm.documentType.trim() || !docForm.fileName.trim()) {
-      setDocFormError('الأصل ونوع المستند واسم الملف حقول مطلوبة')
+    if (!asset || !docForm.documentType.trim() || !docForm.file) {
+      setDocFormError('الأصل ونوع المستند والملف حقول مطلوبة')
       return
     }
     setSaving(true)
     try {
+      const docId = newId('adoc')
       await api.post('/asset_documents', {
-        id: newId('adoc'),
+        id: docId,
         asset_id: asset.id,
         asset_name: asset.name,
         document_type: docForm.documentType.trim(),
-        file_name: docForm.fileName.trim(),
+        file_name: docForm.file.name,
         expiry_date: docForm.expiryDate || null,
         status: docForm.status,
         notes: docForm.notes.trim() || null,
       })
+      await uploadFile(`/asset_documents/${docId}/file`, docForm.file)
       setShowDocModal(false)
       await load()
     } catch (err) {
@@ -727,11 +729,12 @@ export default function AssetsPage() {
                     <th className="hidden px-6 py-4 font-medium lg:table-cell">اسم الملف</th>
                     <th className="px-3 py-4 font-medium sm:px-6">تاريخ الانتهاء</th>
                     <th className="px-3 py-4 font-medium sm:px-6">الحالة</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">الملف</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {documents.length === 0 ? (
-                    <tr><td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
+                    <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
                   ) : pagedAssetDocs.map((d) => (
                     <tr key={d.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-3 py-4 font-medium text-foreground sm:px-6">{d.assetName}</td>
@@ -740,6 +743,15 @@ export default function AssetsPage() {
                       <td className="px-3 py-4 text-muted-foreground sm:px-6">{d.expiryDate || '—'}</td>
                       <td className="px-3 py-4 sm:px-6">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${docStatusClass[d.status] || 'bg-muted text-muted-foreground'}`}>{d.status}</span>
+                      </td>
+                      <td className="px-3 py-4 sm:px-6">
+                        {d.hasFile ? (
+                          <button onClick={() => downloadFile(`/asset_documents/${d.id}/file`, d.fileName)} title="تحميل الملف" className="text-muted-foreground hover:text-primary transition-colors p-1">
+                            <Download className="h-4 w-4" />
+                          </button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">لا يوجد ملف</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1179,8 +1191,14 @@ export default function AssetsPage() {
                 <input value={docForm.documentType} onChange={(e) => setDocForm({ ...docForm, documentType: e.target.value })} placeholder="رخصة، تأمين، سند ملكية..." className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">اسم الملف *</label>
-                <input value={docForm.fileName} onChange={(e) => setDocForm({ ...docForm, fileName: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                <label className="block text-sm font-medium text-foreground mb-1">الملف *</label>
+                <input
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                  onChange={(e) => setDocForm({ ...docForm, file: e.target.files?.[0] || null })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 file:ml-3 file:rounded file:border-0 file:bg-accent file:px-2 file:py-1 file:text-xs"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">PDF, JPG, PNG, DOC أو DOCX — حتى 10 ميغابايت</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

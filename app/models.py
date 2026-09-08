@@ -447,6 +447,7 @@ class AssetDocument(Base):
     expiry_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="ساري")  # ساري, قارب على الانتهاء, منتهي
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stored_path: Mapped[str | None] = mapped_column(String(300), nullable=True)  # relative path under uploads/, set once a file is actually uploaded
 
 class SystemSetting(Base):
     __tablename__ = "system_settings"
@@ -479,6 +480,7 @@ class CustomerDocument(Base):
     expiry_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="ساري")  # ساري, قارب على الانتهاء, منتهي
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stored_path: Mapped[str | None] = mapped_column(String(300), nullable=True)  # relative path under uploads/, set once a file is actually uploaded
 
 class ComplianceFlag(Base):
     __tablename__ = "compliance_flags"

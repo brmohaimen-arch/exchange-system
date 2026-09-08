@@ -1,14 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
 from ..models import (
     FixedAsset, Vehicle, RealEstate, MaintenanceRecord, DepreciationRecord, AssetDocument,
-    AuditAction
+    AuditAction, User
 )
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
+from ..auth_deps import get_current_user
+from ..file_storage import save_upload, resolve_path
 from pydantic import BaseModel
 from datetime import datetime
 
@@ -154,7 +159,8 @@ def document_to_dict(doc: AssetDocument):
         "fileName": doc.file_name,
         "expiryDate": doc.expiry_date,
         "status": doc.status,
-        "notes": doc.notes
+        "notes": doc.notes,
+        "hasFile": bool(doc.stored_path),
     }
 
 # ----------------- ASSETS CRUD -----------------
@@ -293,6 +299,25 @@ def add_asset_document(data: AssetDocumentCreate, db: Session = Depends(get_db))
     db.add(doc)
     db.commit()
     return success_response(data=document_to_dict(doc))
+
+@router.post("/asset_documents/{doc_id}/file")
+async def upload_asset_document_file(doc_id: str, file: UploadFile = File(...), actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = db.get(AssetDocument, doc_id)
+    if not doc:
+        raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    doc.stored_path = await save_upload("asset_documents", doc_id, file)
+    db.commit()
+    return success_response(data=document_to_dict(doc), message_ar="تم رفع الملف بنجاح")
+
+@router.get("/asset_documents/{doc_id}/file")
+def download_asset_document_file(doc_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = db.get(AssetDocument, doc_id)
+    if not doc or not doc.stored_path:
+        raise APIError(code="NOT_FOUND", message_ar="لا يوجد ملف مرفوع لهذا المستند", message_en="No file uploaded for this document", status_code=404)
+    path = resolve_path(doc.stored_path)
+    if not os.path.exists(path):
+        raise APIError(code="NOT_FOUND", message_ar="الملف غير موجود على الخادم", message_en="File missing on server", status_code=404)
+    return FileResponse(path, filename=doc.file_name)
 
 # ----------------- VEHICLES & REAL ESTATE CRUD -----------------
 class VehicleCreate(BaseModel):

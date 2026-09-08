@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react'
-import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, Printer } from 'lucide-react'
-import { api, newId, downloadFile, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, Transaction } from '@/lib/api-client'
+import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, Printer, Download } from 'lucide-react'
+import { api, newId, downloadFile, uploadFile, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -26,7 +26,7 @@ function emptyDebtForm() {
 }
 
 function emptyDocForm() {
-  return { customerId: '', documentType: '', fileName: '', expiryDate: '', status: 'ساري', notes: '' }
+  return { customerId: '', documentType: '', fileName: '', expiryDate: '', status: 'ساري', notes: '', file: null as File | null }
 }
 
 const docStatusClass: Record<string, string> = {
@@ -322,22 +322,24 @@ export default function CustomersPage() {
     e.preventDefault()
     setDocFormError('')
     const customer = customers.find((c) => c.id === docForm.customerId)
-    if (!customer || !docForm.documentType.trim() || !docForm.fileName.trim()) {
-      setDocFormError('العميل ونوع المستند واسم الملف حقول مطلوبة')
+    if (!customer || !docForm.documentType.trim() || !docForm.file) {
+      setDocFormError('العميل ونوع المستند والملف حقول مطلوبة')
       return
     }
     setSavingDoc(true)
     try {
+      const docId = newId('cdoc')
       await api.post('/customer_documents', {
-        id: newId('cdoc'),
+        id: docId,
         customer_id: customer.id,
         customer_name: customer.name,
         document_type: docForm.documentType.trim(),
-        file_name: docForm.fileName.trim(),
+        file_name: docForm.file.name,
         expiry_date: docForm.expiryDate || null,
         status: docForm.status,
         notes: docForm.notes.trim() || null,
       })
+      await uploadFile(`/customer_documents/${docId}/file`, docForm.file)
       setShowDocModal(false)
       await load()
     } catch (err) {
@@ -629,11 +631,12 @@ export default function CustomersPage() {
                   <th className="px-6 py-4 font-medium">اسم الملف</th>
                   <th className="px-6 py-4 font-medium">تاريخ الانتهاء</th>
                   <th className="px-6 py-4 font-medium">الحالة</th>
+                  <th className="px-6 py-4 font-medium">الملف</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {documents.length === 0 ? (
-                  <tr><td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
+                  <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
                 ) : pagedDocuments.map((d) => (
                   <tr key={d.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{d.customerName}</td>
@@ -642,6 +645,15 @@ export default function CustomersPage() {
                     <td className="px-6 py-4 text-muted-foreground">{d.expiryDate || '—'}</td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${docStatusClass[d.status] || 'bg-muted text-muted-foreground'}`}>{d.status}</span>
+                    </td>
+                    <td className="px-6 py-4">
+                      {d.hasFile ? (
+                        <button onClick={() => downloadFile(`/customer_documents/${d.id}/file`, d.fileName)} title="تحميل الملف" className="text-muted-foreground hover:text-primary transition-colors p-1">
+                          <Download className="h-4 w-4" />
+                        </button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">لا يوجد ملف</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1059,12 +1071,14 @@ export default function CustomersPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">اسم الملف *</label>
+                <label className="block text-sm font-medium text-foreground mb-1">الملف *</label>
                 <input
-                  value={docForm.fileName}
-                  onChange={(e) => setDocForm({ ...docForm, fileName: e.target.value })}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                  onChange={(e) => setDocForm({ ...docForm, file: e.target.files?.[0] || null })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 file:ml-3 file:rounded file:border-0 file:bg-accent file:px-2 file:py-1 file:text-xs"
                 />
+                <p className="mt-1 text-xs text-muted-foreground">PDF, JPG, PNG, DOC أو DOCX — حتى 10 ميغابايت</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

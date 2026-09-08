@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.log
 backups/
+uploads/
 .claude/
 .superdesign
 .next/

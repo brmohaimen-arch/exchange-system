@@ -80,6 +80,8 @@ NEW_COLUMNS = [
     ("backups", "file_path", "VARCHAR(500)"),
     ("customers", "bank_name", "VARCHAR(150)"),
     ("customers", "bank_account_number", "VARCHAR(100)"),
+    ("customer_documents", "stored_path", "VARCHAR(300)"),
+    ("asset_documents", "stored_path", "VARCHAR(300)"),
 ]
 
 
