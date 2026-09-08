@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState, FormEvent } from 'react'
+import { useEffect, useMemo, useState, FormEvent, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import { api, newId, Vault, Currency, Bank, BankAccount, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
@@ -66,6 +67,14 @@ function emptyExpenseForm() {
 }
 
 export default function TreasuryPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center text-muted-foreground text-sm">جاري التحميل...</div>}>
+      <TreasuryPageInner />
+    </Suspense>
+  )
+}
+
+function TreasuryPageInner() {
   const { user, hasPermission } = useAuth()
   const confirmDialog = useConfirm()
   const canTransfer = hasPermission('تحويل بين الخزنات')
@@ -74,7 +83,14 @@ export default function TreasuryPage() {
   const canManageBranches = hasPermission('إدارة الفروع')
   const canManageBanks = hasPermission('إدارة البنوك')
 
-  const [tab, setTab] = useState<TabKey>('vaults')
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const initialTab = (tabs.find((t) => t.key === searchParams.get('tab'))?.key || 'vaults') as TabKey
+  const [tab, setTabState] = useState<TabKey>(initialTab)
+  const setTab = (next: TabKey) => {
+    setTabState(next)
+    router.replace(`/treasury?tab=${next}`, { scroll: false })
+  }
   const [vaults, setVaults] = useState<Vault[]>([])
   const [currencies, setCurrencies] = useState<Currency[]>([])
   const [transfers, setTransfers] = useState<TransferRow[]>([])

@@ -12,7 +12,7 @@ from ..core.responses import success_response, error_response
 from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
-from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
+from ..export_utils import build_excel, build_pdf, build_receipt_pdf, ArabicFontUnavailable
 from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
 from ..telegram_gateway import send_manager_alert as send_telegram_alert
 from fastapi.responses import StreamingResponse
@@ -848,6 +848,48 @@ def export_transactions(format: str = "xlsx", actor: User = Depends(require_perm
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء ملف PDF: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'attachment; filename="transactions.pdf"'})
+
+_RECEIPT_TYPE_LABELS = {"buy": "شراء عملة", "sell": "بيع عملة", "exchange": "تبديل عملة", "deposit": "إيداع في حساب عميل", "withdraw": "سحب من حساب عميل"}
+_RECEIPT_PAYMENT_LABELS = {"cash": "نقداً", "customer_account": "حساب العميل", "bank_account": "حساب بنكي", "debt": "دين (آجل)"}
+
+@router.get("/transactions/{transaction_id}/receipt")
+def get_transaction_receipt(transaction_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    t = db.get(Transaction, transaction_id)
+    if not t:
+        raise APIError(code="NOT_FOUND", message_ar="العملية غير موجودة", message_en="Transaction not found", status_code=404)
+
+    fields = [
+        ("رقم العملية", t.id),
+        ("التاريخ", t.timestamp),
+        ("نوع العملية", _RECEIPT_TYPE_LABELS.get(t.type, t.type)),
+        ("العميل", t.customer_name or "—"),
+        ("الفرع", t.branch),
+        ("الخزنة", t.vault_name),
+    ]
+    if t.type in ("buy", "sell", "exchange"):
+        fields += [
+            ("من عملة", t.from_currency),
+            ("إلى عملة", t.to_currency),
+            ("الكمية", f"{t.amount:,.2f}"),
+            ("السعر", f"{t.rate:,.4f}"),
+            ("العمولة", f"{t.commission:,.2f}"),
+            ("الإجمالي", f"{t.total_amount:,.2f}"),
+            ("طريقة الدفع", _RECEIPT_PAYMENT_LABELS.get(t.payment_method, t.payment_method)),
+        ]
+    else:
+        fields += [
+            ("العملة", t.from_currency),
+            ("المبلغ", f"{t.amount:,.2f}"),
+        ]
+    fields.append(("الموظف المنفذ", t.user))
+    if t.notes:
+        fields.append(("ملاحظات", t.notes))
+
+    try:
+        buf = build_receipt_pdf("إيصال عملية", f"شركة واكب للخدمات المالية", fields, footer="هذا الإيصال صادر آلياً من نظام واكب ولا يحتاج توقيعاً")
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء الإيصال: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="receipt_{t.id}.pdf"'})
 
 @router.get("/movements")
 def list_movements(db: Session = Depends(get_db)):

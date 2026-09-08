@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react'
-import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
-import { api, newId, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, Transaction } from '@/lib/api-client'
+import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, Printer } from 'lucide-react'
+import { api, newId, downloadFile, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -1231,11 +1231,12 @@ export default function CustomersPage() {
                         <th className="px-3 py-2 font-medium">الحالة</th>
                         <th className="px-3 py-2 font-medium">بواسطة</th>
                         <th className="px-3 py-2 font-medium">التاريخ</th>
+                        <th className="px-3 py-2 font-medium">إيصال</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       {statementTransactions.length === 0 ? (
-                        <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">لا توجد معاملات صرافة مسجلة</td></tr>
+                        <tr><td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">لا توجد معاملات صرافة مسجلة</td></tr>
                       ) : pagedStatementTransactions.map((t) => (
                         <tr key={t.id}>
                           <td className="px-3 py-2 font-medium text-foreground">{t.id}</td>
@@ -1250,6 +1251,11 @@ export default function CustomersPage() {
                           </td>
                           <td className="px-3 py-2 text-muted-foreground">{t.user}</td>
                           <td className="px-3 py-2 text-muted-foreground">{t.timestamp}</td>
+                          <td className="px-3 py-2">
+                            <button onClick={() => downloadFile(`/transactions/${t.id}/receipt`, `receipt_${t.id}.pdf`)} title="طباعة إيصال" className="text-muted-foreground hover:text-primary transition-colors p-1">
+                              <Printer className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1271,11 +1277,12 @@ export default function CustomersPage() {
                         <th className="px-3 py-2 font-medium">الخزنة</th>
                         <th className="px-3 py-2 font-medium">بواسطة</th>
                         <th className="px-3 py-2 font-medium">التاريخ</th>
+                        <th className="px-3 py-2 font-medium">إيصال</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       {statementEntries.length === 0 ? (
-                        <tr><td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">لا توجد حركات إيداع أو سحب مسجلة</td></tr>
+                        <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">لا توجد حركات إيداع أو سحب مسجلة</td></tr>
                       ) : pagedStatementEntries.map((e) => (
                         <tr key={e.id}>
                           <td className="px-3 py-2">
@@ -1289,6 +1296,11 @@ export default function CustomersPage() {
                           <td className="px-3 py-2 text-muted-foreground">{e.vaultName}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.user}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.timestamp}</td>
+                          <td className="px-3 py-2">
+                            <button onClick={() => downloadFile(`/transactions/${e.id}/receipt`, `receipt_${e.id}.pdf`)} title="طباعة إيصال" className="text-muted-foreground hover:text-primary transition-colors p-1">
+                              <Printer className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>

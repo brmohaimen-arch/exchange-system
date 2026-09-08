@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { ArrowRightLeft, DollarSign, Repeat, Loader2, Lock, Clock, PlayCircle, X } from 'lucide-react'
-import { api, newId, Currency, Customer, ExchangeRate, Vault, Transaction, Shift } from '@/lib/api-client'
+import { ArrowRightLeft, DollarSign, Repeat, Loader2, Lock, Clock, PlayCircle, X, Printer } from 'lucide-react'
+import { api, newId, downloadFile, Currency, Customer, ExchangeRate, Vault, Transaction, Shift } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 
@@ -628,13 +628,14 @@ export default function TransactionsPage() {
                 <th className="px-6 py-4 font-medium">الحالة</th>
                 <th className="px-6 py-4 font-medium">بواسطة</th>
                 <th className="px-6 py-4 font-medium">التاريخ</th>
+                <th className="px-6 py-4 font-medium">إجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loading ? (
-                <tr><td colSpan={11} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
+                <tr><td colSpan={12} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
               ) : pagedTransactions.length === 0 ? (
-                <tr><td colSpan={11} className="px-6 py-10 text-center text-muted-foreground">لا توجد عمليات بعد</td></tr>
+                <tr><td colSpan={12} className="px-6 py-10 text-center text-muted-foreground">لا توجد عمليات بعد</td></tr>
               ) : pagedTransactions.map((tx) => {
                 const st = statusLabel[tx.status] || statusLabel.approved
                 return (
@@ -652,6 +653,15 @@ export default function TransactionsPage() {
                     </td>
                     <td className="px-6 py-4 text-muted-foreground">{tx.user}</td>
                     <td className="px-6 py-4 text-muted-foreground">{tx.timestamp}</td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => downloadFile(`/transactions/${tx.id}/receipt`, `receipt_${tx.id}.pdf`)}
+                        title="طباعة إيصال"
+                        className="text-muted-foreground hover:text-primary transition-colors p-1"
+                      >
+                        <Printer className="h-4 w-4" />
+                      </button>
+                    </td>
                   </tr>
                 )
               })}

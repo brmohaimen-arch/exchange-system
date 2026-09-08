@@ -144,3 +144,48 @@ def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
     doc.build(elements)
     buf.seek(0)
     return buf
+
+
+def build_receipt_pdf(title: str, subtitle: str, fields: list[tuple[str, str]], footer: str = "") -> io.BytesIO:
+    """A narrow, single-record printable slip (label/value rows) rather than
+    build_pdf's wide multi-row table — for a single transaction's receipt,
+    not a report."""
+    font_name = _ensure_font_registered()
+    buf = io.BytesIO()
+    page_width = 10 * cm
+    doc = SimpleDocTemplate(
+        buf, pagesize=(page_width, 29.7 * cm),
+        leftMargin=1 * cm, rightMargin=1 * cm, topMargin=1 * cm, bottomMargin=1 * cm,
+    )
+
+    title_style = ParagraphStyle("ReceiptTitle", fontName=font_name, fontSize=14, alignment=1, spaceAfter=4)
+    subtitle_style = ParagraphStyle("ReceiptSubtitle", fontName=font_name, fontSize=9, alignment=1, textColor=colors.grey, spaceAfter=10)
+    elements = [
+        Paragraph(shape_arabic(title), title_style),
+        Paragraph(shape_arabic(subtitle), subtitle_style),
+    ]
+
+    # Right-aligned label/value rows, value column reversed to the right (RTL) like build_pdf.
+    table_data = [[shape_arabic(value), shape_arabic(label)] for label, value in fields]
+    col_width = (page_width - 2 * cm) / 2
+    table = Table(table_data, colWidths=[col_width, col_width])
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#F3F4F6")),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(table)
+
+    if footer:
+        elements.append(Spacer(1, 0.8 * cm))
+        footer_style = ParagraphStyle("ReceiptFooter", fontName=font_name, fontSize=8, alignment=1, textColor=colors.grey)
+        elements.append(Paragraph(shape_arabic(footer), footer_style))
+
+    doc.build(elements)
+    buf.seek(0)
+    return buf
