@@ -7,6 +7,7 @@ bcrypt
 pyjwt
 openpyxl
 reportlab
+Pillow
 arabic-reshaper
 python-bidi
 a2wsgi

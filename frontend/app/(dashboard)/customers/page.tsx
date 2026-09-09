@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react'
-import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, Printer, Download } from 'lucide-react'
-import { api, newId, downloadFile, uploadFile, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, Transaction } from '@/lib/api-client'
+import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent, Suspense } from 'react'
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, Printer, Download, CreditCard, MessageCircle } from 'lucide-react'
+import { api, newId, openFile, uploadFile, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, BankAccount, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -18,7 +20,7 @@ const debtStatusLabel: Record<string, string> = { unpaid: 'غير مسدد', par
 interface BalanceRow { currency: string; amount: string }
 
 function emptyForm() {
-  return { code: '', name: '', type: 'individual', phone: '', idNumber: '', address: '', debtLimit: '0', profitPct: '0', notes: '', isActive: true, bankName: '', bankAccountNumber: '' }
+  return { code: '', name: '', type: 'individual', phone: '', idNumber: '', address: '', debtLimit: '0', profitPct: '0', notes: '', isActive: true, bankName: '', bankAccountNumber: '', passportNumber: '' }
 }
 
 function emptyDebtForm() {
@@ -29,22 +31,42 @@ function emptyDocForm() {
   return { customerId: '', documentType: '', fileName: '', expiryDate: '', status: 'ساري', notes: '', file: null as File | null }
 }
 
+function docEditFormFrom(d: CustomerDocument) {
+  return { documentType: d.documentType, expiryDate: d.expiryDate || '', status: d.status, notes: d.notes || '' }
+}
+
 const docStatusClass: Record<string, string> = {
   'ساري': 'bg-success/10 text-success',
   'قارب على الانتهاء': 'bg-warning/10 text-warning',
   'منتهي': 'bg-danger/10 text-danger',
 }
 
+const VALID_TABS = ['customers', 'cards', 'debts', 'documents'] as const
+type CustomersTab = typeof VALID_TABS[number]
+
 export default function CustomersPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center text-muted-foreground text-sm">جاري التحميل...</div>}>
+      <CustomersPageInner />
+    </Suspense>
+  )
+}
+
+function CustomersPageInner() {
   const { hasPermission } = useAuth()
   const confirmDialog = useConfirm()
-  const [tab, setTab] = useState<'customers' | 'debts' | 'documents'>('customers')
+  const searchParams = useSearchParams()
+  const initialTab = (VALID_TABS as readonly string[]).includes(searchParams.get('tab') || '')
+    ? (searchParams.get('tab') as CustomersTab)
+    : 'customers'
+  const [tab, setTab] = useState<CustomersTab>(initialTab)
 
   const [customers, setCustomers] = useState<Customer[]>([])
   const [debts, setDebts] = useState<Debt[]>([])
   const [currencies, setCurrencies] = useState<Currency[]>([])
   const [documents, setDocuments] = useState<CustomerDocument[]>([])
   const [vaults, setVaults] = useState<Vault[]>([])
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
   const [accountEntries, setAccountEntries] = useState<CustomerAccountEntry[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
@@ -78,7 +100,7 @@ export default function CustomersPage() {
 
   const [depositWithdrawCustomer, setDepositWithdrawCustomer] = useState<Customer | null>(null)
   const [depositWithdrawType, setDepositWithdrawType] = useState<'deposit' | 'withdraw'>('deposit')
-  const [dwForm, setDwForm] = useState({ vaultId: '', currency: 'LYD', amount: '', notes: '' })
+  const [dwForm, setDwForm] = useState({ sourceType: 'vault' as 'vault' | 'bank_account' | 'other', vaultId: '', bankAccountId: '', otherSource: '', currency: 'LYD', amount: '', notes: '' })
   const [dwError, setDwError] = useState('')
   const [dwSaving, setDwSaving] = useState(false)
 
@@ -87,20 +109,34 @@ export default function CustomersPage() {
   const [customersPage, setCustomersPage] = useState(1)
   const [debtsPage, setDebtsPage] = useState(1)
   const [documentsPage, setDocumentsPage] = useState(1)
+  const [unlinkedDocsPage, setUnlinkedDocsPage] = useState(1)
   const [statementPage, setStatementPage] = useState(1)
   const [statementTxPage, setStatementTxPage] = useState(1)
+
+  const [connectingDoc, setConnectingDoc] = useState<CustomerDocument | null>(null)
+  const [connectCustomerId, setConnectCustomerId] = useState('')
+  const [connectError, setConnectError] = useState('')
+  const [connecting, setConnecting] = useState(false)
+
+  const [editingDoc, setEditingDoc] = useState<CustomerDocument | null>(null)
+  const [docEditForm, setDocEditForm] = useState(docEditFormFrom({ documentType: '', expiryDate: '', status: '', notes: '' } as CustomerDocument))
+  const [docEditError, setDocEditError] = useState('')
+  const [savingDocEdit, setSavingDocEdit] = useState(false)
+  const [sendingStatementId, setSendingStatementId] = useState<string | null>(null)
+  const [sendingDebtId, setSendingDebtId] = useState<string | null>(null)
 
   const canManage = hasPermission('إدارة العملاء')
   const canManageDebts = hasPermission('إدارة الديون')
 
   const load = async () => {
     try {
-      const [custs, debtsData, currs, docs, v, ae, tx] = await Promise.all([
+      const [custs, debtsData, currs, docs, v, ba, ae, tx] = await Promise.all([
         api.get<Customer[]>('/customers'),
         api.get<Debt[]>('/debts'),
         api.get<Currency[]>('/currencies'),
         api.get<CustomerDocument[]>('/customer_documents'),
         api.get<Vault[]>('/vaults'),
+        api.get<BankAccount[]>('/bank_accounts'),
         api.get<CustomerAccountEntry[]>('/customer_account_entries'),
         api.get<Transaction[]>('/transactions'),
       ])
@@ -109,6 +145,7 @@ export default function CustomersPage() {
       setCurrencies(currs)
       setDocuments(docs)
       setVaults(v)
+      setBankAccounts(ba)
       setAccountEntries(ae)
       setTransactions(tx)
     } catch (err) {
@@ -133,7 +170,7 @@ export default function CustomersPage() {
     setForm({
       code: c.id, name: c.name, type: c.type, phone: c.phone, idNumber: c.idNumber, address: c.address,
       debtLimit: String(c.debtLimit), profitPct: String(c.profitPct), notes: c.notes || '', isActive: c.isActive,
-      bankName: c.bankName || '', bankAccountNumber: c.bankAccountNumber || '',
+      bankName: c.bankName || '', bankAccountNumber: c.bankAccountNumber || '', passportNumber: c.passportNumber || '',
     })
     setBalanceRows(Object.entries(c.balances).map(([currency, amount]) => ({ currency, amount: String(amount) })))
     setFormError('')
@@ -177,6 +214,7 @@ export default function CustomersPage() {
           is_active: form.isActive,
           bank_name: form.bankName.trim() || null,
           bank_account_number: form.bankAccountNumber.trim() || null,
+          passport_number: form.passportNumber.trim() || null,
         })
       } else {
         await api.post('/customers', {
@@ -192,6 +230,7 @@ export default function CustomersPage() {
           notes: form.notes.trim() || null,
           bank_name: form.bankName.trim() || null,
           bank_account_number: form.bankAccountNumber.trim() || null,
+          passport_number: form.passportNumber.trim() || null,
         })
       }
       setShowModal(false)
@@ -243,7 +282,7 @@ export default function CustomersPage() {
   const openDepositWithdraw = (c: Customer, type: 'deposit' | 'withdraw') => {
     setDepositWithdrawCustomer(c)
     setDepositWithdrawType(type)
-    setDwForm({ vaultId: vaults[0]?.id || '', currency: 'LYD', amount: '', notes: '' })
+    setDwForm({ sourceType: 'vault', vaultId: vaults[0]?.id || '', bankAccountId: bankAccounts[0]?.id || '', otherSource: '', currency: 'LYD', amount: '', notes: '' })
     setDwError('')
   }
 
@@ -252,14 +291,18 @@ export default function CustomersPage() {
     if (!depositWithdrawCustomer) return
     setDwError('')
     const amount = parseFloat(dwForm.amount)
-    if (!dwForm.vaultId || !amount || amount <= 0) {
-      setDwError('الخزنة والمبلغ حقول مطلوبة')
+    const sourceLabel = { vault: 'الخزنة', bank_account: 'الحساب البنكي', other: 'وصف المصدر' }[dwForm.sourceType]
+    const sourceOk = dwForm.sourceType === 'vault' ? !!dwForm.vaultId : dwForm.sourceType === 'bank_account' ? !!dwForm.bankAccountId : !!dwForm.otherSource.trim()
+    if (!sourceOk || !amount || amount <= 0) {
+      setDwError(`${sourceLabel} والمبلغ حقول مطلوبة`)
       return
     }
     setDwSaving(true)
     try {
       await api.post(`/customers/${depositWithdrawCustomer.id}/${depositWithdrawType}`, {
-        vault_id: dwForm.vaultId,
+        vault_id: dwForm.sourceType === 'vault' ? dwForm.vaultId : null,
+        bank_account_id: dwForm.sourceType === 'bank_account' ? dwForm.bankAccountId : null,
+        other_source: dwForm.sourceType === 'other' ? dwForm.otherSource.trim() : null,
         currency: dwForm.currency,
         amount,
         notes: dwForm.notes.trim() || null,
@@ -322,8 +365,8 @@ export default function CustomersPage() {
     e.preventDefault()
     setDocFormError('')
     const customer = customers.find((c) => c.id === docForm.customerId)
-    if (!customer || !docForm.documentType.trim() || !docForm.file) {
-      setDocFormError('العميل ونوع المستند والملف حقول مطلوبة')
+    if (!docForm.documentType.trim() || !docForm.file) {
+      setDocFormError('نوع المستند والملف حقول مطلوبة')
       return
     }
     setSavingDoc(true)
@@ -331,8 +374,8 @@ export default function CustomersPage() {
       const docId = newId('cdoc')
       await api.post('/customer_documents', {
         id: docId,
-        customer_id: customer.id,
-        customer_name: customer.name,
+        customer_id: customer?.id || null,
+        customer_name: customer?.name || null,
         document_type: docForm.documentType.trim(),
         file_name: docForm.file.name,
         expiry_date: docForm.expiryDate || null,
@@ -346,6 +389,101 @@ export default function CustomersPage() {
       setDocFormError(err instanceof ApiError ? err.message : 'تعذر حفظ المستند')
     } finally {
       setSavingDoc(false)
+    }
+  }
+
+  const openConnectDoc = (d: CustomerDocument) => {
+    setConnectingDoc(d)
+    setConnectCustomerId('')
+    setConnectError('')
+  }
+
+  const submitConnectDoc = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!connectingDoc) return
+    if (!connectCustomerId) {
+      setConnectError('اختر عميلاً لربط المستند به')
+      return
+    }
+    setConnecting(true)
+    setConnectError('')
+    try {
+      await api.post(`/customer_documents/${connectingDoc.id}/connect`, { customer_id: connectCustomerId })
+      setConnectingDoc(null)
+      await load()
+    } catch (err) {
+      setConnectError(err instanceof ApiError ? err.message : 'تعذر ربط المستند')
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const openEditDoc = (d: CustomerDocument) => {
+    setEditingDoc(d)
+    setDocEditForm(docEditFormFrom(d))
+    setDocEditError('')
+  }
+
+  const submitEditDoc = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editingDoc) return
+    if (!docEditForm.documentType.trim()) {
+      setDocEditError('نوع المستند مطلوب')
+      return
+    }
+    setSavingDocEdit(true)
+    setDocEditError('')
+    try {
+      await api.put(`/customer_documents/${editingDoc.id}`, {
+        id: editingDoc.id,
+        customer_id: editingDoc.customerId,
+        customer_name: editingDoc.customerName,
+        document_type: docEditForm.documentType.trim(),
+        file_name: editingDoc.fileName,
+        expiry_date: docEditForm.expiryDate || null,
+        status: docEditForm.status,
+        notes: docEditForm.notes.trim() || null,
+      })
+      setEditingDoc(null)
+      await load()
+    } catch (err) {
+      setDocEditError(err instanceof ApiError ? err.message : 'تعذر تعديل المستند')
+    } finally {
+      setSavingDocEdit(false)
+    }
+  }
+
+  const deleteDocument = async (d: CustomerDocument) => {
+    if (!(await confirmDialog(`هل تريد حذف مستند "${d.documentType}"؟`))) return
+    try {
+      await api.delete(`/customer_documents/${d.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف المستند')
+    }
+  }
+
+  const sendStatementWhatsapp = async (c: Customer) => {
+    setSendingStatementId(c.id)
+    setError('')
+    try {
+      await api.post(`/customers/${c.id}/send_statement_whatsapp`, {})
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إرسال كشف الحساب عبر واتساب')
+    } finally {
+      setSendingStatementId(null)
+    }
+  }
+
+  const sendDebtReceiptWhatsapp = async (d: Debt) => {
+    setSendingDebtId(d.id)
+    setError('')
+    try {
+      await api.post(`/debts/${d.id}/send_receipt_whatsapp`, {})
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إرسال إيصال الدين عبر واتساب')
+    } finally {
+      setSendingDebtId(null)
     }
   }
 
@@ -402,8 +540,11 @@ export default function CustomersPage() {
   const sortedDebts = useMemo(() => [...debts].reverse(), [debts])
   const pagedDebts = paginate(sortedDebts, debtsPage)
 
-  const sortedDocuments = useMemo(() => [...documents].reverse(), [documents])
+  const sortedDocuments = useMemo(() => [...documents].filter((d) => d.customerId).reverse(), [documents])
   const pagedDocuments = paginate(sortedDocuments, documentsPage)
+
+  const unlinkedDocuments = useMemo(() => [...documents].filter((d) => !d.customerId).reverse(), [documents])
+  const pagedUnlinkedDocuments = paginate(unlinkedDocuments, unlinkedDocsPage)
 
   const statementEntries = useMemo(
     () => accountEntries.filter((e) => e.customerId === statementCustomer?.id).sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
@@ -417,10 +558,23 @@ export default function CustomersPage() {
   )
   const pagedStatementTransactions = paginate(statementTransactions, statementTxPage)
 
+  const statementDocuments = useMemo(
+    () => documents.filter((d) => d.customerId === statementCustomer?.id),
+    [documents, statementCustomer]
+  )
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-foreground">العملاء</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold text-foreground">العملاء</h2>
+          <Link
+            href="/customers/statement"
+            className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <FileText className="h-3.5 w-3.5" /> كشف حساب مفصّل
+          </Link>
+        </div>
         {tab === 'customers' && canManage && (
           <div className="flex items-center gap-2">
             <input ref={fileInputRef} type="file" accept=".csv" onChange={handleImportFile} className="hidden" />
@@ -440,6 +594,15 @@ export default function CustomersPage() {
               إضافة عميل
             </button>
           </div>
+        )}
+        {tab === 'cards' && canManage && (
+          <button
+            onClick={openCreate}
+            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            إضافة بطاقة عميل
+          </button>
         )}
         {tab === 'debts' && canManageDebts && (
           <button
@@ -472,6 +635,14 @@ export default function CustomersPage() {
           }`}
         >
           <Users className="h-4 w-4" /> العملاء
+        </button>
+        <button
+          onClick={() => setTab('cards')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            tab === 'cards' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <CreditCard className="h-4 w-4" /> بطاقات العملاء
         </button>
         <button
           onClick={() => setTab('debts')}
@@ -534,30 +705,30 @@ export default function CustomersPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => setSelected(customer)} title="عرض" className="text-primary hover:text-primary/80 transition-colors p-1">
-                          <Eye className="h-4 w-4" />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button onClick={() => setSelected(customer)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                          <Eye className="h-3.5 w-3.5" /> عرض
                         </button>
-                        <button onClick={() => { setStatementCustomer(customer); setStatementPage(1); setStatementTxPage(1) }} title="كشف الحساب" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                          <FileText className="h-4 w-4" />
+                        <button onClick={() => { setStatementCustomer(customer); setStatementPage(1); setStatementTxPage(1) }} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted transition-colors">
+                          <FileText className="h-3.5 w-3.5" /> كشف الحساب
                         </button>
                         {canManage && customer.isActive && (
                           <>
-                            <button onClick={() => openDepositWithdraw(customer, 'deposit')} title="إيداع" className="text-success hover:text-success/80 transition-colors p-1">
-                              <ArrowDownCircle className="h-4 w-4" />
+                            <button onClick={() => openDepositWithdraw(customer, 'deposit')} className="flex items-center gap-1 rounded-md border border-success/30 px-2 py-1 text-xs font-medium text-success hover:bg-success/10 transition-colors">
+                              <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
                             </button>
-                            <button onClick={() => openDepositWithdraw(customer, 'withdraw')} title="سحب" className="text-warning hover:text-warning/80 transition-colors p-1">
-                              <ArrowUpCircle className="h-4 w-4" />
+                            <button onClick={() => openDepositWithdraw(customer, 'withdraw')} className="flex items-center gap-1 rounded-md border border-warning/30 px-2 py-1 text-xs font-medium text-warning hover:bg-warning/10 transition-colors">
+                              <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
                             </button>
                           </>
                         )}
                         {canManage && (
                           <>
-                            <button onClick={() => openEdit(customer)} title="تعديل" className="text-primary hover:text-primary/80 transition-colors p-1">
-                              <Pencil className="h-4 w-4" />
+                            <button onClick={() => openEdit(customer)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
                             </button>
-                            <button onClick={() => deleteCustomer(customer)} title="حذف" className="text-danger hover:text-danger/80 transition-colors p-1">
-                              <Trash2 className="h-4 w-4" />
+                            <button onClick={() => deleteCustomer(customer)} className="flex items-center gap-1 rounded-md border border-danger/30 px-2 py-1 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
                             </button>
                           </>
                         )}
@@ -568,6 +739,61 @@ export default function CustomersPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination page={customersPage} totalItems={sortedCustomers.length} onPageChange={setCustomersPage} />
+        </div>
+      )}
+
+      {tab === 'cards' && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {customers.length === 0 ? (
+            <p className="text-sm text-muted-foreground">لا يوجد عملاء بعد</p>
+          ) : pagedCustomers.map((customer) => (
+            <div key={customer.id} className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b border-border pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-primary">
+                    <CreditCard className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-foreground text-sm">{customer.name}</h3>
+                    <span className="text-[11px] text-muted-foreground" dir="ltr">{customer.id}</span>
+                  </div>
+                </div>
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${customer.isActive ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}`}>
+                  {customer.isActive ? 'نشط' : 'موقوف'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <p className="text-muted-foreground">رقم الهاتف</p>
+                  <p className="font-medium text-foreground" dir="ltr">{customer.phone || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">الرقم الوطني</p>
+                  <p className="font-medium text-foreground" dir="ltr">{customer.idNumber || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">رقم جواز السفر</p>
+                  <p className="font-medium text-foreground" dir="ltr">{customer.passportNumber || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">حساب بنكي (IBAN)</p>
+                  <p className="font-medium text-foreground" dir="ltr">{customer.bankAccountNumber || '—'}</p>
+                </div>
+              </div>
+              {customer.bankName && <p className="text-[11px] text-muted-foreground">البنك: {customer.bankName}</p>}
+              {canManage && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-3 border-t border-border">
+                  <button onClick={() => openEdit(customer)} className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                    <Pencil className="h-3.5 w-3.5" /> تعديل البطاقة
+                  </button>
+                  <button onClick={() => deleteCustomer(customer)} className="flex items-center gap-1 rounded-md border border-danger/30 px-2.5 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
+                    <Trash2 className="h-3.5 w-3.5" /> حذف
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
           <TablePagination page={customersPage} totalItems={sortedCustomers.length} onPageChange={setCustomersPage} />
         </div>
       )}
@@ -584,7 +810,7 @@ export default function CustomersPage() {
                   <th className="px-6 py-4 font-medium">المتبقي</th>
                   <th className="px-6 py-4 font-medium">تاريخ الاستحقاق</th>
                   <th className="px-6 py-4 font-medium">الحالة</th>
-                  {canManageDebts && <th className="px-6 py-4 font-medium">إجراءات</th>}
+                  <th className="px-6 py-4 font-medium">إجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -602,15 +828,28 @@ export default function CustomersPage() {
                         {debtStatusLabel[d.status] || d.status}
                       </span>
                     </td>
-                    {canManageDebts && (
-                      <td className="px-6 py-4">
-                        {d.status !== 'paid' && (
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        {canManageDebts && d.status !== 'paid' && (
                           <button onClick={() => openPay(d)} className="flex items-center gap-1 text-primary hover:text-primary/80 transition-colors text-xs font-medium">
                             <Landmark className="h-3.5 w-3.5" /> تسديد دفعة
                           </button>
                         )}
-                      </td>
-                    )}
+                        <button
+                          onClick={() => openFile(`/debts/${d.id}/receipt`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الإيصال'))}
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                        >
+                          <Printer className="h-3.5 w-3.5" /> طباعة إيصال
+                        </button>
+                        <button
+                          onClick={() => sendDebtReceiptWhatsapp(d)}
+                          disabled={sendingDebtId === d.id}
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors disabled:opacity-50"
+                        >
+                          {sendingDebtId === d.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="h-3.5 w-3.5" />} إرسال واتساب
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -621,46 +860,204 @@ export default function CustomersPage() {
       )}
 
       {tab === 'documents' && (
-        <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm text-right">
-              <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
-                <tr>
-                  <th className="px-6 py-4 font-medium">العميل</th>
-                  <th className="px-6 py-4 font-medium">نوع المستند</th>
-                  <th className="px-6 py-4 font-medium">اسم الملف</th>
-                  <th className="px-6 py-4 font-medium">تاريخ الانتهاء</th>
-                  <th className="px-6 py-4 font-medium">الحالة</th>
-                  <th className="px-6 py-4 font-medium">الملف</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {documents.length === 0 ? (
-                  <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
-                ) : pagedDocuments.map((d) => (
-                  <tr key={d.id} className="hover:bg-muted/50 transition-colors">
-                    <td className="px-6 py-4 font-medium text-foreground">{d.customerName}</td>
-                    <td className="px-6 py-4">{d.documentType}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{d.fileName}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{d.expiryDate || '—'}</td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${docStatusClass[d.status] || 'bg-muted text-muted-foreground'}`}>{d.status}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      {d.hasFile ? (
-                        <button onClick={() => downloadFile(`/customer_documents/${d.id}/file`, d.fileName)} title="تحميل الملف" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                          <Download className="h-4 w-4" />
-                        </button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">لا يوجد ملف</span>
-                      )}
-                    </td>
+        <div className="space-y-6">
+          {unlinkedDocuments.length > 0 && (
+            <div className="rounded-xl border border-warning/30 bg-warning/5 shadow-sm overflow-hidden">
+              <div className="border-b border-warning/30 px-6 py-4">
+                <h3 className="text-sm font-semibold text-foreground">سجلات غير مرتبطة بعميل</h3>
+                <p className="text-xs text-muted-foreground mt-1">مستندات تم رفعها قبل إنشاء أو تحديد سجل العميل — اربطها بعميل فور توفره</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-right">
+                  <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                    <tr>
+                      <th className="px-6 py-4 font-medium">نوع المستند</th>
+                      <th className="px-6 py-4 font-medium">اسم الملف</th>
+                      <th className="px-6 py-4 font-medium">ملاحظات</th>
+                      <th className="px-6 py-4 font-medium">الملف</th>
+                      <th className="px-6 py-4 font-medium">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {pagedUnlinkedDocuments.map((d) => (
+                      <tr key={d.id} className="hover:bg-muted/50 transition-colors">
+                        <td className="px-6 py-4 font-medium text-foreground">{d.documentType}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{d.fileName}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{d.notes || '—'}</td>
+                        <td className="px-6 py-4">
+                          {d.hasFile ? (
+                            <button onClick={() => openFile(`/customer_documents/${d.id}/file`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الملف'))} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <Download className="h-3.5 w-3.5" /> فتح الملف
+                            </button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">لا يوجد ملف</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          {canManage && (
+                            <button onClick={() => openConnectDoc(d)} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
+                              <Users className="h-3.5 w-3.5" /> ربط بعميل
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <TablePagination page={unlinkedDocsPage} totalItems={unlinkedDocuments.length} onPageChange={setUnlinkedDocsPage} />
+            </div>
+          )}
+
+          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-right">
+                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                  <tr>
+                    <th className="px-6 py-4 font-medium">العميل</th>
+                    <th className="px-6 py-4 font-medium">نوع المستند</th>
+                    <th className="px-6 py-4 font-medium">اسم الملف</th>
+                    <th className="px-6 py-4 font-medium">تاريخ الانتهاء</th>
+                    <th className="px-6 py-4 font-medium">الحالة</th>
+                    <th className="px-6 py-4 font-medium">الملف</th>
+                    <th className="px-6 py-4 font-medium">إجراءات</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {sortedDocuments.length === 0 ? (
+                    <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
+                  ) : pagedDocuments.map((d) => (
+                    <tr key={d.id} className="hover:bg-muted/50 transition-colors">
+                      <td className="px-6 py-4 font-medium text-foreground">{d.customerName}</td>
+                      <td className="px-6 py-4">{d.documentType}</td>
+                      <td className="px-6 py-4 text-muted-foreground">{d.fileName}</td>
+                      <td className="px-6 py-4 text-muted-foreground">{d.expiryDate || '—'}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${docStatusClass[d.status] || 'bg-muted text-muted-foreground'}`}>{d.status}</span>
+                      </td>
+                      <td className="px-6 py-4">
+                        {d.hasFile ? (
+                          <button onClick={() => openFile(`/customer_documents/${d.id}/file`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الملف'))} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                            <Download className="h-3.5 w-3.5" /> فتح الملف
+                          </button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">لا يوجد ملف</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4">
+                        {canManage && (
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => openEditDoc(d)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
+                            </button>
+                            <button onClick={() => deleteDocument(d)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TablePagination page={documentsPage} totalItems={sortedDocuments.length} onPageChange={setDocumentsPage} />
           </div>
-          <TablePagination page={documentsPage} totalItems={sortedDocuments.length} onPageChange={setDocumentsPage} />
+        </div>
+      )}
+
+      {/* Connect Document to Customer Modal */}
+      {connectingDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">ربط المستند بعميل</h3>
+              <button onClick={() => setConnectingDoc(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitConnectDoc} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">{connectingDoc.documentType} — {connectingDoc.fileName}</p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">العميل *</label>
+                <select
+                  value={connectCustomerId}
+                  onChange={(e) => setConnectCustomerId(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر عميلاً</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              {connectError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{connectError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setConnectingDoc(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={connecting} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {connecting && <Loader2 className="h-4 w-4 animate-spin" />} ربط
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Document Modal */}
+      {editingDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تعديل المستند</h3>
+              <button onClick={() => setEditingDoc(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitEditDoc} className="space-y-4 p-6 text-right">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">نوع المستند *</label>
+                <input
+                  type="text"
+                  value={docEditForm.documentType}
+                  onChange={(e) => setDocEditForm({ ...docEditForm, documentType: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">تاريخ الانتهاء</label>
+                  <input
+                    type="date"
+                    value={docEditForm.expiryDate}
+                    onChange={(e) => setDocEditForm({ ...docEditForm, expiryDate: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">الحالة</label>
+                  <select
+                    value={docEditForm.status}
+                    onChange={(e) => setDocEditForm({ ...docEditForm, status: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="ساري">ساري</option>
+                    <option value="قارب على الانتهاء">قارب على الانتهاء</option>
+                    <option value="منتهي">منتهي</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={docEditForm.notes}
+                  onChange={(e) => setDocEditForm({ ...docEditForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {docEditError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{docEditError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setEditingDoc(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={savingDocEdit} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {savingDocEdit && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -812,7 +1209,7 @@ export default function CustomersPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">رقم حساب العميل البنكي</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم حساب العميل البنكي (IBAN)</label>
                   <input
                     value={form.bankAccountNumber}
                     onChange={(e) => setForm({ ...form, bankAccountNumber: e.target.value })}
@@ -820,6 +1217,16 @@ export default function CustomersPage() {
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">رقم جواز السفر</label>
+                <input
+                  value={form.passportNumber}
+                  onChange={(e) => setForm({ ...form, passportNumber: e.target.value })}
+                  dir="ltr"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
               </div>
 
               <div>
@@ -1051,13 +1458,13 @@ export default function CustomersPage() {
             </div>
             <form onSubmit={submitDoc} className="space-y-4 p-6 text-right">
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">العميل *</label>
+                <label className="block text-sm font-medium text-foreground mb-1">العميل</label>
                 <select
                   value={docForm.customerId}
                   onChange={(e) => setDocForm({ ...docForm, customerId: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">اختر عميلاً</option>
+                  <option value="">بدون عميل محدد (يمكن ربطه لاحقاً)</option>
                   {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
@@ -1147,16 +1554,59 @@ export default function CustomersPage() {
             </div>
             <form onSubmit={submitDepositWithdraw} className="space-y-4 p-6 text-right">
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">الخزنة *</label>
-                <select
-                  value={dwForm.vaultId}
-                  onChange={(e) => setDwForm({ ...dwForm, vaultId: e.target.value })}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">اختر</option>
-                  {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
+                <label className="block text-sm font-medium text-foreground mb-1">مصدر العملية *</label>
+                <div className="flex gap-4 text-sm">
+                  <label className="flex items-center gap-1.5">
+                    <input type="radio" checked={dwForm.sourceType === 'vault'} onChange={() => setDwForm({ ...dwForm, sourceType: 'vault' })} />
+                    خزنة
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input type="radio" checked={dwForm.sourceType === 'bank_account'} onChange={() => setDwForm({ ...dwForm, sourceType: 'bank_account' })} />
+                    حساب بنكي
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input type="radio" checked={dwForm.sourceType === 'other'} onChange={() => setDwForm({ ...dwForm, sourceType: 'other' })} />
+                    أخرى
+                  </label>
+                </div>
               </div>
+              {dwForm.sourceType === 'vault' ? (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">الخزنة *</label>
+                  <select
+                    value={dwForm.vaultId}
+                    onChange={(e) => setDwForm({ ...dwForm, vaultId: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="">اختر</option>
+                    {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
+                </div>
+              ) : dwForm.sourceType === 'bank_account' ? (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">الحساب البنكي *</label>
+                  <select
+                    value={dwForm.bankAccountId}
+                    onChange={(e) => setDwForm({ ...dwForm, bankAccountId: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="">اختر</option>
+                    {bankAccounts.map((b) => <option key={b.id} value={b.id}>{b.bankName} - {b.accountName}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">وصف المصدر *</label>
+                  <input
+                    type="text"
+                    value={dwForm.otherSource}
+                    onChange={(e) => setDwForm({ ...dwForm, otherSource: e.target.value })}
+                    placeholder="مثال: مبلغ نقدي خارج الخزنة"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">لن يتم خصم/إضافة هذا المبلغ من أي خزنة أو حساب بنكي مسجل في النظام.</p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
@@ -1216,11 +1666,37 @@ export default function CustomersPage() {
           <div className="w-full max-w-2xl rounded-xl border border-border bg-card shadow-xl max-h-[85vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
               <h3 className="text-lg font-semibold text-foreground">كشف حساب — {statementCustomer.name}</h3>
-              <button onClick={() => setStatementCustomer(null)} className="text-muted-foreground hover:text-foreground">
-                <X className="h-5 w-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => sendStatementWhatsapp(statementCustomer)}
+                  disabled={sendingStatementId === statementCustomer.id}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors disabled:opacity-50"
+                >
+                  {sendingStatementId === statementCustomer.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="h-3.5 w-3.5" />} إرسال عبر واتساب
+                </button>
+                <button onClick={() => setStatementCustomer(null)} className="text-muted-foreground hover:text-foreground">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
             <div className="overflow-y-auto p-6 text-right">
+              <div className="mb-4">
+                <p className="text-sm font-medium text-foreground mb-2">المستندات</p>
+                <div className="flex flex-wrap gap-2">
+                  {statementDocuments.length === 0 ? (
+                    <span className="text-sm text-muted-foreground">لا توجد مستندات مرفوعة</span>
+                  ) : statementDocuments.map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => d.hasFile && openFile(`/customer_documents/${d.id}/file`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الملف'))}
+                      disabled={!d.hasFile}
+                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                    >
+                      <FileText className="h-3.5 w-3.5" /> {d.documentType}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="mb-4">
                 <p className="text-sm text-muted-foreground mb-1">الرصيد الحالي</p>
                 <div className="flex flex-wrap gap-3">
@@ -1266,8 +1742,8 @@ export default function CustomersPage() {
                           <td className="px-3 py-2 text-muted-foreground">{t.user}</td>
                           <td className="px-3 py-2 text-muted-foreground">{t.timestamp}</td>
                           <td className="px-3 py-2">
-                            <button onClick={() => downloadFile(`/transactions/${t.id}/receipt`, `receipt_${t.id}.pdf`)} title="طباعة إيصال" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                              <Printer className="h-3.5 w-3.5" />
+                            <button onClick={() => openFile(`/transactions/${t.id}/receipt`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الإيصال'))} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <Printer className="h-3.5 w-3.5" /> إيصال
                             </button>
                           </td>
                         </tr>
@@ -1307,12 +1783,12 @@ export default function CustomersPage() {
                           <td className="px-3 py-2 font-medium">{e.amount.toLocaleString()} {e.currency}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.balanceBefore.toLocaleString()}</td>
                           <td className="px-3 py-2 font-medium">{e.balanceAfter.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-muted-foreground">{e.vaultName}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{e.vaultName || e.bankAccountName || '—'}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.user}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.timestamp}</td>
                           <td className="px-3 py-2">
-                            <button onClick={() => downloadFile(`/transactions/${e.id}/receipt`, `receipt_${e.id}.pdf`)} title="طباعة إيصال" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                              <Printer className="h-3.5 w-3.5" />
+                            <button onClick={() => openFile(`/transactions/${e.id}/receipt`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الإيصال'))} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <Printer className="h-3.5 w-3.5" /> إيصال
                             </button>
                           </td>
                         </tr>

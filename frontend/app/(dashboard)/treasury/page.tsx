@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState, FormEvent, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
-import { api, newId, Vault, Currency, Bank, BankAccount, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction } from '@/lib/api-client'
+import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle, Percent } from 'lucide-react'
+import { api, newId, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction, Customer } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -42,10 +42,11 @@ const tabs = [
 ] as const
 type TabKey = typeof tabs[number]['key']
 
-type AccountOption = { type: 'vault' | 'bank_account'; id: string; label: string }
+type TransferAccountType = 'vault' | 'bank_account' | 'customer'
+type AccountOption = { type: TransferAccountType; id: string; label: string }
 
 function emptyTransferForm() {
-  return { sourceType: 'vault' as 'vault' | 'bank_account', sourceId: '', destType: 'vault' as 'vault' | 'bank_account', destId: '', currency: 'LYD', amount: '', notes: '' }
+  return { sourceType: 'vault' as TransferAccountType, sourceId: '', destType: 'vault' as TransferAccountType, destId: '', currency: 'LYD', amount: '', notes: '' }
 }
 function emptyVaultForm() {
   return { id: '', name: '', type: 'branch', branch: '', manager: '' }
@@ -104,6 +105,7 @@ function TreasuryPageInner() {
   const [approvals, setApprovals] = useState<ApprovalRequestDTO[]>([])
   const [inventoryCounts, setInventoryCounts] = useState<InventoryCountDTO[]>([])
   const [expenses, setExpenses] = useState<DailyExpenseDTO[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -126,6 +128,11 @@ function TreasuryPageInner() {
   const [branchForm, setBranchForm] = useState(emptyBranchForm())
   const [branchFormError, setBranchFormError] = useState('')
 
+  const [transferringBranch, setTransferringBranch] = useState<Branch | null>(null)
+  const [transferToBranchId, setTransferToBranchId] = useState('')
+  const [branchTransferError, setBranchTransferError] = useState('')
+  const [branchTransferring, setBranchTransferring] = useState(false)
+
   const [showBankModal, setShowBankModal] = useState(false)
   const [editingBank, setEditingBank] = useState<Bank | null>(null)
   const [bankForm, setBankForm] = useState(emptyBankForm())
@@ -137,9 +144,16 @@ function TreasuryPageInner() {
 
   const [bankOpAccount, setBankOpAccount] = useState<BankAccount | null>(null)
   const [bankOpType, setBankOpType] = useState<'deposit' | 'withdraw'>('deposit')
-  const [bankOpForm, setBankOpForm] = useState({ vaultId: '', amount: '', notes: '' })
+  const [bankOpForm, setBankOpForm] = useState({ vaultId: '', amount: '', interestRate: '', notes: '' })
   const [bankOpError, setBankOpError] = useState('')
   const [savingBankOp, setSavingBankOp] = useState(false)
+
+  const [interestAccount, setInterestAccount] = useState<BankAccount | null>(null)
+  const [accountDeposits, setAccountDeposits] = useState<BankDeposit[]>([])
+  const [loadingDeposits, setLoadingDeposits] = useState(false)
+  const [newDepositForm, setNewDepositForm] = useState({ amount: '', rate: '', notes: '' })
+  const [interestError, setInterestError] = useState('')
+  const [savingInterest, setSavingInterest] = useState(false)
 
   const [closingShift, setClosingShift] = useState<Shift | null>(null)
   const [closeBalances, setCloseBalances] = useState<Record<string, string>>({})
@@ -167,7 +181,7 @@ function TreasuryPageInner() {
 
   const load = async () => {
     try {
-      const [v, c, t, br, b, bb, ba, s, ap, ic, ex, tx] = await Promise.all([
+      const [v, c, t, br, b, bb, ba, s, ap, ic, ex, tx, cu] = await Promise.all([
         api.get<Vault[]>('/vaults'),
         api.get<Currency[]>('/currencies'),
         api.get<TransferRow[]>('/transfers'),
@@ -180,9 +194,10 @@ function TreasuryPageInner() {
         api.get<InventoryCountDTO[]>('/inventory_counts'),
         api.get<DailyExpenseDTO[]>('/daily-expenses'),
         api.get<Transaction[]>('/transactions'),
+        api.get<Customer[]>('/customers'),
       ])
       setVaults(v); setCurrencies(c); setTransfers(t); setBranches(br); setBanks(b); setBankBranches(bb); setBankAccounts(ba); setShifts(s); setApprovals(ap)
-      setInventoryCounts(ic); setExpenses(ex); setTransactions(tx)
+      setInventoryCounts(ic); setExpenses(ex); setTransactions(tx); setCustomers(cu)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل بيانات الخزينة')
     } finally {
@@ -195,9 +210,10 @@ function TreasuryPageInner() {
   const accountOptions: AccountOption[] = useMemo(() => [
     ...vaults.map((v) => ({ type: 'vault' as const, id: v.id, label: `${v.name} (خزنة)` })),
     ...bankAccounts.map((a) => ({ type: 'bank_account' as const, id: a.id, label: `${a.bankName} - ${a.accountName} (حساب بنكي)` })),
-  ], [vaults, bankAccounts])
+    ...customers.map((c) => ({ type: 'customer' as const, id: c.id, label: `${c.name} (عميل)` })),
+  ], [vaults, bankAccounts, customers])
 
-  const accountLabel = (type: 'vault' | 'bank_account', id: string) => accountOptions.find((a) => a.type === type && a.id === id)
+  const accountLabel = (type: TransferAccountType, id: string) => accountOptions.find((a) => a.type === type && a.id === id)
 
   // Newest-first, capped to a page of results — each list is already the full
   // set fetched from the server, so pagination here is purely client-side.
@@ -301,6 +317,26 @@ function TreasuryPageInner() {
     }
   }
 
+  const deleteVault = async (vault: Vault) => {
+    if (!(await confirmDialog(`هل تريد حذف الخزنة "${vault.name}"؟ يجب أن تكون كل أرصدتها صفراً ولا توجد وردية مفتوحة عليها.`))) return
+    try {
+      await api.delete(`/vaults/${vault.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف الخزنة')
+    }
+  }
+
+  const removeVaultCurrency = async (vault: Vault, currency: string) => {
+    if (!(await confirmDialog(`هل تريد إزالة عملة ${currency} من خزنة "${vault.name}"؟ يجب أن يكون رصيدها صفراً.`))) return
+    try {
+      await api.delete(`/vaults/${vault.id}/currencies/${currency}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إزالة العملة')
+    }
+  }
+
   const submitVault = async (e: FormEvent) => {
     e.preventDefault()
     setVaultFormError('')
@@ -397,6 +433,29 @@ function TreasuryPageInner() {
     }
   }
 
+  const openTransferBranch = (b: Branch) => {
+    setTransferringBranch(b)
+    setTransferToBranchId('')
+    setBranchTransferError('')
+  }
+
+  const submitTransferBranch = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!transferringBranch) return
+    if (!transferToBranchId) { setBranchTransferError('اختر الفرع الوجهة'); return }
+    setBranchTransferring(true)
+    setBranchTransferError('')
+    try {
+      await api.post(`/branches/${transferringBranch.id}/transfer_all`, { to_branch_id: transferToBranchId })
+      setTransferringBranch(null)
+      await load()
+    } catch (err) {
+      setBranchTransferError(err instanceof ApiError ? err.message : 'تعذر نقل بيانات الفرع')
+    } finally {
+      setBranchTransferring(false)
+    }
+  }
+
   // ---------------- Banks ----------------
   const openCreateBank = () => {
     setEditingBank(null)
@@ -465,7 +524,7 @@ function TreasuryPageInner() {
   const openBankOp = (account: BankAccount, type: 'deposit' | 'withdraw') => {
     setBankOpAccount(account)
     setBankOpType(type)
-    setBankOpForm({ vaultId: '', amount: '', notes: '' })
+    setBankOpForm({ vaultId: '', amount: '', interestRate: '', notes: '' })
     setBankOpError('')
   }
 
@@ -482,6 +541,7 @@ function TreasuryPageInner() {
       await api.post(`/bank_accounts/${bankOpAccount.id}/${bankOpType}`, {
         vault_id: bankOpForm.vaultId,
         amount: parseFloat(bankOpForm.amount),
+        interest_rate: bankOpType === 'deposit' ? (parseFloat(bankOpForm.interestRate) || 0) : undefined,
         notes: bankOpForm.notes.trim() || null,
       })
       setBankOpAccount(null)
@@ -490,6 +550,75 @@ function TreasuryPageInner() {
       setBankOpError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
     } finally {
       setSavingBankOp(false)
+    }
+  }
+
+  const openInterestModal = async (account: BankAccount) => {
+    setInterestAccount(account)
+    setInterestError('')
+    setNewDepositForm({ amount: '', rate: '', notes: '' })
+    setLoadingDeposits(true)
+    try {
+      const deposits = await api.get<BankDeposit[]>(`/bank_accounts/${account.id}/deposits`)
+      setAccountDeposits(deposits)
+    } catch (err) {
+      setInterestError(err instanceof ApiError ? err.message : 'تعذر تحميل الودائع')
+    } finally {
+      setLoadingDeposits(false)
+    }
+  }
+
+  const submitNewDeposit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!interestAccount) return
+    const amount = parseFloat(newDepositForm.amount)
+    const rate = parseFloat(newDepositForm.rate)
+    if (!amount || amount <= 0 || !rate || rate <= 0) {
+      setInterestError('المبلغ ونسبة الفائدة حقول مطلوبة')
+      return
+    }
+    setInterestError('')
+    setSavingInterest(true)
+    try {
+      await api.post(`/bank_accounts/${interestAccount.id}/deposits`, {
+        amount, interest_rate: rate, notes: newDepositForm.notes.trim() || null,
+      })
+      const deposits = await api.get<BankDeposit[]>(`/bank_accounts/${interestAccount.id}/deposits`)
+      setAccountDeposits(deposits)
+      setNewDepositForm({ amount: '', rate: '', notes: '' })
+    } catch (err) {
+      setInterestError(err instanceof ApiError ? err.message : 'تعذر تسجيل الوديعة')
+    } finally {
+      setSavingInterest(false)
+    }
+  }
+
+  const runCalculateDepositInterest = async (depositId: string) => {
+    setInterestError('')
+    setSavingInterest(true)
+    try {
+      await api.post(`/bank_deposits/${depositId}/calculate_interest`)
+      if (interestAccount) setAccountDeposits(await api.get<BankDeposit[]>(`/bank_accounts/${interestAccount.id}/deposits`))
+    } catch (err) {
+      setInterestError(err instanceof ApiError ? err.message : 'تعذر احتساب الفائدة')
+    } finally {
+      setSavingInterest(false)
+    }
+  }
+
+  const runCreditDepositInterest = async (depositId: string) => {
+    setInterestError('')
+    setSavingInterest(true)
+    try {
+      await api.post(`/bank_deposits/${depositId}/credit_interest`)
+      if (interestAccount) {
+        const [deposits] = await Promise.all([api.get<BankDeposit[]>(`/bank_accounts/${interestAccount.id}/deposits`), load()])
+        setAccountDeposits(deposits)
+      }
+    } catch (err) {
+      setInterestError(err instanceof ApiError ? err.message : 'تعذر إضافة الفائدة للرصيد')
+    } finally {
+      setSavingInterest(false)
     }
   }
 
@@ -832,16 +961,6 @@ function TreasuryPageInner() {
                       <span className="text-xs text-muted-foreground">{vaultTypeLabels[vault.type] || vault.type} — {vault.branch}</span>
                     </div>
                   </div>
-                  {canManageVaults && (
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => openEditBalances(vault)} title="تعديل الأرصدة" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                        <Wallet className="h-4 w-4" />
-                      </button>
-                      <button onClick={() => openEditVault(vault)} title="تعديل" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                    </div>
-                  )}
                 </div>
                 <div className="pt-4 space-y-3">
                   <div className="flex justify-between items-center text-xs text-muted-foreground">
@@ -851,13 +970,33 @@ function TreasuryPageInner() {
                   {Object.entries(vault.balances).length === 0 ? (
                     <p className="text-sm text-muted-foreground">لا توجد أرصدة</p>
                   ) : Object.entries(vault.balances).map(([ccy, amt]) => (
-                    <div key={ccy} className="flex justify-between items-center">
+                    <div key={ccy} className="flex justify-between items-center group">
                       <span className="text-sm text-muted-foreground">رصيد ({ccy})</span>
-                      <span className="font-bold text-foreground">{amt.toLocaleString()}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-foreground">{amt.toLocaleString()}</span>
+                        {canManageVaults && amt === 0 && (
+                          <button onClick={() => removeVaultCurrency(vault, ccy)} title={`إزالة عملة ${ccy}`} className="text-muted-foreground hover:text-danger transition-colors opacity-0 group-hover:opacity-100">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                   {vault.lastMovement && (
                     <p className="pt-2 border-t border-border text-[11px] text-muted-foreground">آخر حركة: {vault.lastMovement}</p>
+                  )}
+                  {canManageVaults && (
+                    <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-border">
+                      <button onClick={() => openEditBalances(vault)} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
+                        <Wallet className="h-3.5 w-3.5" /> تعديل الأرصدة
+                      </button>
+                      <button onClick={() => openEditVault(vault)} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
+                        <Pencil className="h-3.5 w-3.5" /> تعديل البيانات
+                      </button>
+                      <button onClick={() => deleteVault(vault)} className="flex items-center gap-1.5 rounded-md border border-danger/30 px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
+                        <Trash2 className="h-3.5 w-3.5" /> حذف الخزنة
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -923,12 +1062,15 @@ function TreasuryPageInner() {
                   </div>
                 </div>
                 {canManageBranches && (
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => openEditBranch(b)} title="تعديل" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                      <Pencil className="h-4 w-4" />
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => openEditBranch(b)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                      <Pencil className="h-3.5 w-3.5" /> تعديل
                     </button>
-                    <button onClick={() => deleteBranch(b)} title="حذف" className="text-muted-foreground hover:text-danger transition-colors p-1">
-                      <Trash2 className="h-4 w-4" />
+                    <button onClick={() => openTransferBranch(b)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-info transition-colors">
+                      <ArrowRightLeft className="h-3.5 w-3.5" /> نقل البيانات
+                    </button>
+                    <button onClick={() => deleteBranch(b)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                      <Trash2 className="h-3.5 w-3.5" /> حذف
                     </button>
                   </div>
                 )}
@@ -964,12 +1106,12 @@ function TreasuryPageInner() {
                     </div>
                   </div>
                   {canManageBanks && (
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => openEditBank(b)} title="تعديل" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                        <Pencil className="h-4 w-4" />
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => openEditBank(b)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                        <Pencil className="h-3.5 w-3.5" /> تعديل
                       </button>
-                      <button onClick={() => deleteBank(b)} title="حذف" className="text-muted-foreground hover:text-danger transition-colors p-1">
-                        <Trash2 className="h-4 w-4" />
+                      <button onClick={() => deleteBank(b)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                        <Trash2 className="h-3.5 w-3.5" /> حذف
                       </button>
                     </div>
                   )}
@@ -1016,15 +1158,20 @@ function TreasuryPageInner() {
                       </td>
                       {canManageBanks && (
                         <td className="px-6 py-4">
-                          <div className="flex items-center gap-1">
-                            <button onClick={() => openBankOp(ba, 'deposit')} title="إيداع" className="text-muted-foreground hover:text-success transition-colors p-1">
-                              <ArrowDownCircle className="h-4 w-4" />
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button onClick={() => openBankOp(ba, 'deposit')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors">
+                              <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
                             </button>
-                            <button onClick={() => openBankOp(ba, 'withdraw')} title="سحب" className="text-muted-foreground hover:text-warning transition-colors p-1">
-                              <ArrowUpCircle className="h-4 w-4" />
+                            <button onClick={() => openBankOp(ba, 'withdraw')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-warning transition-colors">
+                              <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
                             </button>
-                            <button onClick={() => deleteBankAccount(ba)} title="حذف" className="text-muted-foreground hover:text-danger transition-colors p-1">
-                              <Trash2 className="h-4 w-4" />
+                            {ba.currency !== 'LYD' && (
+                              <button onClick={() => openInterestModal(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                <Percent className="h-3.5 w-3.5" /> الفائدة
+                              </button>
+                            )}
+                            <button onClick={() => deleteBankAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
                             </button>
                           </div>
                         </td>
@@ -1099,8 +1246,8 @@ function TreasuryPageInner() {
                             </button>
                           )}
                           {(s.status === 'open' || s.status === 'closed' || s.status === 'approved') && (
-                            <button onClick={() => setSelectedShift(s)} title="تفاصيل الجلسة" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                              <Eye className="h-3.5 w-3.5" />
+                            <button onClick={() => setSelectedShift(s)} className="flex items-center gap-1 text-muted-foreground hover:text-primary transition-colors text-xs font-medium">
+                              <Eye className="h-3.5 w-3.5" /> تفاصيل الجلسة
                             </button>
                           )}
                         </div>
@@ -1278,8 +1425,8 @@ function TreasuryPageInner() {
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">من حساب *</label>
                 <select
-                  value={transferForm.sourceType === 'vault' ? `vault:${transferForm.sourceId}` : `bank_account:${transferForm.sourceId}`}
-                  onChange={(e) => { const [type, id] = e.target.value.split(':'); setTransferForm({ ...transferForm, sourceType: type as any, sourceId: id }) }}
+                  value={`${transferForm.sourceType}:${transferForm.sourceId}`}
+                  onChange={(e) => { const [type, id] = e.target.value.split(':'); setTransferForm({ ...transferForm, sourceType: type as TransferAccountType, sourceId: id }) }}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
                   <option value=":">اختر</option>
@@ -1289,8 +1436,8 @@ function TreasuryPageInner() {
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">إلى حساب *</label>
                 <select
-                  value={transferForm.destType === 'vault' ? `vault:${transferForm.destId}` : `bank_account:${transferForm.destId}`}
-                  onChange={(e) => { const [type, id] = e.target.value.split(':'); setTransferForm({ ...transferForm, destType: type as any, destId: id }) }}
+                  value={`${transferForm.destType}:${transferForm.destId}`}
+                  onChange={(e) => { const [type, id] = e.target.value.split(':'); setTransferForm({ ...transferForm, destType: type as TransferAccountType, destId: id }) }}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
                   <option value=":">اختر</option>
@@ -1465,6 +1612,19 @@ function TreasuryPageInner() {
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 />
               </div>
+              {bankOpType === 'deposit' && bankOpAccount.currency !== 'LYD' && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">نسبة فائدة هذه الوديعة (%) — اختياري</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={bankOpForm.interestRate}
+                    onChange={(e) => setBankOpForm({ ...bankOpForm, interestRate: e.target.value })}
+                    placeholder="اتركه فارغاً إذا لم تحمل هذه الوديعة فائدة"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea
@@ -1482,6 +1642,73 @@ function TreasuryPageInner() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Bank Account Interest Modal — per-deposit, since each deposit carries its own rate */}
+      {interestAccount && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">ودائع حساب {interestAccount.accountName}</h3>
+              <button onClick={() => setInterestAccount(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="space-y-4 p-6 text-right max-h-[70vh] overflow-y-auto">
+              <p className="text-xs text-muted-foreground">
+                كل وديعة تحمل نسبة فائدتها الخاصة كما يحددها البنك عند الإيداع — أدخل المبلغ والنسبة يدوياً، ويتم احتساب قيمة الفائدة تلقائياً بناءً عليهما.
+              </p>
+
+              <form onSubmit={submitNewDeposit} className="grid grid-cols-3 gap-2 items-end rounded-md bg-secondary/30 p-3">
+                <div>
+                  <label className="block text-xs font-medium text-foreground mb-1">مبلغ الوديعة ({interestAccount.currency})</label>
+                  <input type="number" step="any" value={newDepositForm.amount} onChange={(e) => setNewDepositForm({ ...newDepositForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-foreground mb-1">نسبة الفائدة (%)</label>
+                  <input type="number" step="0.01" value={newDepositForm.rate} onChange={(e) => setNewDepositForm({ ...newDepositForm, rate: e.target.value })} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <button type="submit" disabled={savingInterest} className="flex items-center justify-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {savingInterest && <Loader2 className="h-4 w-4 animate-spin" />} تسجيل وديعة
+                </button>
+              </form>
+
+              {interestError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{interestError}</p>}
+
+              <div className="rounded-md border border-border overflow-hidden">
+                <table className="w-full text-xs text-right">
+                  <thead className="bg-secondary/50 text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">المبلغ</th>
+                      <th className="px-3 py-2 font-medium">النسبة</th>
+                      <th className="px-3 py-2 font-medium">تاريخ الوديعة</th>
+                      <th className="px-3 py-2 font-medium">الفائدة المتراكمة</th>
+                      <th className="px-3 py-2 font-medium">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {loadingDeposits ? (
+                      <tr><td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">جاري التحميل...</td></tr>
+                    ) : accountDeposits.length === 0 ? (
+                      <tr><td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">لا توجد ودائع مسجلة</td></tr>
+                    ) : accountDeposits.map((dep) => (
+                      <tr key={dep.id}>
+                        <td className="px-3 py-2">{dep.amount.toLocaleString()}</td>
+                        <td className="px-3 py-2">{dep.interestRate}%</td>
+                        <td className="px-3 py-2 text-muted-foreground">{dep.depositDate}</td>
+                        <td className="px-3 py-2 font-bold">{dep.accruedInterest.toLocaleString()}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-col gap-1">
+                            <button type="button" onClick={() => runCalculateDepositInterest(dep.id)} disabled={savingInterest} className="text-primary hover:text-primary/80 disabled:opacity-60">احتساب</button>
+                            <button type="button" onClick={() => runCreditDepositInterest(dep.id)} disabled={savingInterest || dep.accruedInterest <= 0} className="text-success hover:text-success/80 disabled:opacity-60">إضافة للرصيد</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1524,6 +1751,41 @@ function TreasuryPageInner() {
                 <button type="button" onClick={() => setShowBranchModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {saving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Transfer all branch data Modal */}
+      {transferringBranch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">نقل جميع بيانات فرع {transferringBranch.name}</h3>
+              <button onClick={() => setTransferringBranch(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitTransferBranch} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                سيتم نقل كل الخزنات والمستخدمين والعمليات والأصول الثابتة والمركبات المسجلة على هذا الفرع إلى الفرع الذي تختاره — استخدم هذا لتفريغ الفرع تمهيداً لحذفه.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">نقل البيانات إلى *</label>
+                <select
+                  value={transferToBranchId}
+                  onChange={(e) => setTransferToBranchId(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر فرعاً</option>
+                  {branches.filter((b) => b.id !== transferringBranch.id).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </div>
+              {branchTransferError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{branchTransferError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setTransferringBranch(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={branchTransferring} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {branchTransferring && <Loader2 className="h-4 w-4 animate-spin" />} نقل البيانات
                 </button>
               </div>
             </form>

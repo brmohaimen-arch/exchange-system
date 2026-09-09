@@ -71,7 +71,14 @@ async function requestBlob(path: string): Promise<Blob> {
   const headers: Record<string, string> = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(`${API_BASE}${path}`, { headers })
-  if (!res.ok) throw new ApiError('تعذر تحميل الملف', 'DOWNLOAD_FAILED', res.status)
+  if (!res.ok) {
+    // The server returns a JSON error body even for a file download route (APIError),
+    // so surface its actual message instead of a generic one — otherwise every
+    // download failure looks identical regardless of cause (auth, 404, server error).
+    const body = await res.json().catch(() => null)
+    const detail = body?.detail ?? body
+    throw new ApiError(detail?.message_ar || 'تعذر تحميل الملف', detail?.code || 'DOWNLOAD_FAILED', res.status)
+  }
   return res.blob()
 }
 
@@ -103,6 +110,16 @@ export async function uploadFile<T>(path: string, file: File): Promise<T> {
     throw new ApiError(detail?.message_ar || 'تعذر رفع الملف', detail?.code || 'UPLOAD_FAILED', res.status)
   }
   return body?.data as T
+}
+
+export async function openFile(path: string) {
+  // Opens the file (PDF receipt, scanned image, etc.) directly in a new tab instead
+  // of forcing a save-to-disk prompt — the browser renders PDFs/images inline on its own.
+  const blob = await requestBlob(path)
+  const url = window.URL.createObjectURL(blob)
+  window.open(url, '_blank')
+  // Give the new tab time to actually load the blob before revoking its URL.
+  setTimeout(() => window.URL.revokeObjectURL(url), 60000)
 }
 
 export async function downloadFile(path: string, filename: string) {
@@ -187,6 +204,7 @@ export interface Customer {
   notes: string | null
   bankName: string | null
   bankAccountNumber: string | null
+  passportNumber: string | null
 }
 
 export interface Vault {
@@ -307,6 +325,19 @@ export interface BankAccount {
   lastMovement: string | null
 }
 
+export interface BankDeposit {
+  id: string
+  bankAccountId: string
+  amount: number
+  currency: string
+  interestRate: number
+  depositDate: string
+  accruedInterest: number
+  lastCalculated: string | null
+  status: string
+  notes: string | null
+}
+
 export interface Debt {
   id: string
   customerId: string
@@ -338,6 +369,10 @@ export interface FixedAsset {
   status: string
   responsible: string
   notes: string | null
+  color: string | null
+  carModel: string | null
+  vin: string | null
+  makeYear: number | null
 }
 
 export interface Vehicle {
@@ -359,6 +394,8 @@ export interface Vehicle {
   driver: string
   branch: string
   status: string
+  warehouseId: string | null
+  barcode: string | null
 }
 
 export interface RealEstate {
@@ -494,6 +531,8 @@ export interface NotificationItem {
   role: string | null
   user: string | null
   type: 'info' | 'warning' | 'error' | 'success'
+  entityType: string | null
+  entityId: string | null
 }
 
 export interface InventoryCountDTO {
@@ -559,8 +598,8 @@ export interface DepreciationRecord {
 
 export interface CustomerDocument {
   id: string
-  customerId: string
-  customerName: string
+  customerId: string | null
+  customerName: string | null
   documentType: string
   fileName: string
   expiryDate: string | null
@@ -593,8 +632,11 @@ export interface CustomerAccountEntry {
   type: 'deposit' | 'withdraw'
   customerId: string
   customerName: string
-  vaultId: string
-  vaultName: string
+  vaultId: string | null
+  vaultName: string | null
+  bankAccountId: string | null
+  bankAccountName: string | null
+  otherSource: string | null
   currency: string
   amount: number
   balanceBefore: number

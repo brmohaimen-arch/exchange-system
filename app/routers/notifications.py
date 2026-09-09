@@ -27,7 +27,9 @@ def notification_to_dict(n: Notification):
         "isRead": n.status == NotificationStatus.READ,
         "role": n.role_name,
         "user": str(n.user_id) if n.user_id is not None else None,
-        "type": n_type
+        "type": n_type,
+        "entityType": n.entity_type,
+        "entityId": n.entity_id,
     }
 
 @router.get("")

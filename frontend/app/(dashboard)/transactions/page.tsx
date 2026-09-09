@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { ArrowRightLeft, DollarSign, Repeat, Loader2, Lock, Clock, PlayCircle, X, Printer } from 'lucide-react'
-import { api, newId, downloadFile, Currency, Customer, ExchangeRate, Vault, Transaction, Shift } from '@/lib/api-client'
+import { ArrowRightLeft, DollarSign, Repeat, Loader2, Lock, Clock, PlayCircle, X, Printer, Pencil, MessageCircle, RotateCcw } from 'lucide-react'
+import { api, newId, openFile, Currency, Customer, ExchangeRate, Vault, Transaction, Shift } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
+import { usePersistedState, clearPersistedState } from '@/lib/usePersistedState'
 
 const paymentMethodLabels: Record<string, string> = {
   cash: 'نقداً', customer_account: 'حساب العميل', bank_account: 'حساب بنكي', debt: 'دين (آجل)',
@@ -16,8 +17,16 @@ const statusLabel: Record<string, { label: string; className: string }> = {
   reversed: { label: 'ملغي', className: 'bg-danger/10 text-danger' },
 }
 
+// Sentinel customerId value meaning "walk-in, not yet registered" — the employee
+// types a name/phone instead of picking from the list, and a minimal Customer
+// record is quick-created right before the operation posts.
+const NEW_CUSTOMER = '__new__'
+
 interface OpForm {
+  vaultId: string
   customerId: string
+  newCustomerName: string
+  newCustomerPhone: string
   currency: string
   amount: string
   rate: string
@@ -26,7 +35,10 @@ interface OpForm {
 }
 
 interface ExchangeForm {
+  vaultId: string
   customerId: string
+  newCustomerName: string
+  newCustomerPhone: string
   fromCurrency: string
   toCurrency: string
   amount: string
@@ -35,18 +47,27 @@ interface ExchangeForm {
   paymentMethod: string
 }
 
-function emptyOpForm(rate = ''): OpForm {
-  return { customerId: '', currency: '', amount: '', rate, commission: '0', paymentMethod: 'cash' }
+function emptyOpForm(rate = '', vaultId = ''): OpForm {
+  return { vaultId, customerId: '', newCustomerName: '', newCustomerPhone: '', currency: '', amount: '', rate, commission: '0', paymentMethod: 'cash' }
 }
 
-function emptyExchangeForm(): ExchangeForm {
-  return { customerId: '', fromCurrency: '', toCurrency: '', amount: '', rate: '', commission: '0', paymentMethod: 'cash' }
+function emptyExchangeForm(vaultId = ''): ExchangeForm {
+  return { vaultId, customerId: '', newCustomerName: '', newCustomerPhone: '', fromCurrency: '', toCurrency: '', amount: '', rate: '', commission: '0', paymentMethod: 'cash' }
+}
+
+interface EditForm {
+  amount: string
+  rate: string
+  commission: string
+  notes: string
 }
 
 export default function TransactionsPage() {
   const { user, hasPermission } = useAuth()
   const canBuy = hasPermission('تنفيذ شراء عملة')
   const canSell = hasPermission('تنفيذ بيع عملة')
+  const canEdit = hasPermission('إنشاء عملية عكسية')
+  const canReverse = hasPermission('إنشاء عملية عكسية')
 
   const [currencies, setCurrencies] = useState<Currency[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -63,9 +84,9 @@ export default function TransactionsPage() {
   const [closingShift, setClosingShift] = useState(false)
   const [closeError, setCloseError] = useState('')
 
-  const [buyForm, setBuyForm] = useState<OpForm>(emptyOpForm())
-  const [sellForm, setSellForm] = useState<OpForm>(emptyOpForm())
-  const [exchangeForm, setExchangeForm] = useState<ExchangeForm>(emptyExchangeForm())
+  const [buyForm, setBuyForm] = usePersistedState<OpForm>('buy_form', emptyOpForm())
+  const [sellForm, setSellForm] = usePersistedState<OpForm>('sell_form', emptyOpForm())
+  const [exchangeForm, setExchangeForm] = usePersistedState<ExchangeForm>('exchange_form', emptyExchangeForm())
   const [buySaving, setBuySaving] = useState(false)
   const [sellSaving, setSellSaving] = useState(false)
   const [exchangeSaving, setExchangeSaving] = useState(false)
@@ -74,6 +95,29 @@ export default function TransactionsPage() {
   const [exchangeError, setExchangeError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
   const [historyPage, setHistoryPage] = useState(1)
+
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null)
+  const [editForm, setEditForm] = useState<EditForm>({ amount: '', rate: '', commission: '0', notes: '' })
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState('')
+  const [sendingReceiptId, setSendingReceiptId] = useState<string | null>(null)
+
+  const [reversingTx, setReversingTx] = useState<Transaction | null>(null)
+  const [reversalReason, setReversalReason] = useState('')
+  const [reversalSaving, setReversalSaving] = useState(false)
+  const [reversalError, setReversalError] = useState('')
+
+  const sendReceiptWhatsapp = async (tx: Transaction) => {
+    setSendingReceiptId(tx.id)
+    setError('')
+    try {
+      await api.post(`/transactions/${tx.id}/send_receipt_whatsapp`, {})
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إرسال الإيصال عبر واتساب')
+    } finally {
+      setSendingReceiptId(null)
+    }
+  }
 
   const load = async () => {
     try {
@@ -104,6 +148,15 @@ export default function TransactionsPage() {
     () => vaults.find((v) => v.id === user?.allowedVaultId) || vaults[0],
     [vaults, user]
   )
+
+  // Forms default to the cashier's own vault but can be redirected to any other
+  // vault (e.g. a manager posting on behalf of another branch) once one loads.
+  useEffect(() => {
+    if (!vault) return
+    setBuyForm((f) => (f.vaultId ? f : { ...f, vaultId: vault.id }))
+    setSellForm((f) => (f.vaultId ? f : { ...f, vaultId: vault.id }))
+    setExchangeForm((f) => (f.vaultId ? f : { ...f, vaultId: vault.id }))
+  }, [vault])
 
   const myShift = shifts.find((s) => s.vaultId === vault?.id && s.status === 'open')
   const pendingShift = shifts.find((s) => s.vaultId === vault?.id && s.status === 'pending_open')
@@ -189,6 +242,19 @@ export default function TransactionsPage() {
   const total = (form: OpForm) => (parseFloat(form.amount) || 0) * (parseFloat(form.rate) || 0)
   const exchangeTotal = (parseFloat(exchangeForm.amount) || 0) * (parseFloat(exchangeForm.rate) || 0)
 
+  // A walk-in customer who isn't in the system yet: quick-create a minimal
+  // Customer record right before posting the operation, then use its id like
+  // any registered customer — every downstream feature (statements, balances,
+  // debt limits) keeps working the same way for them from now on.
+  const resolveCustomerId = async (customerId: string, name: string, phone: string): Promise<string> => {
+    if (customerId !== NEW_CUSTOMER) return customerId
+    const id = newId('cust')
+    await api.post('/customers', {
+      id, name: name.trim(), type: 'individual', phone: phone.trim(), id_number: '', address: '', debt_limit: 0, balances: {},
+    })
+    return id
+  }
+
   const submitOp = async (
     type: 'buy' | 'sell',
     form: OpForm,
@@ -199,8 +265,9 @@ export default function TransactionsPage() {
     setSuccessMsg('')
     const amount = parseFloat(form.amount)
     const rate = parseFloat(form.rate)
-    if (!vault) { setFormError('لا توجد خزنة متاحة لهذا المستخدم'); return }
+    if (!form.vaultId) { setFormError('اختر خزنة'); return }
     if (!form.customerId) { setFormError('اختر عميلاً'); return }
+    if (form.customerId === NEW_CUSTOMER && !form.newCustomerName.trim()) { setFormError('أدخل اسم العميل'); return }
     if (!form.currency) { setFormError('اختر عملة'); return }
     if (!amount || amount <= 0) { setFormError('أدخل مبلغاً صحيحاً'); return }
     if (!rate || rate <= 0) { setFormError('السعر غير صالح'); return }
@@ -208,10 +275,11 @@ export default function TransactionsPage() {
     setSaving(true)
     try {
       const isBuy = type === 'buy'
+      const customerId = await resolveCustomerId(form.customerId, form.newCustomerName, form.newCustomerPhone)
       await api.post('/exchange/pos', {
         type,
-        vaultId: vault.id,
-        customerId: form.customerId,
+        vaultId: form.vaultId,
+        customerId,
         fromCurrency: isBuy ? form.currency : 'LYD',
         toCurrency: isBuy ? 'LYD' : form.currency,
         amount,
@@ -221,7 +289,7 @@ export default function TransactionsPage() {
         id: newId('tx'),
       })
       setSuccessMsg(`تم تنفيذ عملية ${isBuy ? 'الشراء' : 'البيع'} بنجاح`)
-      if (isBuy) setBuyForm(emptyOpForm()); else setSellForm(emptyOpForm())
+      if (isBuy) setBuyForm(emptyOpForm('', form.vaultId)); else setSellForm(emptyOpForm('', form.vaultId))
       await load()
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
@@ -236,8 +304,9 @@ export default function TransactionsPage() {
     setSuccessMsg('')
     const amount = parseFloat(exchangeForm.amount)
     const rate = parseFloat(exchangeForm.rate)
-    if (!vault) { setExchangeError('لا توجد خزنة متاحة لهذا المستخدم'); return }
+    if (!exchangeForm.vaultId) { setExchangeError('اختر خزنة'); return }
     if (!exchangeForm.customerId) { setExchangeError('اختر عميلاً'); return }
+    if (exchangeForm.customerId === NEW_CUSTOMER && !exchangeForm.newCustomerName.trim()) { setExchangeError('أدخل اسم العميل'); return }
     if (!exchangeForm.fromCurrency || !exchangeForm.toCurrency) { setExchangeError('اختر عملتي التبديل'); return }
     if (exchangeForm.fromCurrency === exchangeForm.toCurrency) { setExchangeError('يجب أن تكون العملتان مختلفتين'); return }
     if (!amount || amount <= 0) { setExchangeError('أدخل مبلغاً صحيحاً'); return }
@@ -245,10 +314,11 @@ export default function TransactionsPage() {
 
     setExchangeSaving(true)
     try {
+      const customerId = await resolveCustomerId(exchangeForm.customerId, exchangeForm.newCustomerName, exchangeForm.newCustomerPhone)
       await api.post('/exchange/pos', {
         type: 'exchange',
-        vaultId: vault.id,
-        customerId: exchangeForm.customerId,
+        vaultId: exchangeForm.vaultId,
+        customerId,
         fromCurrency: exchangeForm.fromCurrency,
         toCurrency: exchangeForm.toCurrency,
         amount,
@@ -258,12 +328,67 @@ export default function TransactionsPage() {
         id: newId('tx'),
       })
       setSuccessMsg('تم تنفيذ عملية تبديل العملة بنجاح')
-      setExchangeForm(emptyExchangeForm())
+      setExchangeForm(emptyExchangeForm(exchangeForm.vaultId))
       await load()
     } catch (err) {
       setExchangeError(err instanceof ApiError ? err.message : 'تعذر تنفيذ عملية التبديل')
     } finally {
       setExchangeSaving(false)
+    }
+  }
+
+  const openEditModal = (tx: Transaction) => {
+    setEditingTx(tx)
+    setEditForm({ amount: String(tx.amount), rate: String(tx.rate), commission: String(tx.commission), notes: tx.notes || '' })
+    setEditError('')
+  }
+
+  const submitEdit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editingTx) return
+    const amount = parseFloat(editForm.amount)
+    const rate = parseFloat(editForm.rate)
+    const commission = parseFloat(editForm.commission) || 0
+    if (!amount || amount <= 0) { setEditError('أدخل مبلغاً صحيحاً'); return }
+    if (!rate || rate <= 0) { setEditError('السعر غير صالح'); return }
+    setEditError('')
+    setEditSaving(true)
+    try {
+      await api.put(`/transactions/${editingTx.id}`, { amount, rate, commission, notes: editForm.notes || null })
+      setSuccessMsg(`تم تعديل العملية ${editingTx.id} بنجاح`)
+      setEditingTx(null)
+      await load()
+    } catch (err) {
+      setEditError(err instanceof ApiError ? err.message : 'تعذر تعديل العملية')
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  const openReversalModal = (tx: Transaction) => {
+    setReversingTx(tx)
+    setReversalReason('')
+    setReversalError('')
+  }
+
+  const submitReversal = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!reversingTx) return
+    if (!reversalReason.trim()) {
+      setReversalError('سبب طلب العكس مطلوب')
+      return
+    }
+    setReversalError('')
+    setReversalSaving(true)
+    try {
+      await api.post(`/transactions/${reversingTx.id}/request-reversal`, { reason: reversalReason.trim() })
+      setSuccessMsg(`تم إرسال طلب عكس العملية ${reversingTx.id} لمراجعة المدير — راجع "الخزينة والفروع > طلبات الموافقة" بعد اعتماده`)
+      setReversingTx(null)
+      await load()
+    } catch (err) {
+      setReversalError(err instanceof ApiError ? err.message : 'تعذر إرسال طلب عكس العملية')
+    } finally {
+      setReversalSaving(false)
     }
   }
 
@@ -348,17 +473,43 @@ export default function TransactionsPage() {
             className="space-y-4 text-right"
             onSubmit={(e: FormEvent) => { e.preventDefault(); submitOp('buy', buyForm, setBuySaving, setBuyError) }}
           >
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">العميل</label>
-              <select
-                value={buyForm.customerId}
-                onChange={(e) => setBuyForm({ ...buyForm, customerId: e.target.value })}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              >
-                <option value="">اختر عميلاً</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name} (رقم: {c.id})</option>)}
-              </select>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">الخزنة</label>
+                <select
+                  value={buyForm.vaultId}
+                  onChange={(e) => setBuyForm({ ...buyForm, vaultId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر خزنة</option>
+                  {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">العميل</label>
+                <select
+                  value={buyForm.customerId}
+                  onChange={(e) => setBuyForm({ ...buyForm, customerId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر عميلاً</option>
+                  <option value={NEW_CUSTOMER}>+ عميل جديد (غير مسجل)</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name} (رقم: {c.id})</option>)}
+                </select>
+              </div>
             </div>
+            {buyForm.customerId === NEW_CUSTOMER && (
+              <div className="grid grid-cols-2 gap-4 rounded-md border border-border bg-secondary/20 p-3">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">اسم العميل *</label>
+                  <input value={buyForm.newCustomerName} onChange={(e) => setBuyForm({ ...buyForm, newCustomerName: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم الهاتف</label>
+                  <input value={buyForm.newCustomerPhone} onChange={(e) => setBuyForm({ ...buyForm, newCustomerPhone: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
@@ -433,17 +584,43 @@ export default function TransactionsPage() {
             className="space-y-4 text-right"
             onSubmit={(e: FormEvent) => { e.preventDefault(); submitOp('sell', sellForm, setSellSaving, setSellError) }}
           >
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">العميل</label>
-              <select
-                value={sellForm.customerId}
-                onChange={(e) => setSellForm({ ...sellForm, customerId: e.target.value })}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              >
-                <option value="">اختر عميلاً</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name} (رقم: {c.id})</option>)}
-              </select>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">الخزنة</label>
+                <select
+                  value={sellForm.vaultId}
+                  onChange={(e) => setSellForm({ ...sellForm, vaultId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر خزنة</option>
+                  {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">العميل</label>
+                <select
+                  value={sellForm.customerId}
+                  onChange={(e) => setSellForm({ ...sellForm, customerId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر عميلاً</option>
+                  <option value={NEW_CUSTOMER}>+ عميل جديد (غير مسجل)</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name} (رقم: {c.id})</option>)}
+                </select>
+              </div>
             </div>
+            {sellForm.customerId === NEW_CUSTOMER && (
+              <div className="grid grid-cols-2 gap-4 rounded-md border border-border bg-secondary/20 p-3">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">اسم العميل *</label>
+                  <input value={sellForm.newCustomerName} onChange={(e) => setSellForm({ ...sellForm, newCustomerName: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم الهاتف</label>
+                  <input value={sellForm.newCustomerPhone} onChange={(e) => setSellForm({ ...sellForm, newCustomerPhone: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
@@ -518,6 +695,17 @@ export default function TransactionsPage() {
         <form onSubmit={submitExchange} className="space-y-4 text-right">
           <div className="grid gap-4 md:grid-cols-2">
             <div>
+              <label className="block text-sm font-medium text-foreground mb-1">الخزنة</label>
+              <select
+                value={exchangeForm.vaultId}
+                onChange={(e) => setExchangeForm({ ...exchangeForm, vaultId: e.target.value })}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="">اختر خزنة</option>
+                {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+            </div>
+            <div>
               <label className="block text-sm font-medium text-foreground mb-1">العميل</label>
               <select
                 value={exchangeForm.customerId}
@@ -525,9 +713,22 @@ export default function TransactionsPage() {
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
               >
                 <option value="">اختر عميلاً</option>
+                <option value={NEW_CUSTOMER}>+ عميل جديد (غير مسجل)</option>
                 {customers.map((c) => <option key={c.id} value={c.id}>{c.name} (رقم: {c.id})</option>)}
               </select>
             </div>
+            {exchangeForm.customerId === NEW_CUSTOMER && (
+              <div className="grid grid-cols-2 gap-4 rounded-md border border-border bg-secondary/20 p-3">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">اسم العميل *</label>
+                  <input value={exchangeForm.newCustomerName} onChange={(e) => setExchangeForm({ ...exchangeForm, newCustomerName: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم الهاتف</label>
+                  <input value={exchangeForm.newCustomerPhone} onChange={(e) => setExchangeForm({ ...exchangeForm, newCustomerPhone: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">من عملة (يدفعها العميل)</label>
@@ -654,13 +855,38 @@ export default function TransactionsPage() {
                     <td className="px-6 py-4 text-muted-foreground">{tx.user}</td>
                     <td className="px-6 py-4 text-muted-foreground">{tx.timestamp}</td>
                     <td className="px-6 py-4">
-                      <button
-                        onClick={() => downloadFile(`/transactions/${tx.id}/receipt`, `receipt_${tx.id}.pdf`)}
-                        title="طباعة إيصال"
-                        className="text-muted-foreground hover:text-primary transition-colors p-1"
-                      >
-                        <Printer className="h-4 w-4" />
-                      </button>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button
+                          onClick={() => openFile(`/transactions/${tx.id}/receipt`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الإيصال'))}
+                          className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                        >
+                          <Printer className="h-3.5 w-3.5" /> طباعة إيصال
+                        </button>
+                        <button
+                          onClick={() => sendReceiptWhatsapp(tx)}
+                          disabled={sendingReceiptId === tx.id}
+                          className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors disabled:opacity-50"
+                        >
+                          {sendingReceiptId === tx.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="h-3.5 w-3.5" />} إرسال واتساب
+                        </button>
+                        {canEdit && tx.status !== 'reversed' && ['buy', 'sell', 'exchange'].includes(tx.type) && (
+                          <button
+                            onClick={() => openEditModal(tx)}
+                            className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                          >
+                            <Pencil className="h-3.5 w-3.5" /> تعديل
+                          </button>
+                        )}
+                        {canReverse && tx.status !== 'reversed' && ['buy', 'sell', 'exchange'].includes(tx.type) && (
+                          <button
+                            onClick={() => openReversalModal(tx)}
+                            title="يرسل طلب عكس للعملية يحتاج موافقة المدير — عند الاعتماد يعيد المبلغ لمصدره (الخزنة أو حساب العميل) أو يلغي الدين المرتبط"
+                            className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" /> طلب عكس العملية
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )
@@ -701,6 +927,104 @@ export default function TransactionsPage() {
                 <button type="button" onClick={() => setShowCloseShiftModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={closingShift} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {closingShift && <Loader2 className="h-4 w-4 animate-spin" />} إقفال الوردية
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Transaction Modal */}
+      {editingTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تعديل العملية {editingTx.id}</h3>
+              <button onClick={() => setEditingTx(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitEdit} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                سيتم عكس أثر العملية الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة. النوع والعميل والخزنة وطريقة الدفع لا يمكن تغييرها هنا.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
+                <input
+                  type="number"
+                  value={editForm.amount}
+                  onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">السعر</label>
+                  <input
+                    type="number" step="0.0001"
+                    value={editForm.rate}
+                    onChange={(e) => setEditForm({ ...editForm, rate: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">العمولة</label>
+                  <input
+                    type="number" step="0.01"
+                    value={editForm.commission}
+                    onChange={(e) => setEditForm({ ...editForm, commission: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+
+              {editError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{editError}</p>}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setEditingTx(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={editSaving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {editSaving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ التعديل
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Request Transaction Reversal Modal */}
+      {reversingTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">طلب عكس العملية {reversingTx.id}</h3>
+              <button onClick={() => setReversingTx(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitReversal} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                يُرسل هذا طلباً لعكس العملية يحتاج موافقة المدير من "الخزينة والفروع &gt; طلبات الموافقة". عند الاعتماد يُعاد المبلغ تلقائياً إلى مصدره: الخزنة/الحساب البنكي إن كانت نقداً، حساب العميل إن كانت مسددة من رصيده، أو يُلغى الدين المرتبط إن كانت آجلة (ولن يتم العكس إن كان قد سُدد جزء من الدين بالفعل).
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب طلب العكس *</label>
+                <textarea
+                  value={reversalReason}
+                  onChange={(e) => setReversalReason(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {reversalError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{reversalError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setReversingTx(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={reversalSaving} className="flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/90 transition-colors disabled:opacity-60">
+                  {reversalSaving && <Loader2 className="h-4 w-4 animate-spin" />} إرسال طلب العكس
                 </button>
               </div>
             </form>

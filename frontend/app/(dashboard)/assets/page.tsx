@@ -1,10 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { Plus, Pencil, Wrench, Car, Building2, Package, X, Loader2, CheckCircle2, DollarSign, ArrowRightLeft, FileText, TrendingDown, Download } from 'lucide-react'
-import { api, newId, downloadFile, uploadFile, FixedAsset, Vehicle, RealEstate, MaintenanceRecord, Currency, AssetDocument, DepreciationRecord } from '@/lib/api-client'
+import { useEffect, useMemo, useRef, useState, FormEvent, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { Plus, Pencil, Trash2, Wrench, Car, Building2, Package, X, Loader2, CheckCircle2, DollarSign, ArrowRightLeft, FileText, TrendingDown, Download, ScanLine, Search } from 'lucide-react'
+import { api, newId, openFile, uploadFile, FixedAsset, Vehicle, RealEstate, MaintenanceRecord, Currency, AssetDocument, DepreciationRecord } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 interface BranchLite { id: string; name: string }
 
@@ -26,11 +28,11 @@ const tabs = [
 type TabKey = typeof tabs[number]['key']
 
 function emptyAssetForm() {
-  return { id: '', name: '', type: 'معدات', category: '', branch: '', location: '', purchaseDate: new Date().toISOString().slice(0, 10), purchasePrice: '', currency: 'LYD', currentValue: '', status: 'نشط', responsible: '', notes: '' }
+  return { id: '', name: '', type: 'معدات', category: '', branch: '', location: '', purchaseDate: new Date().toISOString().slice(0, 10), purchasePrice: '', currency: 'LYD', currentValue: '', status: 'نشط', responsible: '', notes: '', color: '', carModel: '', vin: '', makeYear: '' }
 }
 
 function emptyVehicleForm() {
-  return { assetId: '', carName: '', plateNumber: '', type: 'سيدان', model: '', makeYear: String(new Date().getFullYear()), vin: '', engineNumber: '', color: '', mileage: '0', insuranceDate: '', insuranceExpiry: '', licenseDate: '', licenseExpiry: '', driver: '', branch: '', status: 'نشط' }
+  return { assetId: '', carName: '', plateNumber: '', type: 'سيدان', model: '', makeYear: String(new Date().getFullYear()), vin: '', engineNumber: '', color: '', mileage: '0', insuranceDate: '', insuranceExpiry: '', licenseDate: '', licenseExpiry: '', driver: '', branch: '', status: 'نشط', warehouseId: '', barcode: '' }
 }
 
 function emptyEstateForm() {
@@ -50,12 +52,26 @@ function emptyTransferAssetForm() {
 function emptyDocumentForm() {
   return { assetId: '', documentType: '', fileName: '', expiryDate: '', status: 'ساري', notes: '', file: null as File | null }
 }
+function docEditFormFrom(d: AssetDocument) {
+  return { documentType: d.documentType, expiryDate: d.expiryDate || '', status: d.status, notes: d.notes || '' }
+}
 
 export default function AssetsPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center text-muted-foreground text-sm">جاري التحميل...</div>}>
+      <AssetsPageInner />
+    </Suspense>
+  )
+}
+
+function AssetsPageInner() {
   const { hasPermission } = useAuth()
+  const confirmDialog = useConfirm()
   const canManage = hasPermission('إدارة الأصول')
 
-  const [tab, setTab] = useState<TabKey>('assets')
+  const searchParams = useSearchParams()
+  const initialTab = (tabs.find((t) => t.key === searchParams.get('tab'))?.key || 'assets') as TabKey
+  const [tab, setTab] = useState<TabKey>(initialTab)
   const [assets, setAssets] = useState<FixedAsset[]>([])
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
   const [estates, setEstates] = useState<RealEstate[]>([])
@@ -72,6 +88,11 @@ export default function AssetsPage() {
   const [showVehicleModal, setShowVehicleModal] = useState(false)
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null)
   const [vehicleForm, setVehicleForm] = useState(emptyVehicleForm())
+  const [vehicleSearch, setVehicleSearch] = useState('')
+  const [showScanModal, setShowScanModal] = useState(false)
+  const [scanError, setScanError] = useState('')
+  const scanVideoRef = useRef<HTMLVideoElement | null>(null)
+  const scanStreamRef = useRef<MediaStream | null>(null)
 
   const [showEstateModal, setShowEstateModal] = useState(false)
   const [editingEstate, setEditingEstate] = useState<RealEstate | null>(null)
@@ -93,6 +114,10 @@ export default function AssetsPage() {
   const [showDocModal, setShowDocModal] = useState(false)
   const [docForm, setDocForm] = useState(emptyDocumentForm())
   const [docFormError, setDocFormError] = useState('')
+  const [editingDoc, setEditingDoc] = useState<AssetDocument | null>(null)
+  const [docEditForm, setDocEditForm] = useState(docEditFormFrom({ documentType: '', expiryDate: '', status: '', notes: '' } as AssetDocument))
+  const [docEditError, setDocEditError] = useState('')
+  const [savingDocEdit, setSavingDocEdit] = useState(false)
 
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
@@ -102,8 +127,20 @@ export default function AssetsPage() {
   const [completeError, setCompleteError] = useState('')
   const [completingSaving, setCompletingSaving] = useState(false)
 
+  const warehouses = useMemo(() => assets.filter((a) => a.type === 'مخزن'), [assets])
+  const warehouseName = (id: string | null) => warehouses.find((w) => w.id === id)?.name || null
+
   const sortedAssets = useMemo(() => [...assets].sort((a, b) => (a.purchaseDate < b.purchaseDate ? 1 : -1)), [assets])
-  const sortedVehicles = useMemo(() => [...vehicles].reverse(), [vehicles])
+  const sortedVehicles = useMemo(() => {
+    const list = [...vehicles].reverse()
+    const q = vehicleSearch.trim().toLowerCase()
+    if (!q) return list
+    return list.filter((v) =>
+      v.carName.toLowerCase().includes(q) ||
+      v.plateNumber.toLowerCase().includes(q) ||
+      (v.barcode || '').toLowerCase().includes(q)
+    )
+  }, [vehicles, vehicleSearch])
   const sortedEstates = useMemo(() => [...estates].sort((a, b) => (a.acquisitionDate < b.acquisitionDate ? 1 : -1)), [estates])
   const sortedMaintenance = useMemo(() => [...maintenance].sort((a, b) => (a.date < b.date ? 1 : -1)), [maintenance])
   const sortedAssetDocs = useMemo(() => [...documents].reverse(), [documents])
@@ -159,6 +196,7 @@ export default function AssetsPage() {
       id: a.id, name: a.name, type: a.type, category: a.category, branch: a.branch, location: a.location,
       purchaseDate: a.purchaseDate, purchasePrice: String(a.purchasePrice), currency: a.currency,
       currentValue: String(a.currentValue), status: a.status, responsible: a.responsible, notes: a.notes || '',
+      color: a.color || '', carModel: a.carModel || '', vin: a.vin || '', makeYear: a.makeYear ? String(a.makeYear) : '',
     })
     setFormError('')
     setShowAssetModal(true)
@@ -185,6 +223,10 @@ export default function AssetsPage() {
       status: assetForm.status,
       responsible: assetForm.responsible.trim(),
       notes: assetForm.notes.trim() || null,
+      color: assetForm.type === 'مخزن' ? (assetForm.color.trim() || null) : null,
+      car_model: assetForm.type === 'مخزن' ? (assetForm.carModel.trim() || null) : null,
+      vin: assetForm.type === 'مخزن' ? (assetForm.vin.trim() || null) : null,
+      make_year: assetForm.type === 'مخزن' && assetForm.makeYear ? parseInt(assetForm.makeYear, 10) : null,
     }
     try {
       if (editingAsset) await api.put(`/assets/${editingAsset.id}`, payload)
@@ -205,7 +247,7 @@ export default function AssetsPage() {
       assetId: v.assetId, carName: v.carName, plateNumber: v.plateNumber, type: v.type, model: v.model,
       makeYear: String(v.makeYear), vin: v.vin, engineNumber: v.engineNumber, color: v.color, mileage: String(v.mileage),
       insuranceDate: v.insuranceDate, insuranceExpiry: v.insuranceExpiry, licenseDate: v.licenseDate, licenseExpiry: v.licenseExpiry,
-      driver: v.driver, branch: v.branch, status: v.status,
+      driver: v.driver, branch: v.branch, status: v.status, warehouseId: v.warehouseId || '', barcode: v.barcode || '',
     })
     setFormError('')
     setShowVehicleModal(true)
@@ -237,6 +279,8 @@ export default function AssetsPage() {
       driver: vehicleForm.driver.trim(),
       branch: vehicleForm.branch,
       status: vehicleForm.status,
+      warehouse_id: vehicleForm.warehouseId || null,
+      barcode: vehicleForm.barcode.trim() || null,
     }
     try {
       if (editingVehicle) await api.put(`/vehicles/${editingVehicle.id}`, { id: editingVehicle.id, ...payload })
@@ -249,6 +293,60 @@ export default function AssetsPage() {
       setSaving(false)
     }
   }
+
+  // Camera barcode scan — for looking an existing vehicle back up by its (manually
+  // entered) barcode, never for generating one. Uses the browser's native
+  // BarcodeDetector where available; falls back to manual text search otherwise.
+  useEffect(() => {
+    if (!showScanModal) return
+    let cancelled = false
+    let rafId = 0
+
+    const start = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return }
+        scanStreamRef.current = stream
+        if (scanVideoRef.current) {
+          scanVideoRef.current.srcObject = stream
+          await scanVideoRef.current.play()
+        }
+        const DetectorCtor = (window as any).BarcodeDetector
+        if (!DetectorCtor) {
+          setScanError('المسح الضوئي غير مدعوم على هذا المتصفح — يرجى إدخال الباركود يدوياً في مربع البحث')
+          return
+        }
+        const detector = new DetectorCtor({ formats: ['code_128', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'qr_code'] })
+        const tick = async () => {
+          if (cancelled || !scanVideoRef.current) return
+          try {
+            const codes = await detector.detect(scanVideoRef.current)
+            if (codes.length > 0) {
+              setVehicleSearch(codes[0].rawValue)
+              setShowScanModal(false)
+              return
+            }
+          } catch {
+            // transient decode errors between frames are expected — keep scanning
+          }
+          rafId = requestAnimationFrame(tick)
+        }
+        rafId = requestAnimationFrame(tick)
+      } catch {
+        if (!cancelled) setScanError('تعذر الوصول إلى الكاميرا — تأكد من منح الإذن اللازم للمتصفح')
+      }
+    }
+    start()
+
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(rafId)
+      scanStreamRef.current?.getTracks().forEach((t) => t.stop())
+      scanStreamRef.current = null
+    }
+  }, [showScanModal])
+
+  const openScanModal = () => { setScanError(''); setShowScanModal(true) }
 
   // ---------------- Real Estate ----------------
   const openEditEstate = (r: RealEstate) => {
@@ -456,6 +554,51 @@ export default function AssetsPage() {
     }
   }
 
+  const openEditDoc = (d: AssetDocument) => {
+    setEditingDoc(d)
+    setDocEditForm(docEditFormFrom(d))
+    setDocEditError('')
+  }
+
+  const submitEditDoc = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editingDoc) return
+    if (!docEditForm.documentType.trim()) {
+      setDocEditError('نوع المستند مطلوب')
+      return
+    }
+    setSavingDocEdit(true)
+    setDocEditError('')
+    try {
+      await api.put(`/asset_documents/${editingDoc.id}`, {
+        id: editingDoc.id,
+        asset_id: editingDoc.assetId,
+        asset_name: editingDoc.assetName,
+        document_type: docEditForm.documentType.trim(),
+        file_name: editingDoc.fileName,
+        expiry_date: docEditForm.expiryDate || null,
+        status: docEditForm.status,
+        notes: docEditForm.notes.trim() || null,
+      })
+      setEditingDoc(null)
+      await load()
+    } catch (err) {
+      setDocEditError(err instanceof ApiError ? err.message : 'تعذر تعديل المستند')
+    } finally {
+      setSavingDocEdit(false)
+    }
+  }
+
+  const deleteDocument = async (d: AssetDocument) => {
+    if (!(await confirmDialog(`هل تريد حذف مستند "${d.documentType}"؟`))) return
+    try {
+      await api.delete(`/asset_documents/${d.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف المستند')
+    }
+  }
+
   const docStatusClass: Record<string, string> = {
     'ساري': 'bg-success/10 text-success',
     'قارب على الانتهاء': 'bg-warning/10 text-warning',
@@ -529,17 +672,17 @@ export default function AssetsPage() {
                       </td>
                       {canManage && (
                         <td className="px-3 py-4 sm:px-6">
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => openEditAsset(a)} title="تعديل" className="text-primary hover:text-primary/80 transition-colors p-1">
-                              <Pencil className="h-4 w-4" />
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button onClick={() => openEditAsset(a)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
                             </button>
                             {a.status === 'نشط' && (
                               <>
-                                <button onClick={() => openTransferAsset(a)} title="نقل عهدة" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                                  <ArrowRightLeft className="h-4 w-4" />
+                                <button onClick={() => openTransferAsset(a)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                  <ArrowRightLeft className="h-3.5 w-3.5" /> نقل عهدة
                                 </button>
-                                <button onClick={() => openSell(a)} title="بيع" className="text-muted-foreground hover:text-danger transition-colors p-1">
-                                  <DollarSign className="h-4 w-4" />
+                                <button onClick={() => openSell(a)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                                  <DollarSign className="h-3.5 w-3.5" /> بيع
                                 </button>
                               </>
                             )}
@@ -558,13 +701,27 @@ export default function AssetsPage() {
 
       {tab === 'vehicles' && (
         <div className="space-y-4">
-          {canManage && (
-            <div className="flex justify-end">
-              <button onClick={() => { setEditingVehicle(null); setVehicleForm(emptyVehicleForm()); setFormError(''); setShowVehicleModal(true) }} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-                <Plus className="h-4 w-4" /> إضافة مركبة
-              </button>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative flex-1 sm:max-w-xs">
+              <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={vehicleSearch}
+                onChange={(e) => setVehicleSearch(e.target.value)}
+                placeholder="ابحث بالاسم أو اللوحة أو الباركود"
+                className="w-full rounded-md border border-input bg-background py-2 pr-9 pl-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
             </div>
-          )}
+            <div className="flex items-center gap-2">
+              <button onClick={openScanModal} className="flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+                <ScanLine className="h-4 w-4" /> مسح باركود للبحث
+              </button>
+              {canManage && (
+                <button onClick={() => { setEditingVehicle(null); setVehicleForm(emptyVehicleForm()); setFormError(''); setShowVehicleModal(true) }} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+                  <Plus className="h-4 w-4" /> إضافة مركبة
+                </button>
+              )}
+            </div>
+          </div>
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-right">
@@ -574,7 +731,10 @@ export default function AssetsPage() {
                     <th className="hidden px-6 py-4 font-medium md:table-cell">اللوحة</th>
                     <th className="hidden px-6 py-4 font-medium lg:table-cell">الموديل</th>
                     <th className="hidden px-6 py-4 font-medium lg:table-cell">السنة</th>
-                    <th className="hidden px-6 py-4 font-medium md:table-cell">السائق</th>
+                    <th className="hidden px-6 py-4 font-medium md:table-cell">المستلم</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">اللون</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">رقم الهيكل</th>
+                    <th className="hidden px-6 py-4 font-medium lg:table-cell">المخزن</th>
                     <th className="hidden px-6 py-4 font-medium lg:table-cell">انتهاء التأمين</th>
                     <th className="hidden px-6 py-4 font-medium lg:table-cell">انتهاء الترخيص</th>
                     <th className="px-3 py-4 font-medium sm:px-6">الحالة</th>
@@ -583,14 +743,19 @@ export default function AssetsPage() {
                 </thead>
                 <tbody className="divide-y divide-border">
                   {vehicles.length === 0 ? (
-                    <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">لا توجد مركبات مسجلة</td></tr>
+                    <tr><td colSpan={12} className="px-6 py-10 text-center text-muted-foreground">لا توجد مركبات مسجلة</td></tr>
+                  ) : sortedVehicles.length === 0 ? (
+                    <tr><td colSpan={12} className="px-6 py-10 text-center text-muted-foreground">لا توجد نتائج مطابقة للبحث</td></tr>
                   ) : pagedVehicles.map((v) => (
                     <tr key={v.id} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-3 py-4 font-medium text-foreground sm:px-6">{v.carName} ({v.color})</td>
+                      <td className="px-3 py-4 font-medium text-foreground sm:px-6">{v.carName}</td>
                       <td className="hidden px-6 py-4 md:table-cell" dir="ltr">{v.plateNumber}</td>
                       <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{v.model}</td>
                       <td className="hidden px-6 py-4 lg:table-cell">{v.makeYear}</td>
                       <td className="hidden px-6 py-4 md:table-cell">{v.driver}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{v.color}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell" dir="ltr">{v.vin}</td>
+                      <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{warehouseName(v.warehouseId) || '—'}</td>
                       <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{v.insuranceExpiry}</td>
                       <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{v.licenseExpiry}</td>
                       <td className="px-3 py-4 sm:px-6">
@@ -598,8 +763,8 @@ export default function AssetsPage() {
                       </td>
                       {canManage && (
                         <td className="px-3 py-4 sm:px-6">
-                          <button onClick={() => openEditVehicle(v)} title="تعديل" className="text-primary hover:text-primary/80 transition-colors p-1">
-                            <Pencil className="h-4 w-4" />
+                          <button onClick={() => openEditVehicle(v)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                            <Pencil className="h-3.5 w-3.5" /> تعديل
                           </button>
                         </td>
                       )}
@@ -635,8 +800,8 @@ export default function AssetsPage() {
                   <div className="flex items-center gap-2">
                     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${assetStatusClass[r.status] || 'bg-muted text-muted-foreground'}`}>{r.status}</span>
                     {canManage && (
-                      <button onClick={() => openEditEstate(r)} title="تعديل" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                        <Pencil className="h-3.5 w-3.5" />
+                      <button onClick={() => openEditEstate(r)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                        <Pencil className="h-3.5 w-3.5" /> تعديل
                       </button>
                     )}
                   </div>
@@ -730,11 +895,12 @@ export default function AssetsPage() {
                     <th className="px-3 py-4 font-medium sm:px-6">تاريخ الانتهاء</th>
                     <th className="px-3 py-4 font-medium sm:px-6">الحالة</th>
                     <th className="px-3 py-4 font-medium sm:px-6">الملف</th>
+                    <th className="px-3 py-4 font-medium sm:px-6">إجراءات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {documents.length === 0 ? (
-                    <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
+                    <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد مستندات مسجلة</td></tr>
                   ) : pagedAssetDocs.map((d) => (
                     <tr key={d.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-3 py-4 font-medium text-foreground sm:px-6">{d.assetName}</td>
@@ -746,11 +912,23 @@ export default function AssetsPage() {
                       </td>
                       <td className="px-3 py-4 sm:px-6">
                         {d.hasFile ? (
-                          <button onClick={() => downloadFile(`/asset_documents/${d.id}/file`, d.fileName)} title="تحميل الملف" className="text-muted-foreground hover:text-primary transition-colors p-1">
-                            <Download className="h-4 w-4" />
+                          <button onClick={() => openFile(`/asset_documents/${d.id}/file`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الملف'))} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                            <Download className="h-3.5 w-3.5" /> فتح الملف
                           </button>
                         ) : (
                           <span className="text-xs text-muted-foreground">لا يوجد ملف</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-4 sm:px-6">
+                        {canManage && (
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => openEditDoc(d)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
+                            </button>
+                            <button onClick={() => deleteDocument(d)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -818,6 +996,7 @@ export default function AssetsPage() {
                   <select value={assetForm.type} onChange={(e) => setAssetForm({ ...assetForm, type: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                     <option value="سيارة">سيارة</option>
                     <option value="عقار">عقار</option>
+                    <option value="مخزن">مخزن</option>
                     <option value="أثاث">أثاث</option>
                     <option value="معدات">معدات</option>
                     <option value="أجهزة">أجهزة</option>
@@ -828,6 +1007,31 @@ export default function AssetsPage() {
                   <input value={assetForm.category} onChange={(e) => setAssetForm({ ...assetForm, category: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
+              {assetForm.type === 'مخزن' && (
+                <div className="rounded-md border border-border bg-secondary/20 p-3 space-y-3">
+                  <p className="text-xs font-medium text-muted-foreground">بيانات السيارة المخزّنة (إن وجدت)</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">اللون</label>
+                      <input value={assetForm.color} onChange={(e) => setAssetForm({ ...assetForm, color: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">الموديل</label>
+                      <input value={assetForm.carModel} onChange={(e) => setAssetForm({ ...assetForm, carModel: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">رقم الهيكل (VIN)</label>
+                      <input value={assetForm.vin} onChange={(e) => setAssetForm({ ...assetForm, vin: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">سنة الصنع</label>
+                      <input type="number" value={assetForm.makeYear} onChange={(e) => setAssetForm({ ...assetForm, makeYear: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الفرع *</label>
@@ -933,9 +1137,23 @@ export default function AssetsPage() {
                   <input value={vehicleForm.color} onChange={(e) => setVehicleForm({ ...vehicleForm, color: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم الهيكل (VIN)</label>
+                  <input value={vehicleForm.vin} onChange={(e) => setVehicleForm({ ...vehicleForm, vin: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم المحرك</label>
+                  <input value={vehicleForm.engineNumber} onChange={(e) => setVehicleForm({ ...vehicleForm, engineNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">عداد المسافة (كم)</label>
+                  <input type="number" value={vehicleForm.mileage} onChange={(e) => setVehicleForm({ ...vehicleForm, mileage: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">السائق</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">المستلم</label>
                   <input value={vehicleForm.driver} onChange={(e) => setVehicleForm({ ...vehicleForm, driver: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
@@ -956,6 +1174,19 @@ export default function AssetsPage() {
                   <input type="date" value={vehicleForm.licenseExpiry} onChange={(e) => setVehicleForm({ ...vehicleForm, licenseExpiry: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">المخزن</label>
+                  <select value={vehicleForm.warehouseId} onChange={(e) => setVehicleForm({ ...vehicleForm, warehouseId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                    <option value="">بدون مخزن محدد</option>
+                    {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">الباركود</label>
+                  <input value={vehicleForm.barcode} onChange={(e) => setVehicleForm({ ...vehicleForm, barcode: e.target.value })} dir="ltr" placeholder="يُدخل يدوياً" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
 
               {formError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{formError}</p>}
 
@@ -966,6 +1197,28 @@ export default function AssetsPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Barcode Scan Modal — looks up an existing vehicle only, never generates a barcode */}
+      {showScanModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">مسح الباركود</h3>
+              <button onClick={() => setShowScanModal(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="space-y-3 p-6">
+              <div className="overflow-hidden rounded-lg bg-black">
+                <video ref={scanVideoRef} muted playsInline className="w-full aspect-video object-cover" />
+              </div>
+              {scanError ? (
+                <p className="rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">{scanError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">وجّه الكاميرا نحو باركود المركبة — سيتم البحث تلقائياً فور التعرف عليه</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1225,6 +1478,67 @@ export default function AssetsPage() {
                 <button type="button" onClick={() => setShowDocModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {saving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Document Modal */}
+      {editingDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تعديل المستند</h3>
+              <button onClick={() => setEditingDoc(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitEditDoc} className="space-y-4 p-6 text-right">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">نوع المستند *</label>
+                <input
+                  value={docEditForm.documentType}
+                  onChange={(e) => setDocEditForm({ ...docEditForm, documentType: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">تاريخ الانتهاء</label>
+                  <input
+                    type="date"
+                    value={docEditForm.expiryDate}
+                    onChange={(e) => setDocEditForm({ ...docEditForm, expiryDate: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">الحالة</label>
+                  <select
+                    value={docEditForm.status}
+                    onChange={(e) => setDocEditForm({ ...docEditForm, status: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="ساري">ساري</option>
+                    <option value="قارب على الانتهاء">قارب على الانتهاء</option>
+                    <option value="منتهي">منتهي</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={docEditForm.notes}
+                  onChange={(e) => setDocEditForm({ ...docEditForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {docEditError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{docEditError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setEditingDoc(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={savingDocEdit} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {savingDocEdit && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
                 </button>
               </div>
             </form>

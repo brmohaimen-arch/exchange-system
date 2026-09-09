@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { Plus, Edit, X, Loader2, History } from 'lucide-react'
+import { Plus, Edit, Trash2, X, Loader2, History } from 'lucide-react'
 import { api, newId, Currency, ExchangeRate, RateHistory } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 function emptyForm() {
   return { fromCurrency: '', toCurrency: 'LYD', buyRate: '', sellRate: '', minRate: '', maxRate: '' }
@@ -17,6 +18,7 @@ function nowStamp() {
 export default function ExchangeRatesPage() {
   const { user, hasPermission } = useAuth()
   const canEdit = hasPermission('تعديل أسعار الصرف')
+  const confirmDialog = useConfirm()
 
   const [rates, setRates] = useState<ExchangeRate[]>([])
   const [currencies, setCurrencies] = useState<Currency[]>([])
@@ -76,6 +78,16 @@ export default function ExchangeRatesPage() {
     })
     setFormError('')
     setShowModal(true)
+  }
+
+  const deleteRate = async (r: ExchangeRate) => {
+    if (!(await confirmDialog(`هل تريد حذف سعر صرف ${r.fromCurrency}/${r.toCurrency} نهائياً؟`))) return
+    try {
+      await api.delete(`/currencies/rates/${r.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف سعر الصرف')
+    }
   }
 
   const handleSubmit = async (e: FormEvent) => {
@@ -170,9 +182,14 @@ export default function ExchangeRatesPage() {
                   <td className="px-6 py-4 text-muted-foreground">{rate.lastUpdated}</td>
                   {canEdit && (
                     <td className="px-6 py-4">
-                      <button onClick={() => openEdit(rate)} className="text-primary hover:text-primary/80 transition-colors p-1">
-                        <Edit className="h-4 w-4" />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => openEdit(rate)} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
+                          <Edit className="h-3.5 w-3.5" /> تعديل
+                        </button>
+                        <button onClick={() => deleteRate(rate)} className="flex items-center gap-1.5 rounded-md border border-danger/30 px-2.5 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
+                          <Trash2 className="h-3.5 w-3.5" /> حذف
+                        </button>
+                      </div>
                     </td>
                   )}
                 </tr>

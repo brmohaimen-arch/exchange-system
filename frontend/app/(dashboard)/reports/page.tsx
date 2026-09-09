@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
-import { FileText, Download, TrendingUp, AlertTriangle, ShieldAlert, Check, BookOpen, ChevronDown, RotateCcw, Building2, User as UserIcon, Ban, X, Loader2 } from 'lucide-react'
-import { api, downloadFile, ComplianceFlag, JournalEntry, CancelledTransaction } from '@/lib/api-client'
+import { FileText, Download, TrendingUp, AlertTriangle, ShieldAlert, Check, BookOpen, ChevronDown, RotateCcw, Building2, User as UserIcon, Ban, X, Loader2, MessageCircle, Filter } from 'lucide-react'
+import { api, downloadFile, openFile, ComplianceFlag, JournalEntry, CancelledTransaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 
@@ -39,6 +39,9 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState<string | null>(null)
+  const [sendingReport, setSendingReport] = useState<string | null>(null)
+  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10) })
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0, 10))
   const [reviewingFlag, setReviewingFlag] = useState<string | null>(null)
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null)
   const [reversingId, setReversingId] = useState<string | null>(null)
@@ -73,10 +76,28 @@ export default function ReportsPage() {
   const volumeEntries = useMemo(() => Object.entries(profit?.volumeByCurrency || {}), [profit])
   const pagedVolumeEntries = paginate(volumeEntries, volumePage)
 
+  const profitQuery = () => {
+    const params = new URLSearchParams()
+    if (dateFrom) params.set('date_from', dateFrom)
+    if (dateTo) params.set('date_to', dateTo)
+    return params.toString()
+  }
+
+  const loadProfit = async () => {
+    try {
+      const p = await api.get<{ summary: ProfitSummary }>(`/reports/profit?${profitQuery()}`)
+      setProfit(p.summary)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل تقرير الأرباح')
+    }
+  }
+
+  const clearDateFilter = () => { setDateFrom(''); setDateTo('') }
+
   const load = async () => {
     try {
       const results = await Promise.allSettled([
-        api.get<{ summary: ProfitSummary }>('/reports/profit'),
+        api.get<{ summary: ProfitSummary }>(`/reports/profit?${profitQuery()}`),
         api.get<DebtsSummary>('/reports/debts-summary'),
         api.get<ComplianceFlag[]>('/compliance/flags'),
         api.get<JournalEntry[]>('/journal_entries'),
@@ -96,6 +117,7 @@ export default function ReportsPage() {
   }
 
   useEffect(() => { load() }, [])
+  useEffect(() => { if (!loading) loadProfit() }, [dateFrom, dateTo])
 
   const openReverseEntry = (entry: JournalEntry) => {
     setReversingEntry(entry)
@@ -134,25 +156,43 @@ export default function ReportsPage() {
     }
   }
 
-  const handleDownload = async (key: string, path: string, filename: string) => {
+  const handleDownload = async (key: string, path: string, filename: string, openInstant: boolean) => {
     setDownloading(key)
     try {
-      await downloadFile(path, filename)
+      if (openInstant) {
+        await openFile(path)
+      } else {
+        await downloadFile(path, filename)
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'تعذر تحميل الملف')
+      setError(err instanceof ApiError ? err.message : 'تعذر فتح الملف')
     } finally {
       setDownloading(null)
     }
   }
 
+  const sendReportWhatsapp = async (key: string, path: string, body: Record<string, unknown>) => {
+    setSendingReport(key)
+    setError('')
+    try {
+      await api.post(path, body)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إرسال التقرير عبر واتساب')
+    } finally {
+      setSendingReport(null)
+    }
+  }
+
   const reportCards = [
-    { key: 'profit-xlsx', label: 'تقرير الأرباح (Excel)', path: '/reports/profit/export?format=xlsx', filename: 'profit_report.xlsx' },
-    { key: 'profit-pdf', label: 'تقرير الأرباح (PDF)', path: '/reports/profit/export?format=pdf', filename: 'profit_report.pdf' },
-    { key: 'debts-xlsx', label: 'ملخص الديون (Excel)', path: '/reports/debts-summary/export?format=xlsx', filename: 'debts_summary.xlsx' },
-    { key: 'tx-xlsx', label: 'سجل العمليات (Excel)', path: '/transactions/export?format=xlsx', filename: 'transactions.xlsx' },
-    { key: 'jv-xlsx', label: 'القيود المحاسبية (Excel)', path: '/journal_entries/export?format=xlsx', filename: 'journal_entries.xlsx' },
-    { key: 'cancelled-xlsx', label: 'العمليات الملغاة (Excel)', path: '/reports/cancelled-transactions/export?format=xlsx', filename: 'cancelled_transactions.xlsx' },
-    { key: 'cancelled-pdf', label: 'العمليات الملغاة (PDF)', path: '/reports/cancelled-transactions/export?format=pdf', filename: 'cancelled_transactions.pdf' },
+    { key: 'profit-xlsx', label: 'تقرير الأرباح (Excel)', path: `/reports/profit/export?format=xlsx&${profitQuery()}`, filename: 'profit_report.xlsx', openInstant: false, whatsappPath: '/reports/send_whatsapp', whatsappBody: { report: 'profit', format: 'xlsx', date_from: dateFrom || undefined, date_to: dateTo || undefined } },
+    { key: 'profit-pdf', label: 'تقرير الأرباح (PDF)', path: `/reports/profit/export?format=pdf&${profitQuery()}`, filename: 'profit_report.pdf', openInstant: true, whatsappPath: '/reports/send_whatsapp', whatsappBody: { report: 'profit', format: 'pdf', date_from: dateFrom || undefined, date_to: dateTo || undefined } },
+    { key: 'debts-xlsx', label: 'ملخص الديون (Excel)', path: '/reports/debts-summary/export?format=xlsx', filename: 'debts_summary.xlsx', openInstant: false, whatsappPath: '/reports/send_whatsapp', whatsappBody: { report: 'debts-summary', format: 'xlsx' } },
+    { key: 'tx-xlsx', label: 'سجل العمليات (Excel)', path: '/transactions/export?format=xlsx', filename: 'transactions.xlsx', openInstant: false, whatsappPath: '/transactions/send_whatsapp', whatsappBody: { format: 'xlsx' } },
+    { key: 'tx-pdf', label: 'سجل العمليات (PDF)', path: '/transactions/export?format=pdf', filename: 'transactions.pdf', openInstant: true, whatsappPath: '/transactions/send_whatsapp', whatsappBody: { format: 'pdf' } },
+    { key: 'jv-xlsx', label: 'القيود المحاسبية (Excel)', path: '/journal_entries/export?format=xlsx', filename: 'journal_entries.xlsx', openInstant: false, whatsappPath: '/journal_entries/send_whatsapp', whatsappBody: { format: 'xlsx' } },
+    { key: 'jv-pdf', label: 'القيود المحاسبية (PDF)', path: '/journal_entries/export?format=pdf', filename: 'journal_entries.pdf', openInstant: true, whatsappPath: '/journal_entries/send_whatsapp', whatsappBody: { format: 'pdf' } },
+    { key: 'cancelled-xlsx', label: 'العمليات الملغاة (Excel)', path: '/reports/cancelled-transactions/export?format=xlsx', filename: 'cancelled_transactions.xlsx', openInstant: false, whatsappPath: '/reports/send_whatsapp', whatsappBody: { report: 'cancelled-transactions', format: 'xlsx' } },
+    { key: 'cancelled-pdf', label: 'العمليات الملغاة (PDF)', path: '/reports/cancelled-transactions/export?format=pdf', filename: 'cancelled_transactions.pdf', openInstant: true, whatsappPath: '/reports/send_whatsapp', whatsappBody: { report: 'cancelled-transactions', format: 'pdf' } },
   ]
 
   return (
@@ -163,6 +203,25 @@ export default function ReportsPage() {
 
       {error && <p className="rounded-md bg-danger/10 px-4 py-2 text-sm text-danger">{error}</p>}
       {!canView && <p className="rounded-md bg-warning/10 px-4 py-2 text-sm text-warning">لا تملك صلاحية رؤية التقارير — الأرقام قد تكون غير مكتملة.</p>}
+
+      {/* Date range filter — scopes the profit KPIs and profit/Excel/PDF exports below.
+          Defaults to the current month so one old outlier transaction can't silently
+          distort an "all time" total; clear the fields to go back to all-time. */}
+      <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-card p-4 shadow-sm">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Filter className="h-4 w-4 text-muted-foreground" /> فترة تقرير الأرباح
+        </div>
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">من تاريخ</label>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+        </div>
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">إلى تاريخ</label>
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+        </div>
+        <button onClick={clearDateFilter} className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors">كل الفترات</button>
+        {!dateFrom && !dateTo && <span className="text-xs text-warning">عرض كل الفترات — قد تشمل عمليات قديمة تؤثر على الإجمالي</span>}
+      </div>
 
       {/* Summary KPIs */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
@@ -190,17 +249,28 @@ export default function ReportsPage() {
       {/* Downloadable reports */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
         {reportCards.map((r) => (
-          <button
-            key={r.key}
-            onClick={() => handleDownload(r.key, r.path, r.filename)}
-            disabled={downloading === r.key}
-            className="flex flex-col items-center justify-center p-6 rounded-xl border border-border bg-card shadow-sm hover:border-primary/50 transition-colors disabled:opacity-60"
-          >
-            <div className="rounded-full bg-primary/10 p-4 text-primary mb-3">
+          <div key={r.key} className="flex flex-col items-center justify-center gap-3 p-6 rounded-xl border border-border bg-card shadow-sm">
+            <div className="rounded-full bg-primary/10 p-4 text-primary">
               {downloading === r.key ? <Download className="h-6 w-6 animate-bounce" /> : <FileText className="h-6 w-6" />}
             </div>
             <span className="font-medium text-foreground text-sm text-center">{r.label}</span>
-          </button>
+            <div className="flex items-center gap-1.5 flex-wrap justify-center">
+              <button
+                onClick={() => handleDownload(r.key, r.path, r.filename, r.openInstant)}
+                disabled={downloading === r.key}
+                className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted transition-colors disabled:opacity-60"
+              >
+                <Download className="h-3.5 w-3.5" /> {r.openInstant ? 'فتح' : 'تحميل'}
+              </button>
+              <button
+                onClick={() => sendReportWhatsapp(r.key, r.whatsappPath, r.whatsappBody)}
+                disabled={sendingReport === r.key}
+                className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted hover:text-success transition-colors disabled:opacity-60"
+              >
+                {sendingReport === r.key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="h-3.5 w-3.5" />} واتساب
+              </button>
+            </div>
+          </div>
         ))}
       </div>
 

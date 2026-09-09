@@ -82,12 +82,105 @@ NEW_COLUMNS = [
     ("customers", "bank_account_number", "VARCHAR(100)"),
     ("customer_documents", "stored_path", "VARCHAR(300)"),
     ("asset_documents", "stored_path", "VARCHAR(300)"),
+    ("vehicles", "warehouse_id", "VARCHAR(50)"),
+    ("vehicles", "barcode", "VARCHAR(100)"),
+    ("customers", "passport_number", "VARCHAR(100)"),
+    ("customer_account_entries", "other_source", "VARCHAR(200)"),
+    ("fixed_assets", "color", "VARCHAR(50)"),
+    ("fixed_assets", "car_model", "VARCHAR(50)"),
+    ("fixed_assets", "vin", "VARCHAR(100)"),
+    ("fixed_assets", "make_year", "INTEGER"),
 ]
+
+
+def migrate_customer_account_entries_nullable_vault(engine: Engine) -> None:
+    """customer_account_entries.vault_id/vault_name were NOT NULL from day one, but a
+    customer deposit/withdrawal can now be funded from a bank account instead of a vault
+    drawer. SQLite can't relax a NOT NULL constraint with ALTER TABLE, so the table is
+    rebuilt (SQLite's own documented pattern for this) the first time the old schema is
+    seen, then left alone on every later boot."""
+    inspector = inspect(engine)
+    if "customer_account_entries" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("customer_account_entries")}
+    if "bank_account_id" in columns:
+        return  # already migrated
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE customer_account_entries_new (
+                id VARCHAR(50) PRIMARY KEY,
+                type VARCHAR(20) NOT NULL,
+                customer_id VARCHAR(50) NOT NULL REFERENCES customers(id),
+                customer_name VARCHAR(150) NOT NULL,
+                vault_id VARCHAR(50) REFERENCES vaults(id),
+                vault_name VARCHAR(100),
+                bank_account_id VARCHAR(50) REFERENCES bank_accounts(id),
+                bank_account_name VARCHAR(150),
+                currency VARCHAR(10) REFERENCES currencies(code),
+                amount FLOAT NOT NULL,
+                balance_before FLOAT NOT NULL,
+                balance_after FLOAT NOT NULL,
+                notes TEXT,
+                user VARCHAR(100) NOT NULL,
+                shift_id VARCHAR(50) REFERENCES shifts(id),
+                timestamp VARCHAR(50) NOT NULL
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO customer_account_entries_new
+                (id, type, customer_id, customer_name, vault_id, vault_name, currency, amount, balance_before, balance_after, notes, user, shift_id, timestamp)
+            SELECT id, type, customer_id, customer_name, vault_id, vault_name, currency, amount, balance_before, balance_after, notes, user, shift_id, timestamp
+            FROM customer_account_entries
+        """))
+        conn.execute(text("DROP TABLE customer_account_entries"))
+        conn.execute(text("ALTER TABLE customer_account_entries_new RENAME TO customer_account_entries"))
+    print("[migrations] Rebuilt customer_account_entries with nullable vault + new bank_account columns")
+
+
+def migrate_customer_documents_nullable_customer(engine: Engine) -> None:
+    """customer_documents.customer_id/customer_name were NOT NULL from day one, but a
+    document can now be uploaded before it's linked to an actual customer record (and
+    connected later). Same SQLite table-rebuild pattern as the function above."""
+    inspector = inspect(engine)
+    if "customer_documents" not in inspector.get_table_names():
+        return
+    columns = {c["name"]: c for c in inspector.get_columns("customer_documents")}
+    if columns.get("customer_id", {}).get("nullable", True):
+        return  # already migrated (or a fresh table create_all() already made nullable)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE customer_documents_new (
+                id VARCHAR(50) PRIMARY KEY,
+                customer_id VARCHAR(50) REFERENCES customers(id),
+                customer_name VARCHAR(150),
+                document_type VARCHAR(100) NOT NULL,
+                file_name VARCHAR(200) NOT NULL,
+                expiry_date VARCHAR(50),
+                status VARCHAR(50),
+                notes TEXT,
+                stored_path VARCHAR(300)
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO customer_documents_new
+                (id, customer_id, customer_name, document_type, file_name, expiry_date, status, notes, stored_path)
+            SELECT id, customer_id, customer_name, document_type, file_name, expiry_date, status, notes, stored_path
+            FROM customer_documents
+        """))
+        conn.execute(text("DROP TABLE customer_documents"))
+        conn.execute(text("ALTER TABLE customer_documents_new RENAME TO customer_documents"))
+    print("[migrations] Rebuilt customer_documents with nullable customer_id/customer_name")
 
 
 def run_startup_migrations(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
+
+    migrate_customer_account_entries_nullable_vault(engine)
+    migrate_customer_documents_nullable_customer(engine)
+    inspector = inspect(engine)  # re-inspect: the tables above may have just been rebuilt
 
     with engine.begin() as conn:
         for table, column, definition in NEW_COLUMNS:

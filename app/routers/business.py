@@ -1,3 +1,4 @@
+import io
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -5,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from ..database import get_db
 from ..models import (
-    Bank, BankBranch, BankAccount, Customer, Debt, Transaction, Movement, JournalEntry,
+    Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, Transaction, Movement, JournalEntry,
     Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule,
     CustomerAccountEntry
 )
@@ -14,9 +15,9 @@ from ..core.responses import success_response, error_response
 from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
-from ..export_utils import build_excel, build_pdf, build_receipt_pdf, ArabicFontUnavailable
+from ..export_utils import build_excel, build_pdf, build_receipt_pdf, build_statement_pdf, ArabicFontUnavailable
 from ..file_storage import save_upload, resolve_path
-from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
+from ..whatsapp_gateway import send_manager_alert, send_whatsapp_document, get_setting as get_whatsapp_setting
 from ..telegram_gateway import send_manager_alert as send_telegram_alert
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -73,6 +74,7 @@ class CustomerCreate(BaseModel):
     notes: str | None = None
     bank_name: str | None = None
     bank_account_number: str | None = None
+    passport_number: str | None = None
     is_active: bool = True
 
 class DebtCreate(BaseModel):
@@ -149,6 +151,20 @@ def bank_account_to_dict(ba: BankAccount):
         "lastMovement": ba.last_movement
     }
 
+def bank_deposit_to_dict(d: BankDeposit):
+    return {
+        "id": d.id,
+        "bankAccountId": d.bank_account_id,
+        "amount": d.amount,
+        "currency": d.currency,
+        "interestRate": d.interest_rate,
+        "depositDate": d.deposit_date,
+        "accruedInterest": d.accrued_interest,
+        "lastCalculated": d.last_calculated,
+        "status": d.status,
+        "notes": d.notes
+    }
+
 def customer_to_dict(c: Customer):
     return {
         "id": c.id,
@@ -164,6 +180,7 @@ def customer_to_dict(c: Customer):
         "notes": c.notes,
         "bankName": c.bank_name,
         "bankAccountNumber": c.bank_account_number,
+        "passportNumber": c.passport_number,
     }
 
 def debt_to_dict(d: Debt):
@@ -312,6 +329,110 @@ def update_bank_account(account_id: str, data: BankAccountCreate, db: Session = 
     db.commit()
     return success_response(data=bank_account_to_dict(account))
 
+class BankDepositCreate(BaseModel):
+    amount: float
+    interest_rate: float = 0.0
+    deposit_date: str | None = None
+    notes: str | None = None
+
+@router.get("/bank_accounts/{account_id}/deposits")
+def list_bank_deposits(account_id: str, db: Session = Depends(get_db)):
+    res = db.scalars(select(BankDeposit).where(BankDeposit.bank_account_id == account_id).order_by(BankDeposit.deposit_date.desc())).all()
+    return success_response(data=[bank_deposit_to_dict(d) for d in res])
+
+@router.post("/bank_accounts/{account_id}/deposits")
+def create_bank_deposit(account_id: str, data: BankDepositCreate, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    """Records a fixed/term deposit placed into a foreign-currency bank account, with
+    the interest rate that specific deposit carries — banks quote a rate per deposit,
+    not one blanket annual rate for the whole account. Purely a record for interest
+    tracking; it does not move cash (use the deposit endpoint above for that)."""
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    if data.interest_rate < 0:
+        raise APIError(code="INVALID_RATE", message_ar="لا يمكن أن تكون نسبة الفائدة سالبة", message_en="Interest rate cannot be negative", status_code=400)
+
+    deposit = BankDeposit(
+        id=new_id(f"bdep_{account_id}"), bank_account_id=account.id, amount=data.amount, currency=account.currency,
+        interest_rate=data.interest_rate, deposit_date=data.deposit_date or datetime.utcnow().strftime("%Y-%m-%d"),
+        accrued_interest=0.0, last_calculated=None, status="active", notes=data.notes
+    )
+    db.add(deposit)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="BankDeposit", entity_id=deposit.id, description=f"تم تسجيل وديعة بقيمة {data.amount} {account.currency} بنسبة فائدة {data.interest_rate}% على حساب {account.account_name}")
+    db.commit()
+    return success_response(data=bank_deposit_to_dict(deposit), message_ar="تم تسجيل الوديعة بنجاح")
+
+@router.post("/bank_deposits/{deposit_id}/calculate_interest")
+def calculate_bank_deposit_interest(deposit_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    """Accrues simple interest on this one deposit's own amount/rate from its last
+    calculation date (or its deposit date, the first time) up to today. Never touches
+    the account's actual cash balance — crediting into the balance is a separate step."""
+    deposit = db.get(BankDeposit, deposit_id)
+    if not deposit:
+        raise APIError(code="NOT_FOUND", message_ar="الوديعة غير موجودة", message_en="Deposit not found", status_code=404)
+    if deposit.interest_rate <= 0:
+        raise APIError(code="INTEREST_NOT_CONFIGURED", message_ar="لم يتم تحديد نسبة فائدة لهذه الوديعة", message_en="This deposit has no interest rate set", status_code=400)
+
+    today = datetime.utcnow().date()
+    last_date_str = deposit.last_calculated or deposit.deposit_date
+    last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date()
+    days_elapsed = (today - last_date).days
+    if days_elapsed <= 0:
+        raise APIError(code="NO_DAYS_ELAPSED", message_ar="لم يمر يوم كامل بعد منذ آخر احتساب (أو منذ تاريخ الوديعة) لاحتساب فائدة عنه", message_en="No full day has passed since the last calculation (or the deposit date)", status_code=400)
+
+    interest = deposit.amount * (deposit.interest_rate / 100.0) * (days_elapsed / 365.0)
+    deposit.accrued_interest += interest
+    deposit.last_calculated = today.strftime("%Y-%m-%d")
+
+    account = db.get(BankAccount, deposit.bank_account_id)
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankDeposit", entity_id=deposit_id, description=f"تم احتساب فائدة تلقائية بقيمة {interest:.2f} {deposit.currency} على وديعة بحساب {account.account_name if account else deposit.bank_account_id} عن {days_elapsed} يوم")
+    db.commit()
+    return success_response(data=bank_deposit_to_dict(deposit), message_ar=f"تم احتساب فائدة بقيمة {interest:.2f} {deposit.currency}")
+
+@router.post("/bank_deposits/{deposit_id}/credit_interest")
+def credit_bank_deposit_interest(deposit_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    """Moves this deposit's running accrued_interest into the bank account's actual cash
+    balance — a deliberate, separate step so the balance only changes once someone
+    confirms the bank has actually paid the interest."""
+    deposit = db.get(BankDeposit, deposit_id)
+    if not deposit:
+        raise APIError(code="NOT_FOUND", message_ar="الوديعة غير موجودة", message_en="Deposit not found", status_code=404)
+    if deposit.accrued_interest <= 0:
+        raise APIError(code="NO_ACCRUED_INTEREST", message_ar="لا توجد فائدة متراكمة لإضافتها", message_en="No accrued interest to credit", status_code=400)
+
+    account = db.get(BankAccount, deposit.bank_account_id)
+    if not account:
+        raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    interest_amount = deposit.accrued_interest
+    balance_before = account.balance
+    account.balance += interest_amount
+    account.last_movement = timestamp
+    deposit.accrued_interest = 0.0
+
+    entry_id = new_id(f"int_{deposit_id}")
+    db.add(Movement(
+        id=new_id(f"m_bank_{entry_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=account.id,
+        entity_name=account.account_name, currency=account.currency, type="إضافة فائدة وديعة بنكية",
+        amount_in=interest_amount, amount_out=0.0, balance_before=balance_before, balance_after=account.balance,
+        reference_id=entry_id, user=actor.name
+    ))
+    db.add(JournalEntry(
+        id=f"JV-{entry_id}", date=timestamp, tx_type="فائدة بنكية", reference=entry_id,
+        description=f"إضافة فائدة وديعة بقيمة {interest_amount:.2f} {account.currency} إلى حساب {account.account_name}",
+        user=actor.name, status="approved",
+        lines=[
+            {"accountName": f"حساب بنكي {account.bank_name} - {account.account_name}", "currency": account.currency, "debit": interest_amount, "credit": 0.0, "originalAmount": interest_amount, "exchangeRate": 1.0, "equivalentLYD": interest_amount},
+            {"accountName": "إيراد فوائد بنكية", "currency": account.currency, "debit": 0.0, "credit": interest_amount, "originalAmount": interest_amount, "exchangeRate": 1.0, "equivalentLYD": interest_amount},
+        ]
+    ))
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankDeposit", entity_id=deposit_id, description=f"تم إضافة فائدة مستحقة بقيمة {interest_amount:.2f} {account.currency} لرصيد الحساب {account.account_name}")
+    db.commit()
+    return success_response(data=bank_account_to_dict(account), message_ar=f"تم إضافة {interest_amount:.2f} {account.currency} لرصيد الحساب")
+
 @router.delete("/bank_accounts/{account_id}")
 def delete_bank_account(account_id: str, db: Session = Depends(get_db)):
     account = db.get(BankAccount, account_id)
@@ -354,6 +475,7 @@ def update_customer(customer_id: str, data: CustomerCreate, actor: User = Depend
     c.notes = data.notes
     c.bank_name = data.bank_name
     c.bank_account_number = data.bank_account_number
+    c.passport_number = data.passport_number
     was_active = c.is_active
     c.is_active = data.is_active
     action_desc = f"تم تعديل بيانات العميل: {c.name}"
@@ -381,7 +503,9 @@ def delete_customer(customer_id: str, actor: User = Depends(require_permission("
 # with nothing bought or sold. Kept in one currency (no rate involved).
 class CustomerAccountOp(BaseModel):
     id: str | None = None
-    vault_id: str
+    vault_id: str | None = None
+    bank_account_id: str | None = None
+    other_source: str | None = None  # a free-text label when neither a vault nor a bank account tracks this money
     currency: str
     amount: float
     notes: str | None = None
@@ -394,6 +518,9 @@ def customer_account_entry_to_dict(e: CustomerAccountEntry):
         "customerName": e.customer_name,
         "vaultId": e.vault_id,
         "vaultName": e.vault_name,
+        "bankAccountId": e.bank_account_id,
+        "bankAccountName": e.bank_account_name,
+        "otherSource": e.other_source,
         "currency": e.currency,
         "amount": e.amount,
         "balanceBefore": e.balance_before,
@@ -407,6 +534,9 @@ def customer_account_entry_to_dict(e: CustomerAccountEntry):
 def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccountOp, actor: User, db: Session) -> CustomerAccountEntry:
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    sources_given = sum(1 for s in (data.vault_id, data.bank_account_id, data.other_source) if s)
+    if sources_given != 1:
+        raise APIError(code="INVALID_SOURCE", message_ar="يجب تحديد مصدر واحد فقط للعملية: خزنة أو حساب بنكي أو مصدر آخر", message_en="Provide exactly one of vault_id, bank_account_id, or other_source", status_code=400)
 
     customer = db.get(Customer, customer_id)
     if not customer:
@@ -414,24 +544,44 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
     if not customer.is_active:
         raise APIError(code="CUSTOMER_INACTIVE", message_ar="لا يمكن تنفيذ عملية على عميل غير نشط", message_en="Cannot operate on an inactive customer", status_code=400)
 
-    vault = db.get(Vault, data.vault_id)
-    if not vault:
-        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
-
     is_deposit = op_type == "deposit"
     cust_before = customer.balances.get(data.currency, 0.0)
-    vault_before = vault.balances.get(data.currency, 0.0)
 
+    # A vault/bank source has a real tracked balance to move and check; an "other"
+    # source is just a record-keeping label (e.g. petty cash, an owner's personal
+    # top-up) — there's nothing to move or check sufficiency against on that side.
+    vault = None
+    bank_acc = None
+    source_before = source_after = None
+    if data.vault_id:
+        vault = db.get(Vault, data.vault_id)
+        if not vault:
+            raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+        source_before = vault.balances.get(data.currency, 0.0)
+    elif data.bank_account_id:
+        bank_acc = db.get(BankAccount, data.bank_account_id)
+        if not bank_acc:
+            raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+        if not bank_acc.is_active:
+            raise APIError(code="ACCOUNT_INACTIVE", message_ar="لا يمكن تنفيذ عملية على حساب بنكي غير نشط", message_en="Cannot operate on an inactive bank account", status_code=400)
+        source_before = bank_acc.balance
+
+    # Note the source (vault/bank) side moves OPPOSITE to the customer's own balance:
+    # a "deposit" to the customer's account is funded by the office paying it out of
+    # the vault/bank (source decreases), and a "withdraw" from the customer's account
+    # returns that cash to the vault/bank (source increases).
     if is_deposit:
         cust_after = cust_before + data.amount
-        vault_after = vault_before + data.amount  # cash physically comes into the drawer
+        if source_before is not None:
+            if source_before < data.amount:
+                raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ لصرف المبلغ ({source_before} {data.currency})", message_en="Insufficient balance to pay out", status_code=400)
+            source_after = source_before - data.amount
     else:
         if cust_before < data.amount:
             raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد العميل غير كافٍ ({cust_before} {data.currency})", message_en="Insufficient customer balance", status_code=400)
-        if vault_before < data.amount:
-            raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الخزنة غير كافٍ لصرف المبلغ ({vault_before} {data.currency})", message_en="Insufficient vault balance to pay out", status_code=400)
+        if source_before is not None:
+            source_after = source_before + data.amount
         cust_after = cust_before - data.amount
-        vault_after = vault_before - data.amount  # cash physically leaves the drawer
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     entry_id = data.id or new_id(f"cae_{op_type}")
@@ -440,20 +590,28 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
     cust_bals[data.currency] = cust_after
     customer.balances = cust_bals
 
-    v_bals = vault.balances.copy()
-    v_bals[data.currency] = vault_after
-    vault.balances = v_bals
-    vault.last_movement = timestamp
+    shift = None
+    if vault:
+        v_bals = vault.balances.copy()
+        v_bals[data.currency] = source_after
+        vault.balances = v_bals
+        vault.last_movement = timestamp
+        shift = db.scalar(select(Shift).where(Shift.vault_id == vault.id, Shift.status == "open"))
+        if shift:
+            expected = shift.expected_balances.copy()
+            expected[data.currency] = expected.get(data.currency, 0.0) + (-data.amount if is_deposit else data.amount)
+            shift.expected_balances = expected
+    elif bank_acc:
+        bank_acc.balance = source_after
+        bank_acc.last_movement = timestamp
 
-    shift = db.scalar(select(Shift).where(Shift.vault_id == vault.id, Shift.status == "open"))
-    if shift:
-        expected = shift.expected_balances.copy()
-        expected[data.currency] = expected.get(data.currency, 0.0) + (data.amount if is_deposit else -data.amount)
-        shift.expected_balances = expected
-
+    bank_acc_label = f"{bank_acc.bank_name} - {bank_acc.account_name}" if bank_acc else None
     entry = CustomerAccountEntry(
         id=entry_id, type=op_type, customer_id=customer.id, customer_name=customer.name,
-        vault_id=vault.id, vault_name=vault.name, currency=data.currency, amount=data.amount,
+        vault_id=vault.id if vault else None, vault_name=vault.name if vault else None,
+        bank_account_id=bank_acc.id if bank_acc else None, bank_account_name=bank_acc_label,
+        other_source=data.other_source if not (vault or bank_acc) else None,
+        currency=data.currency, amount=data.amount,
         balance_before=cust_before, balance_after=cust_after, notes=data.notes, user=actor.name,
         shift_id=shift.id if shift else None, timestamp=timestamp
     )
@@ -466,21 +624,35 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         amount_in=data.amount if is_deposit else 0.0, amount_out=0.0 if is_deposit else data.amount,
         balance_before=cust_before, balance_after=cust_after, reference_id=entry_id, user=actor.name
     ))
-    db.add(Movement(
-        id=new_id(f"m_vault_{entry_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
-        entity_name=vault.name, currency=data.currency,
-        type="إيداع نقدي من عميل" if is_deposit else "سحب نقدي لعميل",
-        amount_in=data.amount if is_deposit else 0.0, amount_out=0.0 if is_deposit else data.amount,
-        balance_before=vault_before, balance_after=vault_after, reference_id=entry_id, user=actor.name
-    ))
+    if vault:
+        db.add(Movement(
+            id=new_id(f"m_vault_{entry_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
+            entity_name=vault.name, currency=data.currency,
+            type="دفع نقدي لإيداع حساب عميل" if is_deposit else "تحصيل نقدي من سحب حساب عميل",
+            amount_in=0.0 if is_deposit else data.amount, amount_out=data.amount if is_deposit else 0.0,
+            balance_before=source_before, balance_after=source_after, reference_id=entry_id, user=actor.name
+        ))
+    elif bank_acc:
+        db.add(Movement(
+            id=new_id(f"m_bank_{entry_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=bank_acc.id,
+            entity_name=bank_acc_label, currency=data.currency,
+            type="دفع من حساب بنكي لإيداع حساب عميل" if is_deposit else "تحصيل لحساب بنكي من سحب حساب عميل",
+            amount_in=0.0 if is_deposit else data.amount, amount_out=data.amount if is_deposit else 0.0,
+            balance_before=source_before, balance_after=source_after, reference_id=entry_id, user=actor.name
+        ))
+    # No Movement for an "other" source — there's no tracked balance on that side to log against.
 
-    # Also recorded as a Transaction so it shows up in the same history/reports/shift-session view as buy/sell/exchange
-    db.add(Transaction(
-        id=entry_id, type=op_type, vault_id=vault.id, vault_name=vault.name, shift_id=shift.id if shift else None,
-        customer_id=customer.id, customer_name=customer.name, from_currency=data.currency, to_currency=data.currency,
-        amount=data.amount, rate=1.0, commission=0.0, total_amount=data.amount, payment_method="cash",
-        status="approved", notes=data.notes, user=actor.name, branch=vault.branch, timestamp=timestamp, expected_profit=0.0
-    ))
+    # Also recorded as a Transaction so it shows up in the same history/reports/shift-session
+    # view as buy/sell/exchange — only possible when funded from a vault (Transaction.vault_id
+    # is required); a bank-funded entry is still fully tracked via the records above and its
+    # own receipt (get_transaction_receipt falls back to CustomerAccountEntry when no Transaction exists).
+    if vault:
+        db.add(Transaction(
+            id=entry_id, type=op_type, vault_id=vault.id, vault_name=vault.name, shift_id=shift.id if shift else None,
+            customer_id=customer.id, customer_name=customer.name, from_currency=data.currency, to_currency=data.currency,
+            amount=data.amount, rate=1.0, commission=0.0, total_amount=data.amount, payment_method="cash",
+            status="approved", notes=data.notes, user=actor.name, branch=vault.branch, timestamp=timestamp, expected_profit=0.0
+        ))
 
     equivalent_lyd = data.amount
     if data.currency != "LYD":
@@ -488,10 +660,12 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         if rate_row:
             equivalent_lyd = data.amount * rate_row.sell_rate
 
+    source_label = vault.name if vault else bank_acc_label if bank_acc else (data.other_source or "مصدر آخر")
+    source_kind = "خزينة" if vault else "حساب بنكي" if bank_acc else "مصدر آخر"
     lines = [
         {
-            "accountName": f"خزينة {vault.name} - {data.currency}", "currency": data.currency,
-            "debit": data.amount if is_deposit else 0.0, "credit": 0.0 if is_deposit else data.amount,
+            "accountName": f"{source_kind} {source_label} - {data.currency}", "currency": data.currency,
+            "debit": 0.0 if is_deposit else data.amount, "credit": data.amount if is_deposit else 0.0,
             "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
         },
         {
@@ -509,7 +683,7 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
 
     create_audit_log(
         db, action=AuditAction.CREATE, entity_type="CustomerAccountEntry", entity_id=entry_id,
-        description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {data.currency} {'في' if is_deposit else 'من'} حساب العميل {customer.name} عبر خزنة {vault.name}",
+        description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {data.currency} {'في' if is_deposit else 'من'} حساب العميل {customer.name} عبر {source_kind} {source_label}",
         username=actor.username
     )
     db.commit()
@@ -530,12 +704,94 @@ def list_customer_account_entries(db: Session = Depends(get_db)):
     res = db.scalars(select(CustomerAccountEntry).order_by(CustomerAccountEntry.timestamp.desc())).all()
     return success_response(data=[customer_account_entry_to_dict(e) for e in res])
 
+def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "", date_to: str = ""):
+    """Every buy/sell/exchange transaction and every deposit/withdraw entry for
+    this customer, chronologically — the same activity the كشف حساب modal shows
+    on screen. No single running balance column: the customer can hold several
+    currencies at once, so the closing line lists each one's current total instead."""
+    txs_query = select(Transaction).where(Transaction.customer_id == customer.id, Transaction.type.in_(["buy", "sell", "exchange"]))
+    entries_query = select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id == customer.id)
+    if date_from:
+        txs_query = txs_query.where(Transaction.timestamp >= date_from)
+        entries_query = entries_query.where(CustomerAccountEntry.timestamp >= date_from)
+    if date_to:
+        txs_query = txs_query.where(Transaction.timestamp <= date_to + "T23:59:59")
+        entries_query = entries_query.where(CustomerAccountEntry.timestamp <= date_to + "T23:59:59")
+
+    txs = db.scalars(txs_query).all()
+    entries = db.scalars(entries_query).all()
+
+    rows_with_ts = []
+    for t in txs:
+        currency = t.to_currency if t.type == "sell" else t.from_currency
+        detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — {t.id}"
+        rows_with_ts.append((t.timestamp, [t.timestamp, detail, f"{t.amount:,.2f}", currency, t.user]))
+    for e in entries:
+        detail = "إيداع في الحساب" if e.type == "deposit" else "سحب من الحساب"
+        rows_with_ts.append((e.timestamp, [e.timestamp, detail, f"{e.amount:,.2f}", e.currency, e.user]))
+
+    rows_with_ts.sort(key=lambda r: r[0])
+    headers = ["م", "التاريخ", "التفاصيل", "المبلغ", "العملة", "بواسطة"]
+    rows = [[str(i)] + row for i, (_, row) in enumerate(rows_with_ts, start=1)]
+
+    closing_line = "الأرصدة الحالية: " + (", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in customer.balances.items()) or "لا توجد أرصدة")
+    return headers, rows, closing_line
+
+@router.get("/customers/{customer_id}/statement")
+def get_customer_statement(customer_id: str, date_from: str = "", date_to: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    """JSON version of the statement rows, for an on-screen filterable view (as
+    opposed to the /export endpoint below, which renders a downloadable file)."""
+    customer = db.get(Customer, customer_id)
+    if not customer:
+        raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
+    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to)
+    return success_response(data={"headers": headers, "rows": rows, "closingLine": closing_line})
+
+@router.get("/customers/{customer_id}/statement/export")
+def export_customer_statement(customer_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    customer = db.get(Customer, customer_id)
+    if not customer:
+        raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
+
+    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to)
+    if format == "xlsx":
+        buf = build_excel(f"كشف حساب {customer.name}", headers, rows)
+        return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="statement_{customer.id}.xlsx"'})
+    try:
+        buf = build_statement_pdf(customer.name, customer.phone, customer.id_number, headers, rows, closing_line)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="statement_{customer.id}.pdf"'})
+
+@router.post("/customers/{customer_id}/send_statement_whatsapp")
+def send_customer_statement_whatsapp(customer_id: str, date_from: str = "", date_to: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    customer = db.get(Customer, customer_id)
+    if not customer:
+        raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
+    if not customer.phone:
+        raise APIError(code="NO_PHONE", message_ar="لا يوجد رقم هاتف مسجل لهذا العميل", message_en="This customer has no phone number on file", status_code=400)
+
+    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to)
+    try:
+        buf = build_statement_pdf(customer.name, customer.phone, customer.id_number, headers, rows, closing_line)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+
+    result = send_whatsapp_document(db, customer.phone, buf.read(), f"statement_{customer.id}.pdf", caption=f"كشف حساب — {customer.name}")
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال كشف الحساب عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="Customer", entity_id=customer_id, description=f"تم إرسال كشف حساب العميل {customer.name} عبر واتساب إلى {customer.phone}")
+    db.commit()
+    return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحساب عبر واتساب بنجاح")
+
 def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp, actor: User, db: Session):
     """Moves cash between a vault's drawer and a bank account — a deposit takes
     cash out of the vault and into the bank, a withdrawal does the reverse.
     Mirrors _run_customer_account_op's before/after + Movement-logging shape."""
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    if not data.vault_id:
+        raise APIError(code="VAULT_REQUIRED", message_ar="يجب تحديد الخزنة التي ستتم منها العملية", message_en="A vault is required for this operation", status_code=400)
 
     account = db.get(BankAccount, account_id)
     if not account:
@@ -596,9 +852,20 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
     db.commit()
     return account
 
+class BankAccountDepositOp(CustomerAccountOp):
+    interest_rate: float = 0.0  # if the bank quotes a rate on this specific deposit, record it for interest tracking
+
 @router.post("/bank_accounts/{account_id}/deposit")
-def deposit_to_bank_account(account_id: str, data: CustomerAccountOp, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+def deposit_to_bank_account(account_id: str, data: BankAccountDepositOp, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     account = _run_bank_account_op("deposit", account_id, data, actor, db)
+    if data.interest_rate > 0:
+        db.add(BankDeposit(
+            id=new_id(f"bdep_{account_id}"), bank_account_id=account.id, amount=data.amount, currency=account.currency,
+            interest_rate=data.interest_rate, deposit_date=datetime.utcnow().strftime("%Y-%m-%d"),
+            accrued_interest=0.0, last_calculated=None, status="active",
+            notes=f"مسجلة تلقائياً من عملية إيداع {data.id or ''}".strip()
+        ))
+        db.commit()
     return success_response(data=bank_account_to_dict(account), message_ar="تم تسجيل الإيداع بنجاح")
 
 @router.post("/bank_accounts/{account_id}/withdraw")
@@ -609,8 +876,8 @@ def withdraw_from_bank_account(account_id: str, data: CustomerAccountOp, actor: 
 # ----------------- CUSTOMER KYC DOCUMENTS -----------------
 class CustomerDocumentCreate(BaseModel):
     id: str
-    customer_id: str
-    customer_name: str
+    customer_id: str | None = None  # left empty when the document isn't linked to a customer record yet
+    customer_name: str | None = None
     document_type: str
     file_name: str
     expiry_date: str | None = None
@@ -637,13 +904,37 @@ def list_customer_documents(db: Session = Depends(get_db)):
 
 @router.post("/customer_documents")
 def add_customer_document(data: CustomerDocumentCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
-    if not db.get(Customer, data.customer_id):
-        raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل المحدد غير موجود", message_en="Customer not found", status_code=400)
-    doc = CustomerDocument(**data.model_dump())
+    customer = None
+    if data.customer_id:
+        customer = db.get(Customer, data.customer_id)
+        if not customer:
+            raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل المحدد غير موجود", message_en="Customer not found", status_code=400)
+    doc = CustomerDocument(**{**data.model_dump(), "customer_name": customer.name if customer else None})
     db.add(doc)
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="CustomerDocument", entity_id=doc.id, description=f"تمت إضافة مستند ({doc.document_type}) للعميل {doc.customer_name}", username=actor.username)
+    description = f"تمت إضافة مستند ({doc.document_type}) للعميل {doc.customer_name}" if customer else f"تمت إضافة مستند غير مرتبط بعميل ({doc.document_type})"
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="CustomerDocument", entity_id=doc.id, description=description, username=actor.username)
     db.commit()
     return success_response(data=customer_document_to_dict(doc), message_ar="تمت إضافة المستند بنجاح")
+
+class CustomerDocumentConnect(BaseModel):
+    customer_id: str
+
+@router.post("/customer_documents/{doc_id}/connect")
+def connect_customer_document(doc_id: str, data: CustomerDocumentConnect, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    """Links a previously-unlinked document (uploaded before a customer record
+    existed for it) to an actual customer — the whole point of keeping it
+    unlinked in the first place, rather than forcing a customer to exist first."""
+    doc = db.get(CustomerDocument, doc_id)
+    if not doc:
+        raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    customer = db.get(Customer, data.customer_id)
+    if not customer:
+        raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل المحدد غير موجود", message_en="Customer not found", status_code=400)
+    doc.customer_id = customer.id
+    doc.customer_name = customer.name
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="CustomerDocument", entity_id=doc_id, description=f"تم ربط مستند غير مرتبط بالعميل {customer.name}", username=actor.username)
+    db.commit()
+    return success_response(data=customer_document_to_dict(doc), message_ar="تم ربط المستند بالعميل بنجاح")
 
 @router.put("/customer_documents/{doc_id}")
 def update_customer_document(doc_id: str, data: CustomerDocumentCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
@@ -677,7 +968,7 @@ def download_customer_document_file(doc_id: str, actor: User = Depends(get_curre
     path = resolve_path(doc.stored_path)
     if not os.path.exists(path):
         raise APIError(code="NOT_FOUND", message_ar="الملف غير موجود على الخادم", message_en="File missing on server", status_code=404)
-    return FileResponse(path, filename=doc.file_name)
+    return FileResponse(path, filename=doc.file_name, content_disposition_type="inline")
 
 @router.delete("/customer_documents/{doc_id}")
 def delete_customer_document(doc_id: str, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
@@ -864,28 +1155,75 @@ def list_transactions(db: Session = Depends(get_db)):
     res = db.scalars(select(Transaction)).all()
     return success_response(data=[transaction_to_dict(t) for t in res])
 
-@router.get("/transactions/export")
-def export_transactions(format: str = "xlsx", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+def _transactions_export_rows(db: Session):
     res = db.scalars(select(Transaction).order_by(Transaction.timestamp.desc())).all()
     headers = ["رقم العملية", "النوع", "التاريخ", "العميل", "الخزنة", "من عملة", "إلى عملة", "المبلغ", "السعر", "العمولة", "الإجمالي", "طريقة الدفع", "الحالة", "المستخدم"]
     rows = [[t.id, t.type, t.timestamp, t.customer_name, t.vault_name, t.from_currency, t.to_currency, t.amount, t.rate, t.commission, t.total_amount, t.payment_method, t.status, t.user] for t in res]
+    return "سجل العمليات", headers, rows
+
+@router.get("/transactions/export")
+def export_transactions(format: str = "xlsx", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    title, headers, rows = _transactions_export_rows(db)
     if format == "xlsx":
-        buf = build_excel("سجل العمليات", headers, rows)
+        buf = build_excel(title, headers, rows)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="transactions.xlsx"'})
     try:
-        buf = build_pdf("سجل العمليات", headers, rows)
+        buf = build_pdf(title, headers, rows)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء ملف PDF: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
-    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'attachment; filename="transactions.pdf"'})
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'inline; filename="transactions.pdf"'})
+
+@router.post("/transactions/send_whatsapp")
+def send_transactions_export_whatsapp(format: str = "pdf", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    manager_phone = get_whatsapp_setting(db, "whatsappManagerPhone", "")
+    if not manager_phone:
+        raise APIError(code="NO_PHONE", message_ar="لم يتم تحديد رقم هاتف المدير في الإعدادات لاستقبال التقارير", message_en="No manager phone configured in settings to receive reports", status_code=400)
+    title, headers, rows = _transactions_export_rows(db)
+    if format == "xlsx":
+        content, ext = build_excel(title, headers, rows).read(), "xlsx"
+    else:
+        try:
+            content, ext = build_pdf(title, headers, rows).read(), "pdf"
+        except ArabicFontUnavailable as e:
+            raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء ملف PDF: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    result = send_whatsapp_document(db, manager_phone, content, f"{title}.{ext}", caption=title)
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال التقرير عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="Report", entity_id="transactions", description=f"تم إرسال تقرير {title} عبر واتساب إلى {manager_phone}", username=actor.username)
+    db.commit()
+    return success_response(data={"sent": True}, message_ar="تم إرسال التقرير عبر واتساب بنجاح")
 
 _RECEIPT_TYPE_LABELS = {"buy": "شراء عملة", "sell": "بيع عملة", "exchange": "تبديل عملة", "deposit": "إيداع في حساب عميل", "withdraw": "سحب من حساب عميل"}
 _RECEIPT_PAYMENT_LABELS = {"cash": "نقداً", "customer_account": "حساب العميل", "bank_account": "حساب بنكي", "debt": "دين (آجل)"}
 
-@router.get("/transactions/{transaction_id}/receipt")
-def get_transaction_receipt(transaction_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def _build_transaction_receipt(db: Session, transaction_id: str):
+    """Builds the receipt PDF for a transaction id — falling back to its
+    CustomerAccountEntry when there's no Transaction row (a bank-funded customer
+    deposit/withdrawal never gets one, since Transaction.vault_id is required and
+    there's no vault involved). Returns (pdf_bytes, filename, customer_phone)."""
     t = db.get(Transaction, transaction_id)
     if not t:
-        raise APIError(code="NOT_FOUND", message_ar="العملية غير موجودة", message_en="Transaction not found", status_code=404)
+        entry = db.get(CustomerAccountEntry, transaction_id)
+        if not entry:
+            raise APIError(code="NOT_FOUND", message_ar="العملية غير موجودة", message_en="Transaction not found", status_code=404)
+        fields = [
+            ("رقم العملية", entry.id),
+            ("التاريخ", entry.timestamp),
+            ("نوع العملية", _RECEIPT_TYPE_LABELS.get(entry.type, entry.type)),
+            ("العميل", entry.customer_name),
+            ("المصدر", entry.bank_account_name or entry.vault_name or entry.other_source or "—"),
+            ("العملة", entry.currency),
+            ("المبلغ", f"{entry.amount:,.2f}"),
+            ("الموظف المنفذ", entry.user),
+        ]
+        if entry.notes:
+            fields.append(("ملاحظات", entry.notes))
+        try:
+            buf = build_receipt_pdf("إيصال عملية", "شركة واكب للخدمات المالية", fields, footer="هذا الإيصال صادر آلياً من نظام واكب ولا يحتاج توقيعاً")
+        except ArabicFontUnavailable as e:
+            raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء الإيصال: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+        customer = db.get(Customer, entry.customer_id) if entry.customer_id else None
+        return buf.read(), f"receipt_{entry.id}.pdf", customer.phone if customer else None
 
     fields = [
         ("رقم العملية", t.id),
@@ -915,10 +1253,74 @@ def get_transaction_receipt(transaction_id: str, actor: User = Depends(get_curre
         fields.append(("ملاحظات", t.notes))
 
     try:
-        buf = build_receipt_pdf("إيصال عملية", f"شركة واكب للخدمات المالية", fields, footer="هذا الإيصال صادر آلياً من نظام واكب ولا يحتاج توقيعاً")
+        buf = build_receipt_pdf("إيصال عملية", "شركة واكب للخدمات المالية", fields, footer="هذا الإيصال صادر آلياً من نظام واكب ولا يحتاج توقيعاً")
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء الإيصال: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
-    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="receipt_{t.id}.pdf"'})
+    customer = db.get(Customer, t.customer_id) if t.customer_id else None
+    return buf.read(), f"receipt_{t.id}.pdf", customer.phone if customer else None
+
+@router.get("/transactions/{transaction_id}/receipt")
+def get_transaction_receipt(transaction_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    pdf_bytes, filename, _ = _build_transaction_receipt(db, transaction_id)
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+@router.post("/transactions/{transaction_id}/send_receipt_whatsapp")
+def send_transaction_receipt_whatsapp(transaction_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    pdf_bytes, filename, customer_phone = _build_transaction_receipt(db, transaction_id)
+    if not customer_phone:
+        raise APIError(code="NO_PHONE", message_ar="لا يوجد رقم هاتف مسجل لعميل هذه العملية", message_en="This transaction's customer has no phone number on file", status_code=400)
+    result = send_whatsapp_document(db, customer_phone, pdf_bytes, filename, caption="إيصال عملية")
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال الإيصال عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="Transaction", entity_id=transaction_id, description=f"تم إرسال إيصال العملية {transaction_id} عبر واتساب إلى {customer_phone}")
+    db.commit()
+    return success_response(data={"sent": True}, message_ar="تم إرسال الإيصال عبر واتساب بنجاح")
+
+_DEBT_STATUS_LABELS = {"unpaid": "غير مسدد", "partially_paid": "مسدد جزئياً", "paid": "مسدد بالكامل"}
+_DEBT_PERIOD_LABELS = {"monthly": "شهري", "daily": "يومي", "none": "بدون جدول سداد"}
+
+def _build_debt_receipt(db: Session, debt_id: str):
+    d = db.get(Debt, debt_id)
+    if not d:
+        raise APIError(code="NOT_FOUND", message_ar="الدين غير موجود", message_en="Debt not found", status_code=404)
+
+    fields = [
+        ("رقم الدين", d.id),
+        ("تاريخ البدء", d.start_date),
+        ("تاريخ الاستحقاق", d.due_date),
+        ("العميل", d.customer_name),
+        ("قيمة الدين", f"{d.amount:,.2f} {d.currency}"),
+        ("المسدد", f"{d.paid_amount:,.2f} {d.currency}"),
+        ("المتبقي", f"{d.remaining_amount:,.2f} {d.currency}"),
+        ("جدول السداد", _DEBT_PERIOD_LABELS.get(d.payment_period, d.payment_period)),
+        ("الحالة", _DEBT_STATUS_LABELS.get(d.status, d.status)),
+    ]
+    if d.notes:
+        fields.append(("ملاحظات", d.notes))
+
+    try:
+        buf = build_receipt_pdf("إيصال دين", "شركة واكب للخدمات المالية", fields, footer="هذا الإيصال صادر آلياً من نظام واكب ولا يحتاج توقيعاً")
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء الإيصال: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    customer = db.get(Customer, d.customer_id) if d.customer_id else None
+    return buf.read(), f"debt_receipt_{d.id}.pdf", customer.phone if customer else None
+
+@router.get("/debts/{debt_id}/receipt")
+def get_debt_receipt(debt_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    pdf_bytes, filename, _ = _build_debt_receipt(db, debt_id)
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+@router.post("/debts/{debt_id}/send_receipt_whatsapp")
+def send_debt_receipt_whatsapp(debt_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    pdf_bytes, filename, customer_phone = _build_debt_receipt(db, debt_id)
+    if not customer_phone:
+        raise APIError(code="NO_PHONE", message_ar="لا يوجد رقم هاتف مسجل لعميل هذا الدين", message_en="This debt's customer has no phone number on file", status_code=400)
+    result = send_whatsapp_document(db, customer_phone, pdf_bytes, filename, caption="إيصال دين")
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال الإيصال عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="Debt", entity_id=debt_id, description=f"تم إرسال إيصال الدين {debt_id} عبر واتساب إلى {customer_phone}")
+    db.commit()
+    return success_response(data={"sent": True}, message_ar="تم إرسال الإيصال عبر واتساب بنجاح")
 
 @router.get("/movements")
 def list_movements(db: Session = Depends(get_db)):
@@ -991,14 +1393,17 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
     else:
         raise APIError(code="INVALID_TYPE", message_ar="نوع العملية غير صالح", message_en="Invalid operation type", status_code=400)
 
-    # Check sufficient vault balance if cash payout
-    if data.paymentMethod == "cash":
+    # Check sufficient vault balance for the payout leg. On a sell, the foreign currency
+    # handed to the customer always leaves the vault regardless of payment method (the
+    # customer walks away with physical currency no matter how they paid for it), so
+    # that leg must always be checked — not just when paymentMethod == "cash".
+    if is_sell or data.paymentMethod == "cash":
         pay_bal = vault.balances.get(cashier_pay_currency, 0.0)
         if pay_bal < cashier_pay_amount:
             raise APIError(
-                code="INSUFFICIENT_BALANCE", 
-                message_ar=f"الرصيد المتاح في الخزنة ({pay_bal} {cashier_pay_currency}) غير كافي لتسديد قيمة العملية البالغة ({cashier_pay_amount} {cashier_pay_currency})", 
-                message_en=f"Insufficient vault balance ({pay_bal} {cashier_pay_currency}) for payout ({cashier_pay_amount} {cashier_pay_currency})", 
+                code="INSUFFICIENT_BALANCE",
+                message_ar=f"الرصيد المتاح في الخزنة ({pay_bal} {cashier_pay_currency}) غير كافي لتسديد قيمة العملية البالغة ({cashier_pay_amount} {cashier_pay_currency})",
+                message_en=f"Insufficient vault balance ({pay_bal} {cashier_pay_currency}) for payout ({cashier_pay_amount} {cashier_pay_currency})",
                 status_code=400
             )
 
@@ -1010,9 +1415,25 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
             raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب المصرفي المحدد غير موجود", message_en="Bank account not found", status_code=400)
         if is_buy and bank_acc.balance < cashier_pay_amount:
             raise APIError(
-                code="INSUFFICIENT_BANK_BALANCE", 
-                message_ar=f"رصيد الحساب البنكي غير كافي! الرصيد المتاح: {bank_acc.balance} {bank_acc.currency}", 
-                message_en=f"Insufficient bank account balance! Available: {bank_acc.balance} {bank_acc.currency}", 
+                code="INSUFFICIENT_BANK_BALANCE",
+                message_ar=f"رصيد الحساب البنكي غير كافي! الرصيد المتاح: {bank_acc.balance} {bank_acc.currency}",
+                message_en=f"Insufficient bank account balance! Available: {bank_acc.balance} {bank_acc.currency}",
+                status_code=400
+            )
+
+    # Check the customer has enough account balance to cover what they're paying for
+    # this operation FROM their own account balance — this only applies to a sell
+    # settled via customer_account (the customer draws down their account instead of
+    # handing over cash). On a buy/exchange, customer_account means the business is
+    # crediting the customer's account with what it owes them — nothing is drawn from
+    # their balance, so no sufficiency check applies there.
+    if data.paymentMethod == "customer_account" and is_sell:
+        cust_bal = customer.balances.get(cashier_receive_currency, 0.0)
+        if cust_bal < cashier_receive_amount:
+            raise APIError(
+                code="INSUFFICIENT_CUSTOMER_BALANCE",
+                message_ar=f"رصيد العميل غير كافٍ ({cust_bal} {cashier_receive_currency}) لتغطية قيمة العملية ({cashier_receive_amount} {cashier_receive_currency})",
+                message_en=f"Customer balance ({cust_bal} {cashier_receive_currency}) is insufficient to cover this operation ({cashier_receive_amount} {cashier_receive_currency})",
                 status_code=400
             )
 
@@ -1036,19 +1457,35 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     username = actor.name
 
-    # 1. Update Vault balances
+    # 1. Update Vault balances. The currency that physically changes hands with the
+    # customer at the counter always moves the vault, regardless of payment method:
+    # on a buy/exchange that's the currency the customer hands over (always credited);
+    # on a sell that's the currency handed to the customer (always debited). The other
+    # ("settlement") leg only touches the vault when it's actually settled in cash —
+    # otherwise it's routed to a bank account, the customer's own account, or a debt.
     v_bals = vault.balances.copy()
-    v_bals[cashier_receive_currency] = v_bals.get(cashier_receive_currency, 0.0) + cashier_receive_amount
-    if data.paymentMethod == "cash":
+    if is_sell:
         v_bals[cashier_pay_currency] = v_bals.get(cashier_pay_currency, 0.0) - cashier_pay_amount
+        if data.paymentMethod == "cash":
+            v_bals[cashier_receive_currency] = v_bals.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+    else:
+        v_bals[cashier_receive_currency] = v_bals.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+        if data.paymentMethod == "cash":
+            v_bals[cashier_pay_currency] = v_bals.get(cashier_pay_currency, 0.0) - cashier_pay_amount
     vault.balances = v_bals
     vault.last_movement = timestamp
 
-    # 2. Update Customer balances
+    # 2. Update Customer balances. customer_account never draws from a currency the
+    # counter-physical leg brought in (that always goes to the vault, see above) — it
+    # only ever credits the customer (buy/exchange: the business owes them proceeds)
+    # or debits them (sell: they're paying out of their own account balance instead
+    # of handing over cash).
     cust_bals = customer.balances.copy()
     if data.paymentMethod == "customer_account":
-        cust_bals[cashier_pay_currency] = cust_bals.get(cashier_pay_currency, 0.0) + cashier_pay_amount
-        cust_bals[cashier_receive_currency] = cust_bals.get(cashier_receive_currency, 0.0) - cashier_receive_amount
+        if is_sell:
+            cust_bals[cashier_receive_currency] = cust_bals.get(cashier_receive_currency, 0.0) - cashier_receive_amount
+        else:
+            cust_bals[cashier_pay_currency] = cust_bals.get(cashier_pay_currency, 0.0) + cashier_pay_amount
         customer.balances = cust_bals
     elif data.paymentMethod == "debt":
         debt_currency = cashier_pay_currency if is_buy else cashier_receive_currency
@@ -1102,15 +1539,21 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
         )
         db.add(debt)
 
-    # 5. Update Shift expected balances
+    # 5. Update Shift expected balances — mirrors the vault mutation in step 1 exactly,
+    # since this is what shift-close reconciliation compares the counted cash against.
     shift = db.scalar(
         select(Shift).where(Shift.vault_id == vault.id, Shift.status == "open")
     )
     if shift:
         expected = shift.expected_balances.copy()
-        expected[cashier_receive_currency] = expected.get(cashier_receive_currency, 0.0) + cashier_receive_amount
-        if data.paymentMethod == "cash":
+        if is_sell:
             expected[cashier_pay_currency] = expected.get(cashier_pay_currency, 0.0) - cashier_pay_amount
+            if data.paymentMethod == "cash":
+                expected[cashier_receive_currency] = expected.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+        else:
+            expected[cashier_receive_currency] = expected.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+            if data.paymentMethod == "cash":
+                expected[cashier_pay_currency] = expected.get(cashier_pay_currency, 0.0) - cashier_pay_amount
         shift.expected_balances = expected
 
     # 6. Create Transaction
@@ -1159,33 +1602,18 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
     )
     db.add(tx)
 
-    # 7. Create Movements
-    m1 = Movement(
-        id=new_id(f"m_rec_{tx_id}"),
-        timestamp=timestamp,
-        entity_type="vault",
-        entity_id=vault.id,
-        entity_name=vault.name,
-        currency=cashier_receive_currency,
-        type="شراء عملة ورقية" if is_buy else "مقبوضات صرافة" if is_sell else "تبديل عملة",
-        amount_in=cashier_receive_amount,
-        amount_out=0.0,
-        balance_before=vault.balances.get(cashier_receive_currency, 0.0) - cashier_receive_amount,
-        balance_after=vault.balances.get(cashier_receive_currency, 0.0),
-        reference_id=tx_id,
-        user=username
-    )
-    db.add(m1)
-
-    if data.paymentMethod == "cash":
-        m2 = Movement(
-            id=new_id(f"m_pay_{tx_id}"),
+    # 7. Create Movements — must mirror exactly which legs actually touched the vault
+    # above (step 1), since apply_transaction_reversal() undoes vault balances strictly
+    # by replaying these rows in reverse, not by re-deriving the math independently.
+    if is_sell:
+        m1 = Movement(
+            id=new_id(f"m_rec_{tx_id}"),
             timestamp=timestamp,
             entity_type="vault",
             entity_id=vault.id,
             entity_name=vault.name,
             currency=cashier_pay_currency,
-            type="مدفوعات صرافة" if is_buy else "بيع عملة ورقية" if is_sell else "تبديل عملة",
+            type="بيع عملة ورقية",
             amount_in=0.0,
             amount_out=cashier_pay_amount,
             balance_before=vault.balances.get(cashier_pay_currency, 0.0) + cashier_pay_amount,
@@ -1193,12 +1621,71 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
             reference_id=tx_id,
             user=username
         )
-        db.add(m2)
+        db.add(m1)
 
-    # 8. Create Journal Entry
+        if data.paymentMethod == "cash":
+            m2 = Movement(
+                id=new_id(f"m_pay_{tx_id}"),
+                timestamp=timestamp,
+                entity_type="vault",
+                entity_id=vault.id,
+                entity_name=vault.name,
+                currency=cashier_receive_currency,
+                type="مقبوضات صرافة",
+                amount_in=cashier_receive_amount,
+                amount_out=0.0,
+                balance_before=vault.balances.get(cashier_receive_currency, 0.0) - cashier_receive_amount,
+                balance_after=vault.balances.get(cashier_receive_currency, 0.0),
+                reference_id=tx_id,
+                user=username
+            )
+            db.add(m2)
+    else:
+        m1 = Movement(
+            id=new_id(f"m_rec_{tx_id}"),
+            timestamp=timestamp,
+            entity_type="vault",
+            entity_id=vault.id,
+            entity_name=vault.name,
+            currency=cashier_receive_currency,
+            type="شراء عملة ورقية" if is_buy else "تبديل عملة",
+            amount_in=cashier_receive_amount,
+            amount_out=0.0,
+            balance_before=vault.balances.get(cashier_receive_currency, 0.0) - cashier_receive_amount,
+            balance_after=vault.balances.get(cashier_receive_currency, 0.0),
+            reference_id=tx_id,
+            user=username
+        )
+        db.add(m1)
+
+        if data.paymentMethod == "cash":
+            m2 = Movement(
+                id=new_id(f"m_pay_{tx_id}"),
+                timestamp=timestamp,
+                entity_type="vault",
+                entity_id=vault.id,
+                entity_name=vault.name,
+                currency=cashier_pay_currency,
+                type="مدفوعات صرافة" if is_buy else "تبديل عملة",
+                amount_in=0.0,
+                amount_out=cashier_pay_amount,
+                balance_before=vault.balances.get(cashier_pay_currency, 0.0) + cashier_pay_amount,
+                balance_after=vault.balances.get(cashier_pay_currency, 0.0),
+                reference_id=tx_id,
+                user=username
+            )
+            db.add(m2)
+
+    # 8. Create Journal Entry. Account labeling must match which leg actually moved the
+    # vault (step 1): on a sell the receive (LYD) leg is the settlement side, so it's
+    # only really the vault when paid in cash — otherwise the pay (foreign currency)
+    # leg is the one that's always the vault (physically dispensed either way).
     lines = [
         {
-            "accountName": f"خزينة {vault.name} - {cashier_receive_currency}",
+            "accountName": f"خزينة {vault.name} - {cashier_receive_currency}" if (not is_sell or data.paymentMethod == "cash")
+                          else f"حساب بنكي {bank_acc.bank_name} - {bank_acc.account_name}" if (data.paymentMethod == "bank_account" and bank_acc)
+                          else f"حساب العميل {customer.name} - {cashier_receive_currency}" if data.paymentMethod == "customer_account"
+                          else f"دين العميل {customer.name} - {cashier_receive_currency}",
             "currency": cashier_receive_currency,
             "debit": cashier_receive_amount,
             "credit": 0.0,
@@ -1207,7 +1694,7 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
             "equivalentLYD": cashier_receive_amount if cashier_receive_currency == "LYD" else cashier_receive_amount * data.rate
         },
         {
-            "accountName": f"خزينة {vault.name} - {cashier_pay_currency}" if data.paymentMethod == "cash"
+            "accountName": f"خزينة {vault.name} - {cashier_pay_currency}" if (is_sell or data.paymentMethod == "cash")
                           else f"حساب بنكي {bank_acc.bank_name} - {bank_acc.account_name}" if (data.paymentMethod == "bank_account" and bank_acc)
                           else f"حساب العميل {customer.name} - {cashier_pay_currency}" if data.paymentMethod == "customer_account"
                           else f"دين العميل {customer.name} - {cashier_pay_currency}",
@@ -1376,12 +1863,17 @@ def apply_transaction_reversal(db: Session, tx_id: str, actor_name: str, reason:
     else:
         recv_ccy, recv_amt, pay_ccy, pay_amt = tx.from_currency, tx.amount, tx.to_currency, tx.amount * tx.rate
 
-    # 2. Undo the customer_account balance effect (no Movement rows exist for this path)
+    # 2. Undo the customer_account balance effect (no Movement rows exist for this path).
+    # Mirrors execute_pos_operation's forward math: a sell debits the receive (LYD)
+    # leg from the customer's account, a buy/exchange credits the pay leg to it — so
+    # reversing means crediting back the former and debiting back the latter.
     customer = db.get(Customer, tx.customer_id) if tx.customer_id else None
     if customer and tx.payment_method == "customer_account":
         cust_bals = customer.balances.copy()
-        cust_bals[pay_ccy] = cust_bals.get(pay_ccy, 0.0) - pay_amt
-        cust_bals[recv_ccy] = cust_bals.get(recv_ccy, 0.0) + recv_amt
+        if is_sell:
+            cust_bals[recv_ccy] = cust_bals.get(recv_ccy, 0.0) + recv_amt
+        else:
+            cust_bals[pay_ccy] = cust_bals.get(pay_ccy, 0.0) - pay_amt
         customer.balances = cust_bals
 
     # 3. Cancel the debt this transaction created, if untouched — refuse if the customer already paid some of it down
@@ -1403,9 +1895,14 @@ def apply_transaction_reversal(db: Session, tx_id: str, actor_name: str, reason:
     shift = db.scalar(select(Shift).where(Shift.vault_id == tx.vault_id, Shift.status == "open"))
     if shift:
         expected = shift.expected_balances.copy()
-        expected[recv_ccy] = expected.get(recv_ccy, 0.0) - recv_amt
-        if tx.payment_method == "cash":
+        if is_sell:
             expected[pay_ccy] = expected.get(pay_ccy, 0.0) + pay_amt
+            if tx.payment_method == "cash":
+                expected[recv_ccy] = expected.get(recv_ccy, 0.0) - recv_amt
+        else:
+            expected[recv_ccy] = expected.get(recv_ccy, 0.0) - recv_amt
+            if tx.payment_method == "cash":
+                expected[pay_ccy] = expected.get(pay_ccy, 0.0) + pay_amt
         shift.expected_balances = expected
 
     # 5. Flip the journal entry
@@ -1426,3 +1923,254 @@ def apply_transaction_reversal(db: Session, tx_id: str, actor_name: str, reason:
 
     create_audit_log(db, action=AuditAction.REVERSE, entity_type="Transaction", entity_id=tx_id, description=f"تم عكس العملية {tx_id} بالكامل (الأرصدة والقيود) — السبب: {reason}", username=actor_name)
     return tx
+
+# ----------------- TRANSACTION EDITING -----------------
+class TransactionEditRequest(BaseModel):
+    amount: float
+    rate: float
+    commission: float = 0.0
+    notes: str | None = None
+
+@router.put("/transactions/{tx_id}")
+def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Edits a buy/sell/exchange transaction's amount/rate/commission/notes at any time,
+    by undoing its recorded effect (via apply_transaction_reversal — the same exact-undo
+    logic used for manager-approved reversals) and reapplying the edited values with the
+    same forward math execute_pos_operation uses to create a transaction. The transaction
+    keeps its original id/type/vault/customer/currencies/payment method — only the
+    financial figures and notes change. Deposit/withdraw customer-account operations are
+    a separate model (CustomerAccountEntry) and are not covered by this endpoint."""
+    tx = db.get(Transaction, tx_id)
+    if not tx:
+        raise APIError(code="NOT_FOUND", message_ar="العملية غير موجودة", message_en="Transaction not found", status_code=404)
+    if tx.status == "reversed":
+        raise APIError(code="ALREADY_REVERSED", message_ar="لا يمكن تعديل عملية تم عكسها بالفعل", message_en="Cannot edit a reversed transaction", status_code=400)
+    if tx.type not in ("buy", "sell", "exchange"):
+        raise APIError(code="NOT_EDITABLE", message_ar="هذا النوع من العمليات غير قابل للتعديل من هنا", message_en="This transaction type cannot be edited here", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    if data.rate <= 0:
+        raise APIError(code="INVALID_RATE", message_ar="يجب أن يكون سعر الصرف أكبر من صفر", message_en="Rate must be positive", status_code=400)
+    if data.commission < 0:
+        raise APIError(code="INVALID_COMMISSION", message_ar="لا يمكن أن تكون العمولة بقيمة سالبة", message_en="Commission cannot be negative", status_code=400)
+
+    vault = db.get(Vault, tx.vault_id)
+    customer = db.get(Customer, tx.customer_id) if tx.customer_id else None
+    if not vault or not customer:
+        raise APIError(code="NOT_FOUND", message_ar="تعذر العثور على الخزنة أو العميل المرتبط بالعملية", message_en="Linked vault or customer no longer exists", status_code=400)
+
+    bank_acc = None
+    if tx.payment_method == "bank_account":
+        bank_movement = db.scalar(select(Movement).where(Movement.reference_id == tx_id, Movement.entity_type == "bank_account"))
+        bank_acc = db.get(BankAccount, bank_movement.entity_id) if bank_movement else None
+        if not bank_acc:
+            raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="تعذر العثور على الحساب البنكي المرتبط بهذه العملية", message_en="Linked bank account no longer exists", status_code=400)
+
+    old_amount, old_rate, old_commission = tx.amount, tx.rate, tx.commission
+    is_buy, is_sell, is_exchange = tx.type == "buy", tx.type == "sell", tx.type == "exchange"
+
+    # 1. Undo the old effect (vault/bank/customer balances, debt, shift, journal).
+    # Raises if a linked debt was already paid down, exactly like a normal reversal would.
+    apply_transaction_reversal(db, tx_id, actor.name, f"تعديل العملية بواسطة {actor.name}")
+
+    # 2. Recompute cashier receive/pay with the edited values, same formulas as execute_pos_operation
+    if is_buy:
+        cashier_receive_currency, cashier_receive_amount = tx.from_currency, data.amount
+        cashier_pay_currency, cashier_pay_amount = tx.to_currency, data.amount * data.rate - data.commission
+    elif is_sell:
+        cashier_receive_currency, cashier_receive_amount = tx.from_currency, data.amount * data.rate + data.commission
+        cashier_pay_currency, cashier_pay_amount = tx.to_currency, data.amount
+    else:
+        cashier_receive_currency, cashier_receive_amount = tx.from_currency, data.amount
+        cashier_pay_currency, cashier_pay_amount = tx.to_currency, data.amount * data.rate
+
+    if cashier_pay_amount < 0:
+        raise APIError(code="INVALID_COMMISSION", message_ar="قيمة العمولة أكبر من قيمة العملية بعد التعديل", message_en="Commission exceeds the edited transaction value", status_code=400)
+
+    # 3. Re-run the same sufficiency checks execute_pos_operation performs at creation
+    # time. On a sell, the foreign currency handed to the customer always leaves the
+    # vault regardless of payment method, so it's always checked — not just on cash.
+    if is_sell or tx.payment_method == "cash":
+        pay_bal = vault.balances.get(cashier_pay_currency, 0.0)
+        if pay_bal < cashier_pay_amount:
+            raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح في الخزنة ({pay_bal} {cashier_pay_currency}) غير كافٍ لتسديد القيمة الجديدة ({cashier_pay_amount} {cashier_pay_currency})", message_en="Insufficient vault balance for the edited amount", status_code=400)
+
+    if tx.payment_method == "bank_account" and is_buy and bank_acc.balance < cashier_pay_amount:
+        raise APIError(code="INSUFFICIENT_BANK_BALANCE", message_ar=f"رصيد الحساب البنكي غير كافٍ! الرصيد المتاح: {bank_acc.balance} {bank_acc.currency}", message_en="Insufficient bank account balance for the edited amount", status_code=400)
+
+    if tx.payment_method == "customer_account" and is_sell:
+        cust_bal = customer.balances.get(cashier_receive_currency, 0.0)
+        if cust_bal < cashier_receive_amount:
+            raise APIError(code="INSUFFICIENT_CUSTOMER_BALANCE", message_ar=f"رصيد العميل غير كافٍ ({cust_bal} {cashier_receive_currency}) لتغطية القيمة الجديدة ({cashier_receive_amount} {cashier_receive_currency})", message_en="Customer balance is insufficient for the edited amount", status_code=400)
+
+    if tx.payment_method == "debt":
+        current_debt = db.scalar(select(func.sum(Debt.remaining_amount)).where(Debt.customer_id == customer.id, Debt.status != "paid")) or 0.0
+        new_debt_amount = cashier_pay_amount if is_buy else cashier_receive_amount
+        if current_debt + new_debt_amount > customer.debt_limit:
+            raise APIError(code="DEBT_LIMIT_EXCEEDED", message_ar=f"تجاوزت القيمة الجديدة حد الدين المسموح به للعميل! حد الدين: {customer.debt_limit} د.ل", message_en="Edited amount exceeds the customer's debt limit", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    username = actor.name
+
+    # 4. Reapply vault balances — same physical-leg-always/settlement-leg-if-cash split
+    # as execute_pos_operation (see its step 1 comment for the reasoning).
+    v_bals = vault.balances.copy()
+    if is_sell:
+        v_bals[cashier_pay_currency] = v_bals.get(cashier_pay_currency, 0.0) - cashier_pay_amount
+        if tx.payment_method == "cash":
+            v_bals[cashier_receive_currency] = v_bals.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+    else:
+        v_bals[cashier_receive_currency] = v_bals.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+        if tx.payment_method == "cash":
+            v_bals[cashier_pay_currency] = v_bals.get(cashier_pay_currency, 0.0) - cashier_pay_amount
+    vault.balances = v_bals
+    vault.last_movement = timestamp
+
+    # 5. Reapply customer balances
+    cust_bals = customer.balances.copy()
+    if tx.payment_method == "customer_account":
+        if is_sell:
+            cust_bals[cashier_receive_currency] = cust_bals.get(cashier_receive_currency, 0.0) - cashier_receive_amount
+        else:
+            cust_bals[cashier_pay_currency] = cust_bals.get(cashier_pay_currency, 0.0) + cashier_pay_amount
+        customer.balances = cust_bals
+    elif tx.payment_method == "debt":
+        debt_currency = cashier_pay_currency if is_buy else cashier_receive_currency
+        debt_amount = cashier_pay_amount if is_buy else cashier_receive_amount
+        cust_bals[debt_currency] = cust_bals.get(debt_currency, 0.0) - debt_amount
+        customer.balances = cust_bals
+
+    # 6. Reapply bank account balance + movement
+    if tx.payment_method == "bank_account" and bank_acc:
+        old_bank_balance = bank_acc.balance
+        if is_buy:
+            bank_acc.balance -= cashier_pay_amount
+        else:
+            bank_acc.balance += cashier_receive_amount
+        bank_acc.last_movement = timestamp
+        db.add(Movement(
+            id=new_id(f"bm_edit_{tx_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=bank_acc.id,
+            entity_name=f"{bank_acc.bank_name} - {bank_acc.account_name}", currency=bank_acc.currency,
+            type="سحب نقدي لصالح عملية صرافة (بعد تعديل)" if is_buy else "إيداع نقدي من مبيعات صرافة (بعد تعديل)",
+            amount_in=0.0 if is_buy else cashier_receive_amount, amount_out=cashier_pay_amount if is_buy else 0.0,
+            balance_before=old_bank_balance, balance_after=bank_acc.balance, reference_id=tx_id, user=username
+        ))
+
+    # 7. Recreate the debt if this operation is debt-funded (the old one was cancelled by the reversal)
+    if tx.payment_method == "debt":
+        debt_currency = cashier_pay_currency if is_buy else cashier_receive_currency
+        debt_amount = cashier_pay_amount if is_buy else cashier_receive_amount
+        db.add(Debt(
+            id=new_id(f"d_edit_{tx_id}"), customer_id=customer.id, customer_name=customer.name,
+            currency=debt_currency, amount=debt_amount, paid_amount=0.0, remaining_amount=debt_amount,
+            start_date=timestamp.split(" ")[0], due_date=(datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d"),
+            status="unpaid", notes=f"دين تلقائي من عملية صرافة POS {tx_id} (بعد التعديل)", transaction_id=tx_id
+        ))
+
+    # 8. Reopen shift expected balances with the edited values
+    shift = db.scalar(select(Shift).where(Shift.vault_id == vault.id, Shift.status == "open"))
+    if shift:
+        expected = shift.expected_balances.copy()
+        if is_sell:
+            expected[cashier_pay_currency] = expected.get(cashier_pay_currency, 0.0) - cashier_pay_amount
+            if tx.payment_method == "cash":
+                expected[cashier_receive_currency] = expected.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+        else:
+            expected[cashier_receive_currency] = expected.get(cashier_receive_currency, 0.0) + cashier_receive_amount
+            if tx.payment_method == "cash":
+                expected[cashier_pay_currency] = expected.get(cashier_pay_currency, 0.0) - cashier_pay_amount
+        shift.expected_balances = expected
+
+    # 9. Update the transaction row itself back to approved with the new values
+    expected_profit = 0.0
+    if is_buy:
+        std_rate = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == tx.from_currency, ExchangeRate.to_currency == tx.to_currency))
+        if std_rate:
+            expected_profit = data.amount * (std_rate.sell_rate - data.rate) + data.commission
+    elif is_sell:
+        std_rate = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == tx.to_currency, ExchangeRate.to_currency == tx.from_currency))
+        if std_rate:
+            expected_profit = data.amount * (data.rate - std_rate.buy_rate) + data.commission
+    elif is_exchange:
+        expected_profit = data.commission
+
+    tx.amount = data.amount
+    tx.rate = data.rate
+    tx.commission = data.commission
+    tx.total_amount = cashier_pay_amount if (is_buy or is_exchange) else cashier_receive_amount
+    tx.notes = data.notes
+    tx.status = "approved"
+    tx.expected_profit = expected_profit
+    tx.timestamp = timestamp
+
+    # 10. Movements reflecting the new forward effect — same physical/settlement split as
+    # execute_pos_operation's step 7 (reversal replays these rows exactly).
+    if is_sell:
+        db.add(Movement(
+            id=new_id(f"m_rec_edit_{tx_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id, entity_name=vault.name,
+            currency=cashier_pay_currency, type="بيع عملة ورقية (معدّلة)",
+            amount_in=0.0, amount_out=cashier_pay_amount,
+            balance_before=vault.balances.get(cashier_pay_currency, 0.0) + cashier_pay_amount,
+            balance_after=vault.balances.get(cashier_pay_currency, 0.0), reference_id=tx_id, user=username
+        ))
+        if tx.payment_method == "cash":
+            db.add(Movement(
+                id=new_id(f"m_pay_edit_{tx_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id, entity_name=vault.name,
+                currency=cashier_receive_currency, type="مقبوضات صرافة (معدّلة)",
+                amount_in=cashier_receive_amount, amount_out=0.0,
+                balance_before=vault.balances.get(cashier_receive_currency, 0.0) - cashier_receive_amount,
+                balance_after=vault.balances.get(cashier_receive_currency, 0.0), reference_id=tx_id, user=username
+            ))
+    else:
+        db.add(Movement(
+            id=new_id(f"m_rec_edit_{tx_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id, entity_name=vault.name,
+            currency=cashier_receive_currency, type="شراء عملة ورقية (معدّلة)" if is_buy else "تبديل عملة (معدّلة)",
+            amount_in=cashier_receive_amount, amount_out=0.0,
+            balance_before=vault.balances.get(cashier_receive_currency, 0.0) - cashier_receive_amount,
+            balance_after=vault.balances.get(cashier_receive_currency, 0.0), reference_id=tx_id, user=username
+        ))
+        if tx.payment_method == "cash":
+            db.add(Movement(
+                id=new_id(f"m_pay_edit_{tx_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id, entity_name=vault.name,
+                currency=cashier_pay_currency, type="مدفوعات صرافة (معدّلة)" if is_buy else "تبديل عملة (معدّلة)",
+                amount_in=0.0, amount_out=cashier_pay_amount,
+                balance_before=vault.balances.get(cashier_pay_currency, 0.0) + cashier_pay_amount,
+                balance_after=vault.balances.get(cashier_pay_currency, 0.0), reference_id=tx_id, user=username
+            ))
+
+    # 11. Journal entry for the reapplied values
+    lines = [
+        {
+            "accountName": f"خزينة {vault.name} - {cashier_receive_currency}" if (not is_sell or tx.payment_method == "cash")
+                          else f"حساب بنكي {bank_acc.bank_name} - {bank_acc.account_name}" if (tx.payment_method == "bank_account" and bank_acc)
+                          else f"حساب العميل {customer.name} - {cashier_receive_currency}" if tx.payment_method == "customer_account"
+                          else f"دين العميل {customer.name} - {cashier_receive_currency}",
+            "currency": cashier_receive_currency, "debit": cashier_receive_amount, "credit": 0.0,
+            "originalAmount": cashier_receive_amount, "exchangeRate": data.rate if is_buy else 1.0,
+            "equivalentLYD": cashier_receive_amount if cashier_receive_currency == "LYD" else cashier_receive_amount * data.rate
+        },
+        {
+            "accountName": f"خزينة {vault.name} - {cashier_pay_currency}" if (is_sell or tx.payment_method == "cash")
+                          else f"حساب بنكي {bank_acc.bank_name} - {bank_acc.account_name}" if (tx.payment_method == "bank_account" and bank_acc)
+                          else f"حساب العميل {customer.name} - {cashier_pay_currency}" if tx.payment_method == "customer_account"
+                          else f"دين العميل {customer.name} - {cashier_pay_currency}",
+            "currency": cashier_pay_currency, "debit": 0.0, "credit": cashier_pay_amount,
+            "originalAmount": cashier_pay_amount, "exchangeRate": data.rate if is_sell else 1.0,
+            "equivalentLYD": cashier_pay_amount if cashier_pay_currency == "LYD" else cashier_pay_amount * data.rate
+        },
+        {"accountName": "إيراد عمولات صرافة - LYD", "currency": "LYD", "debit": 0.0, "credit": data.commission, "originalAmount": data.commission, "exchangeRate": 1.0, "equivalentLYD": data.commission},
+        {"accountName": "حساب تسوية عمولة الصندوق - LYD", "currency": "LYD", "debit": data.commission, "credit": 0.0, "originalAmount": data.commission, "exchangeRate": 1.0, "equivalentLYD": data.commission},
+    ]
+    db.add(JournalEntry(
+        id=f"JV-EDIT-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{tx_id}", date=timestamp,
+        tx_type="شراء عملة" if is_buy else "بيع عملة" if is_sell else "تبديل عملة", reference=tx_id,
+        description=f"قيد تلقائي بعد تعديل العملية {tx_id} بواسطة {username}", user=username, status="approved", lines=lines
+    ))
+
+    create_audit_log(
+        db, action=AuditAction.UPDATE, entity_type="Transaction", entity_id=tx_id,
+        description=f"تم تعديل العملية {tx_id}: المبلغ {old_amount} → {data.amount}، السعر {old_rate} → {data.rate}، العمولة {old_commission} → {data.commission}"
+    )
+
+    db.commit()
+    return success_response(data=transaction_to_dict(tx), message_ar="تم تعديل العملية بنجاح")

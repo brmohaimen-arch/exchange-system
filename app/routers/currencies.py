@@ -308,6 +308,17 @@ def update_exchange_rate(rate_id: str, data: ExchangeRateDTO, actor: User = Depe
     db.commit()
     return success_response(data={"id": rate.id})
 
+@router.delete("/rates/{rate_id}")
+def delete_exchange_rate(rate_id: str, actor: User = Depends(require_permission("تعديل أسعار الصرف")), db: Session = Depends(get_db)):
+    rate = db.get(ExchangeRate, rate_id)
+    if not rate:
+        raise APIError(code="NOT_FOUND", message_ar="سعر الصرف غير موجود", message_en="Exchange rate not found", status_code=404)
+    pair = f"{rate.from_currency}/{rate.to_currency}"
+    db.delete(rate)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="ExchangeRate", entity_id=rate_id, description=f"تم حذف سعر الصرف {pair}")
+    db.commit()
+    return success_response(data={"deleted": True}, message_ar=f"تم حذف سعر الصرف {pair}")
+
 # ----------------- DENOMINATIONS -----------------
 class DenominationSetRequest(BaseModel):
     values: list[float]

@@ -16,8 +16,10 @@ around. Callers pass template_name/template_params for that case.
 """
 
 import json
+import mimetypes
 import urllib.error
 import urllib.request
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -115,3 +117,79 @@ def send_manager_alert(db: Session, message: str, *, template_name: str | None =
     manager's alert recipient, respecting the per-alert-type toggles."""
     manager_phone = get_setting(db, "whatsappManagerPhone", "")
     return send_whatsapp(db, manager_phone, message, template_name=template_name, template_params=template_params)
+
+
+def _upload_media(access_token: str, phone_number_id: str, file_bytes: bytes, filename: str) -> dict:
+    """Uploads a file to Meta's Media API so it can be attached to a document
+    message — WhatsApp requires media to be uploaded first and referenced by
+    the media id it returns, it can't be attached inline on the message itself."""
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    boundary = uuid.uuid4().hex
+    parts = []
+    parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"messaging_product\"\r\n\r\nwhatsapp\r\n".encode())
+    parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\n{content_type}\r\n".encode())
+    parts.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n".encode()
+        + file_bytes + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/media"
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return {"ok": True, **json.loads(resp.read().decode("utf-8"))}
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")
+        print(f"[whatsapp_gateway] Media upload error {e.code}: {error_body}")
+        return {"ok": False, "reason": "api_error", "status": e.code, "details": error_body}
+    except urllib.error.URLError as e:
+        print(f"[whatsapp_gateway] Media upload network error: {e}")
+        return {"ok": False, "reason": "network_error", "details": str(e)}
+
+
+def send_whatsapp_document(db: Session, to_phone: str, file_bytes: bytes, filename: str, caption: str = "") -> dict:
+    """Sends a document (e.g. a customer statement or transaction receipt PDF)
+    as a WhatsApp attachment. Uploads the file to Meta's Media API first, then
+    sends a document-type message referencing it — same not-configured no-op
+    behavior as send_whatsapp when credentials aren't set up yet."""
+    enabled = get_setting(db, "whatsappEnabled", False)
+    access_token = get_setting(db, "whatsappAccessToken", "")
+    phone_number_id = get_setting(db, "whatsappPhoneNumberId", "")
+
+    if not enabled or not access_token or not phone_number_id or not to_phone:
+        print(f"[whatsapp_gateway] Not configured — would have sent document '{filename}' to {to_phone}")
+        return {"sent": False, "reason": "not_configured"}
+
+    uploaded = _upload_media(access_token, phone_number_id, file_bytes, filename)
+    if not uploaded.get("ok") or not uploaded.get("id"):
+        return {"sent": False, "reason": uploaded.get("reason", "upload_failed"), "details": uploaded.get("details")}
+
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "document",
+        "document": {"id": uploaded["id"], "filename": filename, **({"caption": caption} if caption else {})},
+    }
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return {"sent": True, "response": body}
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")
+        print(f"[whatsapp_gateway] Meta API error {e.code}: {error_body}")
+        return {"sent": False, "reason": "api_error", "status": e.code, "details": error_body}
+    except urllib.error.URLError as e:
+        print(f"[whatsapp_gateway] Network error: {e}")
+        return {"sent": False, "reason": "network_error", "details": str(e)}

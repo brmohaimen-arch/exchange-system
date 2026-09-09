@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { Bell, LogOut, User, Info, AlertTriangle, AlertCircle, CheckCircle2, CheckCheck, HelpCircle, Menu } from 'lucide-react'
 import { useAuth } from '@/lib/auth-provider'
 import { api, NotificationItem } from '@/lib/api-client'
@@ -41,8 +41,19 @@ const typeIcon: Record<NotificationItem['type'], { Icon: typeof Info; className:
   success: { Icon: CheckCircle2, className: 'text-success' },
 }
 
+// Where clicking a notification should take the user, based on the entity it's
+// about — the page that actually shows/lets them act on that record.
+const entityRoutes: Record<string, string> = {
+  Transfer: '/treasury?tab=approvals',
+  Shift: '/treasury?tab=shifts',
+  Debt: '/customers?tab=debts',
+  AssetDocument: '/assets?tab=documents',
+  CustomerDocument: '/customers?tab=documents',
+}
+
 export function Header() {
   const pathname = usePathname()
+  const router = useRouter()
   const { user, logout } = useAuth()
   const { setMobileOpen } = useSidebarState()
   const title = pageTitles[pathname] || 'نظرة عامة'
@@ -87,6 +98,13 @@ export function Header() {
     } catch {
       // ignore
     }
+  }
+
+  const openNotification = (n: NotificationItem) => {
+    markRead(n.id)
+    setOpen(false)
+    const route = n.entityType ? entityRoutes[n.entityType] : undefined
+    if (route) router.push(route)
   }
 
   const markAllRead = async () => {
@@ -158,17 +176,22 @@ export function Header() {
                   <p className="px-4 py-6 text-center text-sm text-muted-foreground">لا توجد تنبيهات جديدة</p>
                 ) : notifications.map((n) => {
                   const { Icon, className } = typeIcon[n.type]
+                  const hasRoute = !!(n.entityType && entityRoutes[n.entityType])
                   return (
                     <button
                       key={n.id}
-                      onClick={() => markRead(n.id)}
+                      onClick={() => openNotification(n)}
+                      title={hasRoute ? 'اضغط للانتقال إلى الصفحة المرتبطة' : undefined}
                       className="flex w-full items-start gap-3 border-b border-border/50 px-4 py-3 text-right hover:bg-muted/50 transition-colors"
                     >
                       <Icon className={`h-4 w-4 shrink-0 mt-0.5 ${className}`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-foreground truncate">{n.title}</p>
                         <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{n.message}</p>
-                        <p className="text-[10px] text-muted-foreground mt-1">{n.timestamp}</p>
+                        <div className="flex items-center justify-between mt-1">
+                          <p className="text-[10px] text-muted-foreground">{n.timestamp}</p>
+                          {hasRoute && <span className="text-[10px] font-medium text-primary">عرض التفاصيل ←</span>}
+                        </div>
                       </div>
                     </button>
                   )

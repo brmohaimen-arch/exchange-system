@@ -807,13 +807,13 @@ export default function SettingsPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => openEditUser(u)} className="text-primary hover:text-primary/80 transition-colors p-1">
-                          <Pencil className="h-4 w-4" />
+                      <div className="flex items-center gap-1.5">
+                        <button onClick={() => openEditUser(u)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                          <Pencil className="h-3.5 w-3.5" /> تعديل
                         </button>
                         {u.id !== me?.id && (
-                          <button onClick={() => deleteUser(u)} className="text-danger hover:text-danger/80 transition-colors p-1">
-                            <Trash2 className="h-4 w-4" />
+                          <button onClick={() => deleteUser(u)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-danger hover:bg-muted transition-colors">
+                            <Trash2 className="h-3.5 w-3.5" /> حذف
                           </button>
                         )}
                       </div>
@@ -868,8 +868,8 @@ export default function SettingsPage() {
                     <td className="px-6 py-4 font-medium">{r.rateValue}{r.rateType === 'percentage' ? '%' : ' د.ل'}</td>
                     <td className="px-6 py-4">{r.priority}</td>
                     <td className="px-6 py-4">
-                      <button onClick={() => deleteRule(r)} className="text-danger hover:text-danger/80 transition-colors p-1">
-                        <Trash2 className="h-4 w-4" />
+                      <button onClick={() => deleteRule(r)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-danger hover:bg-muted transition-colors">
+                        <Trash2 className="h-3.5 w-3.5" /> حذف
                       </button>
                     </td>
                   </tr>

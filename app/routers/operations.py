@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
 from ..database import get_db
 from ..models import (
-    Branch, Vault, BankAccount, Shift, Transfer, ApprovalRequest, InventoryCount, DailyExpense,
+    Branch, Vault, BankAccount, Customer, Shift, Transfer, ApprovalRequest, InventoryCount, DailyExpense,
     AuditAction, Notification, NotificationType, NotificationStatus, User, Role, JournalEntry, ExchangeRate,
-    DailyClosing
+    DailyClosing, Transaction, FixedAsset, Vehicle
 )
 from ..id_gen import new_id
 from ..tracking import create_audit_log
@@ -227,11 +227,74 @@ def update_branch(branch_id: str, data: BranchCreate, db: Session = Depends(get_
     db.commit()
     return success_response(data=branch_to_dict(branch))
 
+class BranchTransferAll(BaseModel):
+    to_branch_id: str
+
+@router.post("/branches/{branch_id}/transfer_all")
+def transfer_all_branch_data(branch_id: str, data: BranchTransferAll, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Re-points every vault/user/transaction/asset/vehicle record from one
+    branch to another — the bulk move needed before a branch with real data
+    can be deleted (delete_branch refuses otherwise)."""
+    branch = db.get(Branch, branch_id)
+    if not branch:
+        raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
+    if data.to_branch_id == branch_id:
+        raise APIError(code="SAME_BRANCH", message_ar="لا يمكن النقل إلى نفس الفرع", message_en="Cannot transfer to the same branch", status_code=400)
+    to_branch = db.get(Branch, data.to_branch_id)
+    if not to_branch:
+        raise APIError(code="NOT_FOUND", message_ar="الفرع الوجهة غير موجود", message_en="Target branch not found", status_code=404)
+
+    moved = {}
+    for model, label in [(Vault, "خزنة"), (User, "مستخدم"), (Transaction, "عملية"), (FixedAsset, "أصل ثابت"), (Vehicle, "مركبة")]:
+        rows = db.scalars(select(model).where(model.branch == branch_id)).all()
+        for row in rows:
+            row.branch = data.to_branch_id
+        if rows:
+            moved[label] = len(rows)
+
+    create_audit_log(
+        db, action=AuditAction.UPDATE, entity_type="Branch", entity_id=branch_id,
+        description=f"تم نقل كل بيانات فرع {branch.name} إلى فرع {to_branch.name}: " + (", ".join(f"{v} {k}" for k, v in moved.items()) or "لا توجد بيانات"),
+        username=actor.username
+    )
+    db.commit()
+    return success_response(data={"moved": moved}, message_ar=f"تم نقل جميع بيانات الفرع إلى {to_branch.name} بنجاح")
+
 @router.delete("/branches/{branch_id}")
 def delete_branch(branch_id: str, db: Session = Depends(get_db)):
     branch = db.get(Branch, branch_id)
     if not branch:
         raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
+
+    # Refuse if anything still points at this branch — deleting it out from under
+    # a vault, user, transaction, or asset record would leave those with a
+    # dangling reference instead of a real branch (this is exactly what left the
+    # closing page showing branches nobody could account for).
+    blockers = []
+    vault_count = db.scalar(select(func.count()).select_from(Vault).where(Vault.branch == branch_id))
+    if vault_count:
+        blockers.append(f"{vault_count} خزنة")
+    user_count = db.scalar(select(func.count()).select_from(User).where(User.branch == branch_id))
+    if user_count:
+        blockers.append(f"{user_count} مستخدم")
+    tx_count = db.scalar(select(func.count()).select_from(Transaction).where(Transaction.branch == branch_id))
+    if tx_count:
+        blockers.append(f"{tx_count} عملية")
+    asset_count = db.scalar(select(func.count()).select_from(FixedAsset).where(FixedAsset.branch == branch_id))
+    if asset_count:
+        blockers.append(f"{asset_count} أصل ثابت")
+    vehicle_count = db.scalar(select(func.count()).select_from(Vehicle).where(Vehicle.branch == branch_id))
+    if vehicle_count:
+        blockers.append(f"{vehicle_count} مركبة")
+
+    if blockers:
+        raise APIError(
+            code="BRANCH_IN_USE",
+            message_ar=f"لا يمكن حذف الفرع لوجود بيانات مرتبطة به: {'، '.join(blockers)}. انقل هذه البيانات إلى فرع آخر أولاً",
+            message_en=f"Cannot delete branch: still referenced by {', '.join(blockers)}. Move those to another branch first",
+            status_code=400
+        )
+
     db.delete(branch)
     create_audit_log(db, action=AuditAction.DELETE, entity_type="Branch", entity_id=branch_id, description=f"تم حذف الفرع: {branch.name}")
     db.commit()
@@ -275,6 +338,50 @@ def update_vault_balances(vault_id: str, data: VaultBalanceUpdate, db: Session =
     vault.last_movement = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     db.commit()
     return success_response(data=vault_to_dict(vault))
+
+@router.delete("/vaults/{vault_id}/currencies/{currency}")
+def remove_vault_currency(vault_id: str, currency: str, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    """Drops one currency line from a vault entirely — only allowed once its balance
+    is exactly zero, so removing it can never make tracked money disappear."""
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="NOT_FOUND", message_ar="الخزنة غير موجودة", message_en="Vault not found", status_code=404)
+    if currency not in vault.balances:
+        raise APIError(code="NOT_FOUND", message_ar="هذه العملة غير موجودة في هذه الخزنة", message_en="Currency not tracked in this vault", status_code=404)
+    balance = vault.balances.get(currency, 0.0)
+    if balance != 0:
+        raise APIError(
+            code="CURRENCY_HAS_BALANCE",
+            message_ar=f"لا يمكن إزالة العملة لوجود رصيد بها ({balance} {currency}) — قم بتصفيره أولاً",
+            message_en="Cannot remove a currency that still holds a balance",
+            status_code=400
+        )
+    bals = vault.balances.copy()
+    del bals[currency]
+    vault.balances = bals
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="Vault", entity_id=vault_id, description=f"تم إزالة عملة {currency} من الخزنة {vault.name}")
+    db.commit()
+    return success_response(data=vault_to_dict(vault))
+
+@router.delete("/vaults/{vault_id}")
+def delete_vault(vault_id: str, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    """Refuses to delete a vault that still holds any balance or has an open shift —
+    deleting it would otherwise make that tracked cash silently disappear."""
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="NOT_FOUND", message_ar="الخزنة غير موجودة", message_en="Vault not found", status_code=404)
+    nonzero = {ccy: amt for ccy, amt in vault.balances.items() if amt != 0}
+    if nonzero:
+        details = ", ".join(f"{amt} {ccy}" for ccy, amt in nonzero.items())
+        raise APIError(code="VAULT_HAS_BALANCE", message_ar=f"لا يمكن حذف الخزنة لوجود أرصدة بها: {details}", message_en="Cannot delete a vault that still holds a balance", status_code=400)
+    open_shift = db.scalar(select(Shift).where(Shift.vault_id == vault_id, Shift.status.in_(["open", "pending_open"])))
+    if open_shift:
+        raise APIError(code="VAULT_HAS_OPEN_SHIFT", message_ar="لا يمكن حذف الخزنة لوجود وردية مفتوحة أو معلقة عليها", message_en="Cannot delete a vault with an open or pending shift", status_code=400)
+    check_branch_access(actor, db, vault.branch)
+    db.delete(vault)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="Vault", entity_id=vault_id, description=f"تم حذف الخزنة: {vault.name}")
+    db.commit()
+    return success_response(data={"deleted": True})
 
 # ----------------- SHIFTS -----------------
 @router.get("/shifts")
@@ -341,7 +448,9 @@ def open_shift(data: ShiftOpen, actor: User = Depends(require_permission("فتح
         message=f"طلب الصراف {data.cashier} فتح وردية جديدة على خزنة {data.vault_name} وينتظر الموافقة.",
         type=NotificationType.INFO,
         status=NotificationStatus.UNREAD,
-        role_name="مدير النظام"
+        role_name="مدير النظام",
+        entity_type="Shift",
+        entity_id=shift.id,
     )
     db.add(notif)
 
@@ -408,7 +517,9 @@ def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_p
             message=f"قام الصراف {shift.cashier} بقفل الوردية وبها فروقات: {diffs}",
             type=NotificationType.DANGER,
             status=NotificationStatus.UNREAD,
-            role_name="مدير فرع"
+            role_name="مدير فرع",
+            entity_type="Shift",
+            entity_id=shift.id,
         )
         db.add(alert)
 
@@ -491,7 +602,9 @@ def create_transfer(data: TransferCreate, actor: User = Depends(require_permissi
         message=f"هناك طلب تحويل أموال بمبلغ {data.amount} {data.currency} ينتظر موافقة مدير النظام.",
         type=NotificationType.WARNING,
         status=NotificationStatus.UNREAD,
-        role_name="مدير النظام"
+        role_name="مدير النظام",
+        entity_type="Transfer",
+        entity_id=transfer.id,
     )
     db.add(notif)
 
@@ -524,23 +637,48 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
             raise APIError(code="FORBIDDEN", message_ar=f"لا تملك صلاحية تنفيذ هذا الإجراء: {required_permission}", message_en=f"Missing required permission: {required_permission}", status_code=403)
 
     if action == "approve":
-        approval.status = "approved"
         if approval.type == "transfer":
             transfer = db.get(Transfer, approval.reference_id)
             if transfer:
-                transfer.status = "approved"
-                
+                # Look up the source and verify it actually has enough before moving
+                # anything — previously this executed unconditionally and could push
+                # a vault, bank account, or customer balance negative.
                 if transfer.source_type == "vault":
                     src = db.get(Vault, transfer.source_id)
-                    if src:
-                        src_bal = src.balances.copy()
-                        src_bal[transfer.currency] = src_bal.get(transfer.currency, 0.0) - transfer.amount
-                        src.balances = src_bal
+                    src_balance = src.balances.get(transfer.currency, 0.0) if src else None
                 elif transfer.source_type == "bank_account":
                     src = db.get(BankAccount, transfer.source_id)
-                    if src:
-                        src.balance -= transfer.amount
-                
+                    src_balance = src.balance if src else None
+                elif transfer.source_type == "customer":
+                    src = db.get(Customer, transfer.source_id)
+                    src_balance = src.balances.get(transfer.currency, 0.0) if src else None
+                else:
+                    src, src_balance = None, None
+
+                if src is None:
+                    raise APIError(code="NOT_FOUND", message_ar=f"مصدر التحويل ({transfer.source_name}) غير موجود", message_en="Transfer source not found", status_code=404)
+                if src_balance < transfer.amount:
+                    raise APIError(
+                        code="INSUFFICIENT_BALANCE",
+                        message_ar=f"الرصيد المتاح في {transfer.source_name} ({src_balance} {transfer.currency}) غير كافٍ لتنفيذ التحويل بقيمة ({transfer.amount} {transfer.currency})",
+                        message_en=f"Insufficient balance in {transfer.source_name} for this transfer",
+                        status_code=400
+                    )
+
+                approval.status = "approved"
+                transfer.status = "approved"
+
+                if transfer.source_type == "vault":
+                    src_bal = src.balances.copy()
+                    src_bal[transfer.currency] = src_bal.get(transfer.currency, 0.0) - transfer.amount
+                    src.balances = src_bal
+                elif transfer.source_type == "bank_account":
+                    src.balance -= transfer.amount
+                elif transfer.source_type == "customer":
+                    src_bal = src.balances.copy()
+                    src_bal[transfer.currency] = src_bal.get(transfer.currency, 0.0) - transfer.amount
+                    src.balances = src_bal
+
                 if transfer.dest_type == "vault":
                     dst = db.get(Vault, transfer.dest_id)
                     if dst:
@@ -551,6 +689,14 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                     dst = db.get(BankAccount, transfer.dest_id)
                     if dst:
                         dst.balance += transfer.amount
+                elif transfer.dest_type == "customer":
+                    dst = db.get(Customer, transfer.dest_id)
+                    if dst:
+                        dst_bal = dst.balances.copy()
+                        dst_bal[transfer.currency] = dst_bal.get(transfer.currency, 0.0) + transfer.amount
+                        dst.balances = dst_bal
+            else:
+                approval.status = "approved"
 
                 # Doc requirement: every financial transaction must produce a balanced
                 # journal entry — transfers moved balances above but never recorded one.
@@ -580,9 +726,11 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                 ))
 
         elif approval.type == "reversal":
+            approval.status = "approved"
             apply_transaction_reversal(db, approval.reference_id, actor.name, approval.details or "لم يُذكر سبب")
 
         elif approval.type == "shift_open":
+            approval.status = "approved"
             shift = db.get(Shift, approval.reference_id)
             if shift and shift.status == "pending_open":
                 check_branch_access(actor, db, shift.branch)
@@ -601,11 +749,15 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
             # the generic Approvals queue lists every pending request (including
             # this type) and must actually resolve what it shows, not just flip
             # the ApprovalRequest's own status while leaving the Shift stuck on "closed".
+            approval.status = "approved"
             shift = db.get(Shift, approval.reference_id)
             if shift and shift.status == "closed":
                 shift.status = "approved"
                 shift.approved_by = actor.name
                 create_audit_log(db, action=AuditAction.APPROVE, entity_type="Shift", entity_id=shift.id, description=f"تم اعتماد إقفال وردية الصراف {shift.cashier}", username=actor.username)
+
+        else:
+            approval.status = "approved"
 
     elif action == "reject":
         approval.status = "rejected"

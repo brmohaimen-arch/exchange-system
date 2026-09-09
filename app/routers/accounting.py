@@ -11,6 +11,7 @@ from ..core.errors import APIError
 from ..auth_deps import require_permission
 from ..id_gen import new_id
 from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
+from ..whatsapp_gateway import send_whatsapp_document, get_setting as get_whatsapp_setting
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from datetime import datetime
@@ -87,19 +88,43 @@ def list_journal_entries(db: Session = Depends(get_db)):
     res = db.scalars(select(JournalEntry)).all()
     return success_response(data=[jv_to_dict(jv) for jv in res])
 
-@router.get("/journal_entries/export")
-def export_journal_entries(format: str = "xlsx", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+def _journal_entries_export_rows(db: Session):
     res = db.scalars(select(JournalEntry).order_by(JournalEntry.date.desc())).all()
     headers = ["رقم القيد", "التاريخ", "نوع العملية", "المرجع", "الوصف", "المستخدم", "الحالة"]
     rows = [[jv.id, jv.date, jv.tx_type, jv.reference, jv.description, jv.user, jv.status] for jv in res]
+    return "القيود المحاسبية", headers, rows
+
+@router.get("/journal_entries/export")
+def export_journal_entries(format: str = "xlsx", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    title, headers, rows = _journal_entries_export_rows(db)
     if format == "xlsx":
-        buf = build_excel("القيود المحاسبية", headers, rows)
+        buf = build_excel(title, headers, rows)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="journal_entries.xlsx"'})
     try:
-        buf = build_pdf("القيود المحاسبية", headers, rows)
+        buf = build_pdf(title, headers, rows)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء ملف PDF: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
-    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'attachment; filename="journal_entries.pdf"'})
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'inline; filename="journal_entries.pdf"'})
+
+@router.post("/journal_entries/send_whatsapp")
+def send_journal_entries_export_whatsapp(format: str = "pdf", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+    manager_phone = get_whatsapp_setting(db, "whatsappManagerPhone", "")
+    if not manager_phone:
+        raise APIError(code="NO_PHONE", message_ar="لم يتم تحديد رقم هاتف المدير في الإعدادات لاستقبال التقارير", message_en="No manager phone configured in settings to receive reports", status_code=400)
+    title, headers, rows = _journal_entries_export_rows(db)
+    if format == "xlsx":
+        content, ext = build_excel(title, headers, rows).read(), "xlsx"
+    else:
+        try:
+            content, ext = build_pdf(title, headers, rows).read(), "pdf"
+        except ArabicFontUnavailable as e:
+            raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء ملف PDF: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    result = send_whatsapp_document(db, manager_phone, content, f"{title}.{ext}", caption=title)
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال التقرير عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="Report", entity_id="journal_entries", description=f"تم إرسال تقرير {title} عبر واتساب إلى {manager_phone}", username=actor.username)
+    db.commit()
+    return success_response(data={"sent": True}, message_ar="تم إرسال التقرير عبر واتساب بنجاح")
 
 @router.post("/journal_entries/{entry_id}/reverse")
 def reverse_journal_entry(entry_id: str, data: ReversalRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):

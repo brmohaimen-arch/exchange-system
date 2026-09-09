@@ -34,6 +34,12 @@ class FixedAssetCreate(BaseModel):
     status: str
     responsible: str
     notes: str | None = None
+    # Only meaningful when type == "مخزن" (warehouse) and it represents one
+    # specific car being stored there directly, without a separate Vehicle record.
+    color: str | None = None
+    car_model: str | None = None
+    vin: str | None = None
+    make_year: int | None = None
 
 class AssetDocumentCreate(BaseModel):
     id: str
@@ -75,7 +81,11 @@ def asset_to_dict(asset: FixedAsset):
         "currentValue": asset.current_value,
         "status": asset.status,
         "responsible": asset.responsible,
-        "notes": asset.notes
+        "notes": asset.notes,
+        "color": asset.color,
+        "carModel": asset.car_model,
+        "vin": asset.vin,
+        "makeYear": asset.make_year
     }
 
 def vehicle_to_dict(v: Vehicle):
@@ -97,7 +107,9 @@ def vehicle_to_dict(v: Vehicle):
         "licenseExpiry": v.license_expiry,
         "driver": v.driver,
         "branch": v.branch,
-        "status": v.status
+        "status": v.status,
+        "warehouseId": v.warehouse_id,
+        "barcode": v.barcode
     }
 
 def estate_to_dict(r: RealEstate):
@@ -239,6 +251,15 @@ def list_vehicles(db: Session = Depends(get_db)):
     res = db.scalars(select(Vehicle)).all()
     return success_response(data=[vehicle_to_dict(v) for v in res])
 
+@router.get("/vehicles/by_barcode/{barcode}")
+def get_vehicle_by_barcode(barcode: str, db: Session = Depends(get_db)):
+    """Looks a vehicle up by its (manually entered) barcode — used by the camera-scan
+    search on the vehicles list. Never generates a barcode; only reads one back."""
+    v = db.scalar(select(Vehicle).where(Vehicle.barcode == barcode))
+    if not v:
+        raise APIError(code="NOT_FOUND", message_ar="لا توجد مركبة بهذا الباركود", message_en="No vehicle with this barcode", status_code=404)
+    return success_response(data=vehicle_to_dict(v))
+
 @router.get("/real_estates")
 def list_real_estates(db: Session = Depends(get_db)):
     res = db.scalars(select(RealEstate)).all()
@@ -300,6 +321,35 @@ def add_asset_document(data: AssetDocumentCreate, db: Session = Depends(get_db))
     db.commit()
     return success_response(data=document_to_dict(doc))
 
+@router.put("/asset_documents/{doc_id}")
+def update_asset_document(doc_id: str, data: AssetDocumentCreate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = db.get(AssetDocument, doc_id)
+    if not doc:
+        raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    doc.document_type = data.document_type
+    doc.file_name = data.file_name
+    doc.expiry_date = data.expiry_date
+    doc.status = data.status
+    doc.notes = data.notes
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="AssetDocument", entity_id=doc_id, description=f"تم تعديل مستند الأصل {doc.asset_name}", username=actor.username)
+    db.commit()
+    return success_response(data=document_to_dict(doc), message_ar="تم تعديل المستند بنجاح")
+
+@router.delete("/asset_documents/{doc_id}")
+def delete_asset_document(doc_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = db.get(AssetDocument, doc_id)
+    if not doc:
+        raise APIError(code="NOT_FOUND", message_ar="المستند غير موجود", message_en="Document not found", status_code=404)
+    if doc.stored_path:
+        try:
+            os.remove(resolve_path(doc.stored_path))
+        except OSError:
+            pass  # file already gone — don't block deleting the record over it
+    db.delete(doc)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="AssetDocument", entity_id=doc_id, description=f"تم حذف مستند الأصل {doc.asset_name}", username=actor.username)
+    db.commit()
+    return success_response(message_ar="تم حذف المستند بنجاح")
+
 @router.post("/asset_documents/{doc_id}/file")
 async def upload_asset_document_file(doc_id: str, file: UploadFile = File(...), actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     doc = db.get(AssetDocument, doc_id)
@@ -317,7 +367,7 @@ def download_asset_document_file(doc_id: str, actor: User = Depends(get_current_
     path = resolve_path(doc.stored_path)
     if not os.path.exists(path):
         raise APIError(code="NOT_FOUND", message_ar="الملف غير موجود على الخادم", message_en="File missing on server", status_code=404)
-    return FileResponse(path, filename=doc.file_name)
+    return FileResponse(path, filename=doc.file_name, content_disposition_type="inline")
 
 # ----------------- VEHICLES & REAL ESTATE CRUD -----------------
 class VehicleCreate(BaseModel):
@@ -339,6 +389,8 @@ class VehicleCreate(BaseModel):
     driver: str
     branch: str
     status: str
+    warehouse_id: str | None = None
+    barcode: str | None = None
 
 class RealEstateCreate(BaseModel):
     id: str
