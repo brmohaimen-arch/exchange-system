@@ -15,29 +15,36 @@ async function proxy(request: NextRequest, params: { path: string[] }) {
   const targetPath = params.path.join('/')
   const search = request.nextUrl.search
   const targetUrl = `${backendUrl}/api/${targetPath}${search}`
+  console.log(`[proxy] ${request.method} ${targetUrl} — handler invoked`)
 
-  const headers = new Headers()
-  request.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP_REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value)
-  })
+  try {
+    const headers = new Headers()
+    request.headers.forEach((value, key) => {
+      if (!HOP_BY_HOP_REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value)
+    })
 
-  const hasBody = !['GET', 'HEAD'].includes(request.method)
-  const body = hasBody ? await request.arrayBuffer() : undefined
+    const hasBody = !['GET', 'HEAD'].includes(request.method)
+    const body = hasBody ? await request.arrayBuffer() : undefined
 
-  const backendRes = await fetch(targetUrl, {
-    method: request.method,
-    headers,
-    body,
-    redirect: 'manual',
-  })
+    const backendRes = await fetch(targetUrl, {
+      method: request.method,
+      headers,
+      body,
+      redirect: 'manual',
+    })
+    console.log(`[proxy] ${request.method} ${targetUrl} — backend responded ${backendRes.status}`)
 
-  const resHeaders = new Headers()
-  backendRes.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP_RESPONSE_HEADERS.has(key.toLowerCase())) resHeaders.set(key, value)
-  })
+    const resHeaders = new Headers()
+    backendRes.headers.forEach((value, key) => {
+      if (!HOP_BY_HOP_RESPONSE_HEADERS.has(key.toLowerCase())) resHeaders.set(key, value)
+    })
 
-  const resBody = await backendRes.arrayBuffer()
-  return new NextResponse(resBody, { status: backendRes.status, headers: resHeaders })
+    const resBody = await backendRes.arrayBuffer()
+    return new NextResponse(resBody, { status: backendRes.status, headers: resHeaders })
+  } catch (err) {
+    console.error(`[proxy] ${request.method} ${targetUrl} — FAILED:`, err)
+    return NextResponse.json({ proxyError: String(err), stack: err instanceof Error ? err.stack : undefined }, { status: 502 })
+  }
 }
 
 export async function GET(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
