@@ -107,6 +107,7 @@ def migrate_customer_account_entries_nullable_vault(engine: Engine) -> None:
         return  # already migrated
 
     with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS customer_account_entries_new"))
         conn.execute(text("""
             CREATE TABLE customer_account_entries_new (
                 id VARCHAR(50) PRIMARY KEY,
@@ -150,6 +151,7 @@ def migrate_customer_documents_nullable_customer(engine: Engine) -> None:
         return  # already migrated (or a fresh table create_all() already made nullable)
 
     with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS customer_documents_new"))
         conn.execute(text("""
             CREATE TABLE customer_documents_new (
                 id VARCHAR(50) PRIMARY KEY,
