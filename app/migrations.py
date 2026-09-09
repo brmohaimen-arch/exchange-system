@@ -180,10 +180,11 @@ def run_startup_migrations(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
 
-    migrate_customer_account_entries_nullable_vault(engine)
-    migrate_customer_documents_nullable_customer(engine)
-    inspector = inspect(engine)  # re-inspect: the tables above may have just been rebuilt
-
+    # Simple ADD COLUMN migrations must run before the table-rebuild migrations below:
+    # a rebuild copies every column (including ones only introduced via NEW_COLUMNS,
+    # e.g. customer_documents.stored_path) from the old table into the new one, so on
+    # a database that never got that column yet, the copy fails with "no such column"
+    # unless it's added first.
     with engine.begin() as conn:
         for table, column, definition in NEW_COLUMNS:
             if table not in existing_tables:
@@ -193,6 +194,9 @@ def run_startup_migrations(engine: Engine) -> None:
                 continue
             conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}'))
             print(f"[migrations] Added column {table}.{column}")
+
+    migrate_customer_account_entries_nullable_vault(engine)
+    migrate_customer_documents_nullable_customer(engine)
 
 
 def migrate_plaintext_passwords(db: Session) -> None:
