@@ -7,7 +7,13 @@
 // naturally correct for the destination instead of inherited from the incoming request.
 import { NextRequest, NextResponse } from 'next/server'
 
-const HOP_BY_HOP_REQUEST_HEADERS = new Set(['host', 'connection', 'content-length', 'accept-encoding'])
+// Allowlist, not a blocklist: forwarding everything the browser sent (as the previous
+// version did) also forwards Next.js's own internal routing headers — rsc,
+// next-router-state-tree, next-router-prefetch, next-router-segment-prefetch — onto the
+// backend. Their values are URL-encoded, bracket/quote-heavy serialized route trees that
+// generic WAF signatures on the backend's own Apache/ModSecurity read as suspicious
+// payloads and reject with a bare 400. The backend only ever needs these two.
+const FORWARDED_REQUEST_HEADERS = ['content-type', 'authorization']
 const HOP_BY_HOP_RESPONSE_HEADERS = new Set(['connection', 'content-encoding', 'transfer-encoding'])
 
 async function proxy(request: NextRequest, params: { path: string[] }) {
@@ -19,9 +25,10 @@ async function proxy(request: NextRequest, params: { path: string[] }) {
 
   try {
     const headers = new Headers()
-    request.headers.forEach((value, key) => {
-      if (!HOP_BY_HOP_REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value)
-    })
+    for (const name of FORWARDED_REQUEST_HEADERS) {
+      const value = request.headers.get(name)
+      if (value) headers.set(name, value)
+    }
 
     const hasBody = !['GET', 'HEAD'].includes(request.method)
     const body = hasBody ? await request.arrayBuffer() : undefined
