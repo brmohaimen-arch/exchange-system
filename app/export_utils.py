@@ -37,6 +37,14 @@ BRAND_COLOR = colors.HexColor("#2563EB")
 
 _ARABIC_FONT_CANDIDATES = [
     os.environ.get("ARABIC_FONT_PATH", ""),
+    # Bundled first and preferred: relying on whatever Arabic font happens to already be
+    # installed on the host OS is not portable — a shared hosting box (or any machine
+    # without a full-coverage font) can silently fall through to something like
+    # DroidSansArabic, which only covers the Arabic block and has no Latin/digit/
+    # punctuation glyphs of its own, rendering every number, currency code, and id as
+    # tofu boxes while pure-Arabic text still looks fine. Noto Sans Arabic covers all
+    # three (Arabic, Latin, digits) in one file, so PDFs render identically everywhere.
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansArabic-Regular.ttf"),
     r"C:\Windows\Fonts\tahoma.ttf",
     r"C:\Windows\Fonts\arial.ttf",
     r"C:\Windows\Fonts\segoeui.ttf",
