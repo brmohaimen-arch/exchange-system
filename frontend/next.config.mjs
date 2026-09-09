@@ -14,6 +14,12 @@ const nextConfig = {
     unoptimized: true,
   },
   async rewrites() {
+    // IMPORTANT: this function runs once at `next build` time — its return value is
+    // baked as a static destination into .next/routes-manifest.json. Setting
+    // BACKEND_URL in the hosting platform's *runtime* environment variables (e.g.
+    // cPanel's Node.js App panel) has no effect on this; it must be set in the
+    // environment that actually runs `npm run build`, or the previous build-time
+    // value (here, the localhost fallback) stays baked in regardless.
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
     return [
       {
