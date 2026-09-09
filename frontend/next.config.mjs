@@ -14,7 +14,7 @@ const nextConfig = {
     unoptimized: true,
   },
   async rewrites() {
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8081';
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
     return [
       {
         // Proxy all /api/* requests to the backend service

@@ -1,7 +1,13 @@
 // Thin client for the FX Exchange Office FastAPI backend.
 // Every endpoint returns { success, message_ar, message_en, code, data, details }.
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'
+// A relative path so every request goes through this same origin and is proxied
+// server-side by next.config.js's rewrites() to BACKEND_URL. An absolute URL here
+// gets baked into the client-side JS bundle at build time and would send every
+// visitor's browser to whatever "localhost" means on THEIR machine — which is how
+// this broke silently in production despite working in local dev, where frontend
+// and backend happen to share the same machine as the browser testing them.
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api'
 
 export class ApiError extends Error {
   code: string
