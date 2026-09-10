@@ -913,6 +913,8 @@ def list_daily_closings(db: Session = Depends(get_db)):
 
 @router.post("/daily_closings/branch/{branch_id}/close")
 def close_branch_day(branch_id: str, data: DailyCloseRequest, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
+    all_branch_ids = [b.id for b in db.scalars(select(Branch)).all()]
+    print(f"[close_branch_day] received branch_id={branch_id!r} ({[hex(ord(c)) for c in branch_id]}) — known branch ids: {[(bid, [hex(ord(c)) for c in bid]) for bid in all_branch_ids]}")
     branch = db.get(Branch, branch_id)
     if not branch:
         raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
