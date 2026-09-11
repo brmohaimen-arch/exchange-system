@@ -44,7 +44,17 @@ def send_test_message(actor: User = Depends(require_permission("إدارة ال�
         raise APIError(code="NO_MANAGER_PHONE", message_ar="لم يتم تحديد رقم هاتف المدير في الإعدادات", message_en="No manager phone number configured", status_code=400)
     result = send_manager_alert(db, f"✅ رسالة اختبار من نظام الصرافة — إذا وصلتك هذه الرسالة فالإعداد يعمل بنجاح. ({actor.name})")
     if not result.get("sent"):
-        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar=f"تعذر إرسال الرسالة: {result.get('reason')}", message_en=f"Failed to send: {result.get('reason')}", status_code=400)
+        # Meta's actual error (e.g. "Invalid OAuth access token") is far more
+        # useful than the generic "api_error"/"network_error" reason code —
+        # surface it directly instead of making every failure require SSHing
+        # in to read server logs.
+        detail_text = result.get("details") or ""
+        try:
+            meta_message = json.loads(detail_text).get("error", {}).get("message")
+        except (ValueError, AttributeError):
+            meta_message = None
+        reason_text = meta_message or detail_text or result.get("reason")
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar=f"تعذر إرسال الرسالة: {reason_text}", message_en=f"Failed to send: {reason_text}", status_code=400)
     return success_response(message_ar="تم إرسال رسالة الاختبار بنجاح")
 
 
