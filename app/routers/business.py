@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from ..database import get_db
 from ..models import (
-    Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, DebtPaymentRecord, Transaction, Movement, JournalEntry,
+    Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, DebtPaymentRecord, Advance, AdvancePaymentRecord, Transaction, Movement, JournalEntry,
     Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule,
     CustomerAccountEntry
 )
@@ -94,6 +94,20 @@ class DebtCreate(BaseModel):
 
 class DebtPayment(BaseModel):
     amount: float
+    notes: str | None = None
+
+class AdvanceCreate(BaseModel):
+    id: str
+    customer_id: str
+    customer_name: str
+    currency: str
+    amount: float
+    vault_id: str
+    notes: str | None = None
+
+class AdvancePaymentOp(BaseModel):
+    amount: float
+    vault_id: str
     notes: str | None = None
 
 class POSOperation(BaseModel):
@@ -830,25 +844,35 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
     entries_query = select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id == customer.id)
     debts_query = select(Debt).where(Debt.customer_id == customer.id)
     debt_payments_query = select(DebtPaymentRecord).where(DebtPaymentRecord.customer_id == customer.id)
+    advances_query = select(Advance).where(Advance.customer_id == customer.id)
+    advance_payments_query = select(AdvancePaymentRecord).where(AdvancePaymentRecord.customer_id == customer.id)
     if date_from:
         txs_query = txs_query.where(Transaction.timestamp >= date_from)
         entries_query = entries_query.where(CustomerAccountEntry.timestamp >= date_from)
         debts_query = debts_query.where(Debt.start_date >= date_from)
         debt_payments_query = debt_payments_query.where(DebtPaymentRecord.timestamp >= date_from)
+        advances_query = advances_query.where(Advance.timestamp >= date_from)
+        advance_payments_query = advance_payments_query.where(AdvancePaymentRecord.timestamp >= date_from)
     if date_to:
         txs_query = txs_query.where(Transaction.timestamp <= date_to + "T23:59:59")
         entries_query = entries_query.where(CustomerAccountEntry.timestamp <= date_to + "T23:59:59")
         debts_query = debts_query.where(Debt.start_date <= date_to)
         debt_payments_query = debt_payments_query.where(DebtPaymentRecord.timestamp <= date_to + "T23:59:59")
+        advances_query = advances_query.where(Advance.timestamp <= date_to + "T23:59:59")
+        advance_payments_query = advance_payments_query.where(AdvancePaymentRecord.timestamp <= date_to + "T23:59:59")
     if currency:
         entries_query = entries_query.where(CustomerAccountEntry.currency == currency)
         debts_query = debts_query.where(Debt.currency == currency)
         debt_payments_query = debt_payments_query.where(DebtPaymentRecord.currency == currency)
+        advances_query = advances_query.where(Advance.currency == currency)
+        advance_payments_query = advance_payments_query.where(AdvancePaymentRecord.currency == currency)
 
     txs = db.scalars(txs_query).all()
     entries = db.scalars(entries_query).all()
     debts = db.scalars(debts_query).all()
     debt_payments = db.scalars(debt_payments_query).all()
+    advances = db.scalars(advances_query).all()
+    advance_payments = db.scalars(advance_payments_query).all()
 
     rows_with_ts = []
     for t in txs:
@@ -872,6 +896,12 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
         rows_with_ts.append((d.start_date, [d.start_date, detail, f"{d.amount:,.2f}", d.currency, d.created_by or "—"]))
     for p in debt_payments:
         detail = "تسديد دفعة دين"
+        rows_with_ts.append((p.timestamp, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
+    for a in advances:
+        detail = f"صرف سلفة — من خزنة {a.vault_name}"
+        rows_with_ts.append((a.timestamp, [a.timestamp, detail, f"{a.amount:,.2f}", a.currency, a.created_by]))
+    for p in advance_payments:
+        detail = f"تسديد دفعة سلفة — إلى خزنة {p.vault_name}"
         rows_with_ts.append((p.timestamp, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
 
     rows_with_ts.sort(key=lambda r: r[0])
@@ -1249,6 +1279,167 @@ def debt_payment_to_dict(p: DebtPaymentRecord):
 def list_debt_payments(db: Session = Depends(get_db)):
     res = db.scalars(select(DebtPaymentRecord).order_by(DebtPaymentRecord.timestamp.desc())).all()
     return success_response(data=[debt_payment_to_dict(p) for p in res])
+
+# ----------------- ADVANCES (سلفة) -----------------
+# Unlike a Debt (a pure paper record — creating or paying one never touches any
+# balance), an Advance is real cash handed to the customer straight out of a
+# vault: creating one debits the vault immediately, and repaying one credits it
+# back. Tracked as its own third number on the customer, alongside balance and
+# debt, never merged into either.
+def advance_to_dict(a: Advance):
+    return {
+        "id": a.id,
+        "customerId": a.customer_id,
+        "customerName": a.customer_name,
+        "currency": a.currency,
+        "amount": a.amount,
+        "remainingAmount": a.remaining_amount,
+        "vaultId": a.vault_id,
+        "vaultName": a.vault_name,
+        "status": a.status,
+        "notes": a.notes,
+        "createdBy": a.created_by,
+        "timestamp": a.timestamp,
+    }
+
+def _advance_equivalent_lyd(db: Session, currency: str, amount: float) -> float:
+    if currency == "LYD":
+        return amount
+    rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == currency, ExchangeRate.to_currency == "LYD"))
+    return amount * rate_row.sell_rate if rate_row else amount
+
+@router.get("/advances")
+def list_advances(db: Session = Depends(get_db)):
+    res = db.scalars(select(Advance).order_by(Advance.timestamp.desc())).all()
+    return success_response(data=[advance_to_dict(a) for a in res])
+
+@router.post("/advances")
+def create_advance(data: AdvanceCreate, actor: User = Depends(require_permission("إدارة الديون")), db: Session = Depends(get_db)):
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون مبلغ السلفة أكبر من صفر", message_en="Advance amount must be positive", status_code=400)
+    customer = db.get(Customer, data.customer_id)
+    if not customer:
+        raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
+    vault = db.get(Vault, data.vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    vault_before = vault.balances.get(data.currency, 0.0)
+    if vault_before < data.amount:
+        raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الخزنة غير كافٍ ({vault_before} {data.currency})", message_en="Insufficient vault balance", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    vault_after = vault_before - data.amount
+    v_bals = vault.balances.copy()
+    v_bals[data.currency] = vault_after
+    vault.balances = v_bals
+    vault.last_movement = timestamp
+
+    advance = Advance(
+        id=data.id, customer_id=customer.id, customer_name=customer.name, currency=data.currency,
+        amount=data.amount, remaining_amount=data.amount, vault_id=vault.id, vault_name=vault.name,
+        status="active", notes=data.notes, created_by=actor.name, timestamp=timestamp
+    )
+    db.add(advance)
+
+    db.add(Movement(
+        id=new_id(f"m_advance_{data.id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
+        entity_name=vault.name, currency=data.currency, type="صرف سلفة لعميل",
+        amount_in=0.0, amount_out=data.amount, balance_before=vault_before, balance_after=vault_after,
+        reference_id=data.id, user=actor.name
+    ))
+
+    equivalent_lyd = _advance_equivalent_lyd(db, data.currency, data.amount)
+    db.add(JournalEntry(
+        id=f"JV-{datetime.utcnow().strftime('%Y%m%d')}-{data.id}", date=timestamp,
+        tx_type="صرف سلفة", reference=data.id,
+        description=f"صرف سلفة بقيمة {data.amount} {data.currency} للعميل {customer.name} من خزنة {vault.name}",
+        user=actor.name, status="approved",
+        lines=[
+            {"accountName": f"سلفة العميل {customer.name} - {data.currency}", "currency": data.currency, "debit": data.amount, "credit": 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            {"accountName": f"خزينة {vault.name} - {data.currency}", "currency": data.currency, "debit": 0.0, "credit": data.amount, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+        ]
+    ))
+
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="Advance", entity_id=data.id,
+                     description=f"صرف سلفة بقيمة {data.amount} {data.currency} للعميل {customer.name} من خزنة {vault.name}", username=actor.username)
+    db.commit()
+    return success_response(data=advance_to_dict(advance), message_ar="تم صرف السلفة بنجاح")
+
+@router.post("/advances/{advance_id}/pay")
+def pay_advance(advance_id: str, data: AdvancePaymentOp, actor: User = Depends(require_permission("إدارة الديون")), db: Session = Depends(get_db)):
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون مبلغ السداد أكبر من صفر", message_en="Payment amount must be positive", status_code=400)
+    advance = db.get(Advance, advance_id)
+    if not advance:
+        raise APIError(code="NOT_FOUND", message_ar="السلفة غير موجودة", message_en="Advance not found", status_code=404)
+    if data.amount > advance.remaining_amount:
+        raise APIError(code="OVERPAYMENT", message_ar="المبلغ المدفوع أكبر من المتبقي", message_en="Amount exceeds remaining advance", status_code=400)
+    vault = db.get(Vault, data.vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    vault_before = vault.balances.get(advance.currency, 0.0)
+    vault_after = vault_before + data.amount
+    v_bals = vault.balances.copy()
+    v_bals[advance.currency] = vault_after
+    vault.balances = v_bals
+    vault.last_movement = timestamp
+
+    advance.remaining_amount -= data.amount
+    if advance.remaining_amount <= 0.0:
+        advance.remaining_amount = 0.0
+        advance.status = "paid"
+
+    db.add(AdvancePaymentRecord(
+        id=new_id(f"advpay_{advance_id}"), advance_id=advance.id, customer_id=advance.customer_id, customer_name=advance.customer_name,
+        currency=advance.currency, amount=data.amount, vault_id=vault.id, vault_name=vault.name,
+        timestamp=timestamp, user=actor.name, notes=data.notes
+    ))
+
+    db.add(Movement(
+        id=new_id(f"m_advpay_{advance_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
+        entity_name=vault.name, currency=advance.currency, type="تحصيل سداد سلفة من عميل",
+        amount_in=data.amount, amount_out=0.0, balance_before=vault_before, balance_after=vault_after,
+        reference_id=advance_id, user=actor.name
+    ))
+
+    equivalent_lyd = _advance_equivalent_lyd(db, advance.currency, data.amount)
+    db.add(JournalEntry(
+        id=new_id(f"JV-{advance_id}"), date=timestamp,
+        tx_type="تسديد سلفة", reference=advance_id,
+        description=f"تسديد دفعة سلفة بقيمة {data.amount} {advance.currency} من العميل {advance.customer_name} إلى خزنة {vault.name}",
+        user=actor.name, status="approved",
+        lines=[
+            {"accountName": f"خزينة {vault.name} - {advance.currency}", "currency": advance.currency, "debit": data.amount, "credit": 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            {"accountName": f"سلفة العميل {advance.customer_name} - {advance.currency}", "currency": advance.currency, "debit": 0.0, "credit": data.amount, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+        ]
+    ))
+
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="Advance", entity_id=advance.id,
+                     description=f"تسديد دفعة سلفة بقيمة {data.amount} {advance.currency}", username=actor.username)
+    db.commit()
+    return success_response(data=advance_to_dict(advance), message_ar="تم تسديد الدفعة بنجاح")
+
+def advance_payment_to_dict(p: AdvancePaymentRecord):
+    return {
+        "id": p.id,
+        "advanceId": p.advance_id,
+        "customerId": p.customer_id,
+        "customerName": p.customer_name,
+        "currency": p.currency,
+        "amount": p.amount,
+        "vaultId": p.vault_id,
+        "vaultName": p.vault_name,
+        "timestamp": p.timestamp,
+        "user": p.user,
+        "notes": p.notes,
+    }
+
+@router.get("/advance_payments")
+def list_advance_payments(db: Session = Depends(get_db)):
+    res = db.scalars(select(AdvancePaymentRecord).order_by(AdvancePaymentRecord.timestamp.desc())).all()
+    return success_response(data=[advance_payment_to_dict(p) for p in res])
 
 # ----------------- COMMISSION / FEE RULES -----------------
 class CommissionRuleCreate(BaseModel):

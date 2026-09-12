@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent, Suspense } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Printer, Download, CreditCard, MessageCircle } from 'lucide-react'
-import { api, newId, openFile, uploadFile, Customer, Debt, DebtPaymentRecord, Currency, CustomerDocument, CustomerAccountEntry, Vault, BankAccount, Transaction } from '@/lib/api-client'
+import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, Wallet, FileText, Upload, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Printer, Download, CreditCard, MessageCircle } from 'lucide-react'
+import { api, newId, openFile, uploadFile, Customer, Debt, DebtPaymentRecord, Advance, AdvancePaymentRecord, Currency, CustomerDocument, CustomerAccountEntry, Vault, BankAccount, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -17,6 +17,8 @@ const debtStatusClass: Record<string, string> = {
   paid: 'bg-success/10 text-success',
 }
 const debtStatusLabel: Record<string, string> = { unpaid: 'غير مسدد', partially_paid: 'مسدد جزئياً', paid: 'مسدد بالكامل' }
+const advanceStatusClass: Record<string, string> = { active: 'bg-warning/10 text-warning', paid: 'bg-success/10 text-success' }
+const advanceStatusLabel: Record<string, string> = { active: 'قائمة', paid: 'مسددة بالكامل' }
 
 interface BalanceRow { currency: string; amount: string }
 
@@ -26,6 +28,10 @@ function emptyForm() {
 
 function emptyDebtForm() {
   return { customerId: '', currency: 'LYD', amount: '', dueDate: '', paymentPeriod: 'monthly', paymentAmount: '0', notes: '' }
+}
+
+function emptyAdvanceForm() {
+  return { customerId: '', currency: 'LYD', amount: '', vaultId: '', notes: '' }
 }
 
 function emptyDocForm() {
@@ -42,7 +48,7 @@ const docStatusClass: Record<string, string> = {
   'منتهي': 'bg-danger/10 text-danger',
 }
 
-const VALID_TABS = ['customers', 'cards', 'debts', 'documents'] as const
+const VALID_TABS = ['customers', 'cards', 'debts', 'advances', 'documents'] as const
 type CustomersTab = typeof VALID_TABS[number]
 
 export default function CustomersPage() {
@@ -73,6 +79,8 @@ function CustomersPageInner() {
   const [accountEntries, setAccountEntries] = useState<CustomerAccountEntry[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [debtPayments, setDebtPayments] = useState<DebtPaymentRecord[]>([])
+  const [advances, setAdvances] = useState<Advance[]>([])
+  const [advancePayments, setAdvancePayments] = useState<AdvancePaymentRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [importMsg, setImportMsg] = useState('')
@@ -97,6 +105,17 @@ function CustomersPageInner() {
   const [debtFormError, setDebtFormError] = useState('')
   const [savingDebt, setSavingDebt] = useState(false)
 
+  const [payingAdvance, setPayingAdvance] = useState<Advance | null>(null)
+  const [advancePayAmount, setAdvancePayAmount] = useState('')
+  const [advancePayVaultId, setAdvancePayVaultId] = useState('')
+  const [advancePayError, setAdvancePayError] = useState('')
+  const [payingAdvanceSaving, setPayingAdvanceSaving] = useState(false)
+
+  const [showAdvanceModal, setShowAdvanceModal] = useState(false)
+  const [advanceForm, setAdvanceForm] = useState(emptyAdvanceForm())
+  const [advanceFormError, setAdvanceFormError] = useState('')
+  const [savingAdvance, setSavingAdvance] = useState(false)
+
   const [showDocModal, setShowDocModal] = useState(false)
   const [docForm, setDocForm] = useState(emptyDocForm())
   const [docFormError, setDocFormError] = useState('')
@@ -119,11 +138,13 @@ function CustomersPageInner() {
 
   const [customersPage, setCustomersPage] = useState(1)
   const [debtsPage, setDebtsPage] = useState(1)
+  const [advancesPage, setAdvancesPage] = useState(1)
   const [documentsPage, setDocumentsPage] = useState(1)
   const [unlinkedDocsPage, setUnlinkedDocsPage] = useState(1)
   const [statementPage, setStatementPage] = useState(1)
   const [statementTxPage, setStatementTxPage] = useState(1)
   const [statementDebtPage, setStatementDebtPage] = useState(1)
+  const [statementAdvancePage, setStatementAdvancePage] = useState(1)
 
   const [connectingDoc, setConnectingDoc] = useState<CustomerDocument | null>(null)
   const [connectCustomerId, setConnectCustomerId] = useState('')
@@ -142,7 +163,7 @@ function CustomersPageInner() {
 
   const load = async () => {
     try {
-      const [custs, debtsData, currs, docs, v, ba, ae, tx, dp] = await Promise.all([
+      const [custs, debtsData, currs, docs, v, ba, ae, tx, dp, adv, advp] = await Promise.all([
         api.get<Customer[]>('/customers'),
         api.get<Debt[]>('/debts'),
         api.get<Currency[]>('/currencies'),
@@ -152,6 +173,8 @@ function CustomersPageInner() {
         api.get<CustomerAccountEntry[]>('/customer_account_entries'),
         api.get<Transaction[]>('/transactions'),
         api.get<DebtPaymentRecord[]>('/debt_payments'),
+        api.get<Advance[]>('/advances'),
+        api.get<AdvancePaymentRecord[]>('/advance_payments'),
       ])
       setCustomers(custs)
       setDebts(debtsData)
@@ -162,6 +185,8 @@ function CustomersPageInner() {
       setAccountEntries(ae)
       setTransactions(tx)
       setDebtPayments(dp)
+      setAdvances(adv)
+      setAdvancePayments(advp)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل بيانات العملاء')
     } finally {
@@ -410,6 +435,70 @@ function CustomersPageInner() {
     }
   }
 
+  // ---------------- Advances (سلفة) ----------------
+  const openCreateAdvance = () => {
+    setAdvanceForm({ ...emptyAdvanceForm(), vaultId: vaults[0]?.id || '' })
+    setAdvanceFormError('')
+    setShowAdvanceModal(true)
+  }
+
+  const submitAdvance = async (e: FormEvent) => {
+    e.preventDefault()
+    setAdvanceFormError('')
+    const customer = customers.find((c) => c.id === advanceForm.customerId)
+    const amount = parseFloat(advanceForm.amount)
+    if (!customer || !amount || amount <= 0 || !advanceForm.vaultId) {
+      setAdvanceFormError('العميل والخزنة والمبلغ حقول مطلوبة')
+      return
+    }
+    setSavingAdvance(true)
+    try {
+      await api.post('/advances', {
+        id: newId('adv'),
+        customer_id: customer.id,
+        customer_name: customer.name,
+        currency: advanceForm.currency,
+        amount,
+        vault_id: advanceForm.vaultId,
+        notes: advanceForm.notes.trim() || null,
+      })
+      setShowAdvanceModal(false)
+      await load()
+    } catch (err) {
+      setAdvanceFormError(err instanceof ApiError ? err.message : 'تعذر صرف السلفة')
+    } finally {
+      setSavingAdvance(false)
+    }
+  }
+
+  const openPayAdvance = (a: Advance) => {
+    setPayingAdvance(a)
+    setAdvancePayAmount('')
+    setAdvancePayVaultId(a.vaultId)
+    setAdvancePayError('')
+  }
+
+  const submitPayAdvance = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!payingAdvance) return
+    setAdvancePayError('')
+    const amount = parseFloat(advancePayAmount)
+    if (!amount || amount <= 0 || !advancePayVaultId) {
+      setAdvancePayError('الخزنة والمبلغ حقول مطلوبة')
+      return
+    }
+    setPayingAdvanceSaving(true)
+    try {
+      await api.post(`/advances/${payingAdvance.id}/pay`, { amount, vault_id: advancePayVaultId, notes: null })
+      setPayingAdvance(null)
+      await load()
+    } catch (err) {
+      setAdvancePayError(err instanceof ApiError ? err.message : 'تعذر تسجيل الدفعة')
+    } finally {
+      setPayingAdvanceSaving(false)
+    }
+  }
+
   // ---------------- Customer Documents ----------------
   const openCreateDoc = () => {
     setDocForm(emptyDocForm())
@@ -636,6 +725,22 @@ function CustomersPageInner() {
   const sortedDebts = useMemo(() => [...debts].reverse(), [debts])
   const pagedDebts = paginate(sortedDebts, debtsPage)
 
+  const openAdvancesCount = advances.filter((a) => a.status !== 'paid').length
+  const sortedAdvances = useMemo(() => [...advances].reverse(), [advances])
+  const pagedAdvances = paginate(sortedAdvances, advancesPage)
+
+  // Outstanding advances per customer/currency — a third, independent number
+  // from balance and debt, never merged into either.
+  const advancesByCustomerCurrency = useMemo(() => {
+    const map: Record<string, Record<string, number>> = {}
+    for (const a of advances) {
+      if (a.status === 'paid') continue
+      if (!map[a.customerId]) map[a.customerId] = {}
+      map[a.customerId][a.currency] = (map[a.customerId][a.currency] || 0) + a.remainingAmount
+    }
+    return map
+  }, [advances])
+
   const sortedDocuments = useMemo(() => [...documents].filter((d) => d.customerId).reverse(), [documents])
   const pagedDocuments = paginate(sortedDocuments, documentsPage)
 
@@ -678,6 +783,17 @@ function CustomersPageInner() {
     return [...created, ...paid].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
   }, [debts, debtPayments, statementCustomer, statementCurrency])
   const pagedStatementDebtHistory = paginate(statementDebtHistory, statementDebtPage)
+
+  const statementAdvanceHistory = useMemo(() => {
+    const disbursed = advances
+      .filter((a) => a.customerId === statementCustomer?.id && (!statementCurrency || a.currency === statementCurrency))
+      .map((a) => ({ key: `adv_${a.id}`, kind: 'disbursed' as const, amount: a.amount, currency: a.currency, user: a.createdBy, timestamp: a.timestamp }))
+    const paid = advancePayments
+      .filter((p) => p.customerId === statementCustomer?.id && (!statementCurrency || p.currency === statementCurrency))
+      .map((p) => ({ key: `advpay_${p.id}`, kind: 'paid' as const, amount: p.amount, currency: p.currency, user: p.user, timestamp: p.timestamp }))
+    return [...disbursed, ...paid].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
+  }, [advances, advancePayments, statementCustomer, statementCurrency])
+  const pagedStatementAdvanceHistory = paginate(statementAdvanceHistory, statementAdvancePage)
 
   return (
     <div className="space-y-6">
@@ -729,6 +845,15 @@ function CustomersPageInner() {
             إضافة دين
           </button>
         )}
+        {tab === 'advances' && canManageDebts && (
+          <button
+            onClick={openCreateAdvance}
+            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            صرف سلفة
+          </button>
+        )}
         {tab === 'documents' && canManage && (
           <button
             onClick={openCreateDoc}
@@ -768,6 +893,15 @@ function CustomersPageInner() {
         >
           <HandCoins className="h-4 w-4" /> الديون
           {openDebtsCount > 0 && <span className="rounded-full bg-danger/10 px-1.5 py-0.5 text-[10px] font-bold text-danger">{openDebtsCount}</span>}
+        </button>
+        <button
+          onClick={() => setTab('advances')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            tab === 'advances' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <Wallet className="h-4 w-4" /> السلف
+          {openAdvancesCount > 0 && <span className="rounded-full bg-warning/10 px-1.5 py-0.5 text-[10px] font-bold text-warning">{openAdvancesCount}</span>}
         </button>
         <button
           onClick={() => setTab('documents')}
@@ -814,6 +948,7 @@ function CustomersPageInner() {
                   <th className="px-6 py-4 font-medium">النوع</th>
                   <th className="px-6 py-4 font-medium">رقم الهاتف</th>
                   <th className="px-6 py-4 font-medium">الأرصدة</th>
+                  <th className="px-6 py-4 font-medium">السلفة</th>
                   <th className="px-6 py-4 font-medium">حد الدين</th>
                   <th className="px-6 py-4 font-medium">نسبة الربح</th>
                   <th className="px-6 py-4 font-medium">الحالة</th>
@@ -822,9 +957,9 @@ function CustomersPageInner() {
               </thead>
               <tbody className="divide-y divide-border">
                 {loading ? (
-                  <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
+                  <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
                 ) : customers.length === 0 ? (
-                  <tr><td colSpan={9} className="px-6 py-10 text-center text-muted-foreground">لا يوجد عملاء بعد</td></tr>
+                  <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا يوجد عملاء بعد</td></tr>
                 ) : pagedCustomers.map((customer) => (
                   <tr key={customer.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{customer.id}</td>
@@ -848,6 +983,20 @@ function CustomersPageInner() {
                               </span>
                             )
                           })}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      {Object.keys(advancesByCustomerCurrency[customer.id] || {}).length === 0 ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-1">
+                          {Object.entries(advancesByCustomerCurrency[customer.id]).map(([ccy, remaining]) => (
+                            <span key={ccy} className="inline-flex w-fit items-center gap-1 rounded-md bg-warning/10 px-2 py-0.5 text-xs font-bold text-warning">
+                              <CurrencyFlag code={ccy} flag={currencyFlag(ccy)} />
+                              <span dir="ltr">-{remaining.toLocaleString()} {ccy}</span>
+                            </span>
+                          ))}
                         </div>
                       )}
                     </td>
@@ -1025,6 +1174,57 @@ function CustomersPageInner() {
             </table>
           </div>
           <TablePagination page={debtsPage} totalItems={sortedDebts.length} onPageChange={setDebtsPage} />
+        </div>
+      )}
+
+      {tab === 'advances' && (
+        <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-right">
+              <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                <tr>
+                  <th className="px-6 py-4 font-medium">العميل</th>
+                  <th className="px-6 py-4 font-medium">المبلغ الأصلي</th>
+                  <th className="px-6 py-4 font-medium">المسدد</th>
+                  <th className="px-6 py-4 font-medium">المتبقي</th>
+                  <th className="px-6 py-4 font-medium">الخزنة</th>
+                  <th className="px-6 py-4 font-medium">التاريخ</th>
+                  <th className="px-6 py-4 font-medium">الحالة</th>
+                  <th className="px-6 py-4 font-medium">إجراءات</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {advances.length === 0 ? (
+                  <tr><td colSpan={8} className="px-6 py-10 text-center text-muted-foreground">لا توجد سلف مسجلة</td></tr>
+                ) : pagedAdvances.map((a) => {
+                  const paidSoFar = a.amount - a.remainingAmount
+                  return (
+                    <tr key={a.id} className="hover:bg-muted/50 transition-colors">
+                      <td className="px-6 py-4 font-medium text-foreground">{a.customerName}</td>
+                      <td className="px-6 py-4">{a.amount.toLocaleString()} {a.currency}</td>
+                      <td className="px-6 py-4 text-success">{paidSoFar.toLocaleString()} {a.currency}</td>
+                      <td className="px-6 py-4 font-bold" dir="ltr">-{a.remainingAmount.toLocaleString()} {a.currency}</td>
+                      <td className="px-6 py-4 text-muted-foreground">{a.vaultName}</td>
+                      <td className="px-6 py-4 text-muted-foreground">{a.timestamp}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${advanceStatusClass[a.status] || 'bg-muted text-muted-foreground'}`}>
+                          {advanceStatusLabel[a.status] || a.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        {canManageDebts && a.status !== 'paid' && (
+                          <button onClick={() => openPayAdvance(a)} className="flex items-center gap-1 text-primary hover:text-primary/80 transition-colors text-xs font-medium">
+                            <Landmark className="h-3.5 w-3.5" /> تسديد دفعة
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <TablePagination page={advancesPage} totalItems={sortedAdvances.length} onPageChange={setAdvancesPage} />
         </div>
       )}
 
@@ -1648,6 +1848,144 @@ function CustomersPageInner() {
         </div>
       )}
 
+      {/* Pay Advance Modal */}
+      {payingAdvance && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تسديد دفعة سلفة</h3>
+              <button onClick={() => setPayingAdvance(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={submitPayAdvance} className="space-y-4 p-6 text-right">
+              <p className="text-sm text-muted-foreground">
+                العميل: <span className="font-medium text-foreground">{payingAdvance.customerName}</span> — المتبقي:{' '}
+                <span className="font-medium text-foreground">{payingAdvance.remainingAmount.toLocaleString()} {payingAdvance.currency}</span>
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">الخزنة المستلمة للمبلغ *</label>
+                <select
+                  value={advancePayVaultId}
+                  onChange={(e) => setAdvancePayVaultId(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر</option>
+                  {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">مبلغ الدفعة *</label>
+                <input
+                  type="number"
+                  value={advancePayAmount}
+                  onChange={(e) => setAdvancePayAmount(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {advancePayError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{advancePayError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setPayingAdvance(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={payingAdvanceSaving}
+                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60"
+                >
+                  {payingAdvanceSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  تأكيد الدفع
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add Advance Modal */}
+      {showAdvanceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">صرف سلفة جديدة</h3>
+              <button onClick={() => setShowAdvanceModal(false)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={submitAdvance} className="space-y-4 p-6 text-right">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">العميل *</label>
+                <select
+                  value={advanceForm.customerId}
+                  onChange={(e) => setAdvanceForm({ ...advanceForm, customerId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر عميلاً</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">الخزنة (مصدر السلفة) *</label>
+                <select
+                  value={advanceForm.vaultId}
+                  onChange={(e) => setAdvanceForm({ ...advanceForm, vaultId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر</option>
+                  {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                  <select
+                    value={advanceForm.currency}
+                    onChange={(e) => setAdvanceForm({ ...advanceForm, currency: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
+                  <input
+                    type="number"
+                    value={advanceForm.amount}
+                    onChange={(e) => setAdvanceForm({ ...advanceForm, amount: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={advanceForm.notes}
+                  onChange={(e) => setAdvanceForm({ ...advanceForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+
+              {advanceFormError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{advanceFormError}</p>}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setShowAdvanceModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingAdvance}
+                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60"
+                >
+                  {savingAdvance && <Loader2 className="h-4 w-4 animate-spin" />}
+                  صرف السلفة
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Add Document Modal */}
       {showDocModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
@@ -2129,6 +2467,41 @@ function CustomersPageInner() {
                   </table>
                 </div>
                 <TablePagination page={statementDebtPage} totalItems={statementDebtHistory.length} onPageChange={setStatementDebtPage} />
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-foreground mb-2">السلف</p>
+                <div className="rounded-md border border-border overflow-x-auto">
+                  <table className="w-full text-xs text-right">
+                    <thead className="bg-secondary/50 text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">النوع</th>
+                        <th className="px-3 py-2 font-medium">المبلغ</th>
+                        <th className="px-3 py-2 font-medium">بواسطة</th>
+                        <th className="px-3 py-2 font-medium">التاريخ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {pagedStatementAdvanceHistory.length === 0 ? (
+                        <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">لا توجد سلف مسجلة</td></tr>
+                      ) : pagedStatementAdvanceHistory.map((row) => (
+                        <tr key={row.key}>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${row.kind === 'disbursed' ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'}`}>
+                              {row.kind === 'disbursed' ? 'سلفة جديدة' : 'تسديد دفعة'}
+                            </span>
+                          </td>
+                          <td className={`px-3 py-2 font-bold ${row.kind === 'disbursed' ? 'text-warning' : 'text-success'}`} dir="ltr">
+                            {row.kind === 'disbursed' ? '-' : '+'}{row.amount.toLocaleString()} {row.currency}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">{row.user}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{row.timestamp}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePagination page={statementAdvancePage} totalItems={statementAdvanceHistory.length} onPageChange={setStatementAdvancePage} />
               </div>
             </div>
           </div>

@@ -391,6 +391,35 @@ export interface DebtPaymentRecord {
   notes: string | null
 }
 
+export interface Advance {
+  id: string
+  customerId: string
+  customerName: string
+  currency: string
+  amount: number
+  remainingAmount: number
+  vaultId: string
+  vaultName: string
+  status: string
+  notes: string | null
+  createdBy: string
+  timestamp: string
+}
+
+export interface AdvancePaymentRecord {
+  id: string
+  advanceId: string
+  customerId: string
+  customerName: string
+  currency: string
+  amount: number
+  vaultId: string
+  vaultName: string
+  timestamp: string
+  user: string
+  notes: string | null
+}
+
 export interface FixedAsset {
   id: string
   name: string
