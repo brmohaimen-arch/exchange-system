@@ -355,20 +355,10 @@ def create_bank_deposit(account_id: str, data: BankDepositCreate, actor: User = 
     if data.interest_rate < 0:
         raise APIError(code="INVALID_RATE", message_ar="لا يمكن أن تكون نسبة الفائدة سالبة", message_en="Interest rate cannot be negative", status_code=400)
 
-    now = datetime.utcnow()
-    resolved_deposit_date = data.deposit_date or now.strftime("%Y-%m-%d")
-    # A deposit recorded live today (the normal path — the form has no backdating
-    # field) should accrue interest from the actual moment it's created, not from
-    # midnight — otherwise calculating interest seconds after creating the deposit
-    # would wrongly credit however many hours had already passed since midnight.
-    # A genuinely backdated deposit_date has no time-of-day to anchor to, so it
-    # still starts from midnight of that date.
-    initial_last_calculated = now.strftime("%Y-%m-%d %H:%M:%S") if resolved_deposit_date == now.strftime("%Y-%m-%d") else None
-
     deposit = BankDeposit(
         id=new_id(f"bdep_{account_id}"), bank_account_id=account.id, amount=data.amount, currency=account.currency,
-        interest_rate=data.interest_rate, deposit_date=resolved_deposit_date,
-        accrued_interest=0.0, last_calculated=initial_last_calculated, status="active", notes=data.notes
+        interest_rate=data.interest_rate, deposit_date=data.deposit_date or datetime.utcnow().strftime("%Y-%m-%d"),
+        accrued_interest=0.0, last_calculated=None, status="active", notes=data.notes
     )
     db.add(deposit)
     create_audit_log(db, action=AuditAction.CREATE, entity_type="BankDeposit", entity_id=deposit.id, description=f"تم تسجيل وديعة بقيمة {data.amount} {account.currency} بنسبة فائدة {data.interest_rate}% على حساب {account.account_name}")
@@ -377,35 +367,24 @@ def create_bank_deposit(account_id: str, data: BankDepositCreate, actor: User = 
 
 @router.post("/bank_deposits/{deposit_id}/calculate_interest")
 def calculate_bank_deposit_interest(deposit_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
-    """Accrues simple interest on this one deposit's own amount/rate from its last
-    calculation date (or its deposit date, the first time) up to today. Never touches
-    the account's actual cash balance — crediting into the balance is a separate step."""
+    """Computes this deposit's interest as a flat percentage of its own amount —
+    each deposit carries its own contractual rate the bank quoted at the time it
+    was made (e.g. a fixed-term deposit), not a daily/annual accrual that builds
+    up over time. So it's a straight one-time amount, calculable instantly and
+    unaffected by how much time has passed. Never touches the account's actual
+    cash balance — crediting into the balance is a separate step."""
     deposit = db.get(BankDeposit, deposit_id)
     if not deposit:
         raise APIError(code="NOT_FOUND", message_ar="الوديعة غير موجودة", message_en="Deposit not found", status_code=404)
     if deposit.interest_rate <= 0:
         raise APIError(code="INTEREST_NOT_CONFIGURED", message_ar="لم يتم تحديد نسبة فائدة لهذه الوديعة", message_en="This deposit has no interest rate set", status_code=400)
 
-    now = datetime.utcnow()
-    last_date_str = deposit.last_calculated or deposit.deposit_date
-    # last_calculated is stored with full precision (below) so repeat same-day
-    # calculations don't re-count time already paid out; older rows (or the
-    # deposit_date itself, the first time) only ever had a bare date, which
-    # parses fine as midnight of that day.
-    try:
-        last_dt = datetime.strptime(last_date_str, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        last_dt = datetime.strptime(last_date_str, "%Y-%m-%d")
-    days_elapsed = (now - last_dt).total_seconds() / 86400.0
-    if days_elapsed <= 0:
-        raise APIError(code="NO_TIME_ELAPSED", message_ar="لا يمكن احتساب فائدة قبل تاريخ الوديعة أو آخر احتساب", message_en="Cannot calculate interest before the deposit date or the last calculation", status_code=400)
-
-    interest = deposit.amount * (deposit.interest_rate / 100.0) * (days_elapsed / 365.0)
-    deposit.accrued_interest += interest
-    deposit.last_calculated = now.strftime("%Y-%m-%d %H:%M:%S")
+    interest = deposit.amount * (deposit.interest_rate / 100.0)
+    deposit.accrued_interest = interest
+    deposit.last_calculated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     account = db.get(BankAccount, deposit.bank_account_id)
-    create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankDeposit", entity_id=deposit_id, description=f"تم احتساب فائدة تلقائية بقيمة {interest:.2f} {deposit.currency} على وديعة بحساب {account.account_name if account else deposit.bank_account_id} عن {days_elapsed:.2f} يوم")
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankDeposit", entity_id=deposit_id, description=f"تم احتساب فائدة الوديعة: {interest:.2f} {deposit.currency} على وديعة بحساب {account.account_name if account else deposit.bank_account_id}")
     db.commit()
     return success_response(data=bank_deposit_to_dict(deposit), message_ar=f"تم احتساب فائدة بقيمة {interest:.2f} {deposit.currency}")
 
