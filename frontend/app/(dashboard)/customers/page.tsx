@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent, Suspense } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, Wallet, FileText, Upload, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Printer, Download, CreditCard, MessageCircle } from 'lucide-react'
+import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, Wallet, FileText, Upload, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Printer, Download, CreditCard, MessageCircle, MoreVertical } from 'lucide-react'
 import { api, newId, openFile, uploadFile, Customer, Debt, DebtPaymentRecord, Advance, AdvancePaymentRecord, Currency, CustomerDocument, CustomerAccountEntry, Vault, BankAccount, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 
 const typeLabels: Record<string, string> = { individual: 'فرد', company: 'شركة' }
 const debtStatusClass: Record<string, string> = {
@@ -397,8 +398,8 @@ function CustomersPageInner() {
     }
   }
 
-  const openCreateDebt = () => {
-    setDebtForm(emptyDebtForm())
+  const openCreateDebt = (prefill?: { customerId: string; currency: string }) => {
+    setDebtForm(prefill ? { ...emptyDebtForm(), customerId: prefill.customerId, currency: prefill.currency } : emptyDebtForm())
     setDebtFormError('')
     setShowDebtModal(true)
   }
@@ -436,8 +437,8 @@ function CustomersPageInner() {
   }
 
   // ---------------- Advances (سلفة) ----------------
-  const openCreateAdvance = () => {
-    setAdvanceForm({ ...emptyAdvanceForm(), vaultId: vaults[0]?.id || '' })
+  const openCreateAdvance = (prefill?: { customerId: string; currency: string }) => {
+    setAdvanceForm({ ...emptyAdvanceForm(), vaultId: vaults[0]?.id || '', ...(prefill || {}) })
     setAdvanceFormError('')
     setShowAdvanceModal(true)
   }
@@ -838,7 +839,7 @@ function CustomersPageInner() {
         )}
         {tab === 'debts' && canManageDebts && (
           <button
-            onClick={openCreateDebt}
+            onClick={() => openCreateDebt()}
             className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
           >
             <Plus className="h-4 w-4" />
@@ -847,7 +848,7 @@ function CustomersPageInner() {
         )}
         {tab === 'advances' && canManageDebts && (
           <button
-            onClick={openCreateAdvance}
+            onClick={() => openCreateAdvance()}
             className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
           >
             <Plus className="h-4 w-4" />
@@ -947,19 +948,16 @@ function CustomersPageInner() {
                   <th className="px-6 py-4 font-medium">اسم العميل</th>
                   <th className="px-6 py-4 font-medium">النوع</th>
                   <th className="px-6 py-4 font-medium">رقم الهاتف</th>
-                  <th className="px-6 py-4 font-medium">الأرصدة</th>
-                  <th className="px-6 py-4 font-medium">السلفة</th>
-                  <th className="px-6 py-4 font-medium">حد الدين</th>
-                  <th className="px-6 py-4 font-medium">نسبة الربح</th>
+                  <th className="px-6 py-4 font-medium">الوضع المالي</th>
                   <th className="px-6 py-4 font-medium">الحالة</th>
                   <th className="px-6 py-4 font-medium">إجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {loading ? (
-                  <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
+                  <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
                 ) : customers.length === 0 ? (
-                  <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا يوجد عملاء بعد</td></tr>
+                  <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا يوجد عملاء بعد</td></tr>
                 ) : pagedCustomers.map((customer) => (
                   <tr key={customer.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-6 py-4 font-medium text-foreground">{customer.id}</td>
@@ -967,7 +965,7 @@ function CustomersPageInner() {
                     <td className="px-6 py-4 text-muted-foreground">{typeLabels[customer.type] || customer.type}</td>
                     <td className="px-6 py-4" dir="ltr">{customer.phone}</td>
                     <td className="px-6 py-4">
-                      {customerCurrencies(customer).length === 0 ? (
+                      {customerCurrencies(customer).length === 0 && Object.keys(advancesByCustomerCurrency[customer.id] || {}).length === 0 ? (
                         <span className="text-muted-foreground">—</span>
                       ) : (
                         <div className="flex flex-col gap-1">
@@ -983,25 +981,15 @@ function CustomersPageInner() {
                               </span>
                             )
                           })}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      {Object.keys(advancesByCustomerCurrency[customer.id] || {}).length === 0 ? (
-                        <span className="text-muted-foreground">—</span>
-                      ) : (
-                        <div className="flex flex-col gap-1">
-                          {Object.entries(advancesByCustomerCurrency[customer.id]).map(([ccy, remaining]) => (
-                            <span key={ccy} className="inline-flex w-fit items-center gap-1 rounded-md bg-warning/10 px-2 py-0.5 text-xs font-bold text-warning">
+                          {Object.entries(advancesByCustomerCurrency[customer.id] || {}).map(([ccy, remaining]) => (
+                            <span key={`adv_${ccy}`} className="inline-flex w-fit items-center gap-1 rounded-md bg-warning/10 px-2 py-0.5 text-xs font-bold text-warning" title="سلفة قائمة">
                               <CurrencyFlag code={ccy} flag={currencyFlag(ccy)} />
-                              <span dir="ltr">-{remaining.toLocaleString()} {ccy}</span>
+                              <span dir="ltr">سلفة -{remaining.toLocaleString()} {ccy}</span>
                             </span>
                           ))}
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-muted-foreground">{customer.debtLimit.toLocaleString()} د.ل</td>
-                    <td className="px-6 py-4 text-muted-foreground">{customer.profitPct}%</td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                         ${customer.isActive ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}`}>
@@ -1009,47 +997,54 @@ function CustomersPageInner() {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex flex-wrap items-center gap-1.5">
+                      <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => { setSelected(customer); setSelectedCurrency(Object.keys(customer.balances)[0] || '') }}
                           className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors"
                         >
                           <Eye className="h-3.5 w-3.5" /> عرض
                         </button>
-                        <button
-                          onClick={() => {
-                            setStatementCustomer(customer)
-                            setStatementCurrency(Object.keys(customer.balances)[0] || '')
-                            setStatementPage(1)
-                            setStatementTxPage(1)
-                          }}
-                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted transition-colors"
-                        >
-                          <FileText className="h-3.5 w-3.5" /> كشف الحساب
-                        </button>
-                        {canManage && customer.isActive && (
-                          <>
-                            <button onClick={() => openDepositWithdraw(customer, 'deposit')} className="flex items-center gap-1 rounded-md border border-success/30 px-2 py-1 text-xs font-medium text-success hover:bg-success/10 transition-colors">
-                              <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button className="flex items-center justify-center rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
+                              <MoreVertical className="h-3.5 w-3.5" />
                             </button>
-                            <button onClick={() => openDepositWithdraw(customer, 'withdraw')} className="flex items-center gap-1 rounded-md border border-warning/30 px-2 py-1 text-xs font-medium text-warning hover:bg-warning/10 transition-colors">
-                              <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
-                            </button>
-                            <button onClick={() => openTransfer(customer)} disabled={Object.keys(customer.balances).length === 0} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors disabled:opacity-40">
-                              <ArrowRightLeft className="h-3.5 w-3.5" /> تحويل
-                            </button>
-                          </>
-                        )}
-                        {canManage && (
-                          <>
-                            <button onClick={() => openEdit(customer)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
-                              <Pencil className="h-3.5 w-3.5" /> تعديل
-                            </button>
-                            <button onClick={() => deleteCustomer(customer)} className="flex items-center gap-1 rounded-md border border-danger/30 px-2 py-1 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
-                              <Trash2 className="h-3.5 w-3.5" /> حذف
-                            </button>
-                          </>
-                        )}
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="text-right">
+                            <DropdownMenuItem onSelect={() => {
+                              setStatementCustomer(customer)
+                              setStatementCurrency(Object.keys(customer.balances)[0] || '')
+                              setStatementPage(1)
+                              setStatementTxPage(1)
+                            }}>
+                              <FileText className="h-3.5 w-3.5" /> كشف الحساب
+                            </DropdownMenuItem>
+                            {canManage && customer.isActive && (
+                              <>
+                                <DropdownMenuItem onSelect={() => openDepositWithdraw(customer, 'deposit')}>
+                                  <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => openDepositWithdraw(customer, 'withdraw')}>
+                                  <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
+                                </DropdownMenuItem>
+                                <DropdownMenuItem disabled={Object.keys(customer.balances).length === 0} onSelect={() => openTransfer(customer)}>
+                                  <ArrowRightLeft className="h-3.5 w-3.5" /> تحويل
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                            {canManage && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem onSelect={() => openEdit(customer)}>
+                                  <Pencil className="h-3.5 w-3.5" /> تعديل
+                                </DropdownMenuItem>
+                                <DropdownMenuItem variant="destructive" onSelect={() => deleteCustomer(customer)}>
+                                  <Trash2 className="h-3.5 w-3.5" /> حذف
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </td>
                   </tr>
@@ -1153,6 +1148,11 @@ function CustomersPageInner() {
                             <Landmark className="h-3.5 w-3.5" /> تسديد دفعة
                           </button>
                         )}
+                        {canManageDebts && (
+                          <button onClick={() => openCreateDebt({ customerId: d.customerId, currency: d.currency })} className="flex items-center gap-1 text-warning hover:text-warning/80 transition-colors text-xs font-medium">
+                            <Plus className="h-3.5 w-3.5" /> زيادة
+                          </button>
+                        )}
                         <button
                           onClick={() => openFile(`/debts/${d.id}/receipt`).catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر فتح الإيصال'))}
                           className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
@@ -1212,11 +1212,18 @@ function CustomersPageInner() {
                         </span>
                       </td>
                       <td className="px-6 py-4">
-                        {canManageDebts && a.status !== 'paid' && (
-                          <button onClick={() => openPayAdvance(a)} className="flex items-center gap-1 text-primary hover:text-primary/80 transition-colors text-xs font-medium">
-                            <Landmark className="h-3.5 w-3.5" /> تسديد دفعة
-                          </button>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {canManageDebts && a.status !== 'paid' && (
+                            <button onClick={() => openPayAdvance(a)} className="flex items-center gap-1 text-primary hover:text-primary/80 transition-colors text-xs font-medium">
+                              <Landmark className="h-3.5 w-3.5" /> تسديد دفعة
+                            </button>
+                          )}
+                          {canManageDebts && (
+                            <button onClick={() => openCreateAdvance({ customerId: a.customerId, currency: a.currency })} className="flex items-center gap-1 text-warning hover:text-warning/80 transition-colors text-xs font-medium">
+                              <Plus className="h-3.5 w-3.5" /> زيادة
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -1664,22 +1671,37 @@ function CustomersPageInner() {
                     {selectedCurrency && (() => {
                       const rawBalance = selected.balances[selectedCurrency] ?? 0
                       const debtAmt = debtsByCustomerCurrency[selected.id]?.[selectedCurrency] ?? 0
+                      const advanceAmt = advancesByCustomerCurrency[selected.id]?.[selectedCurrency] ?? 0
                       const net = rawBalance - debtAmt
                       return (
-                        <div className="rounded-lg border border-border bg-secondary/30 p-3">
-                          <div className="flex items-center gap-2 mb-1.5">
+                        <div className="rounded-lg border border-border bg-secondary/30 p-3 space-y-2">
+                          <div className="flex items-center gap-2">
                             <CurrencyFlag code={selectedCurrency} flag={currencyFlag(selectedCurrency)} className="h-4 w-6" />
                             <span className="text-xs font-medium text-muted-foreground">{currencyName(selectedCurrency)}</span>
                           </div>
-                          <p className={`text-xl font-bold ${net < 0 ? 'text-danger' : 'text-success'}`} dir="ltr">
-                            {net.toLocaleString()} <span className="text-sm font-medium text-muted-foreground">{selectedCurrency}</span>
-                          </p>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-muted-foreground">الرصيد</span>
+                            <span className={`font-bold ${rawBalance < 0 ? 'text-danger' : 'text-success'}`} dir="ltr">{rawBalance.toLocaleString()} {selectedCurrency}</span>
+                          </div>
                           {debtAmt > 0 && (
-                            <p className="mt-1 text-[11px] text-muted-foreground" dir="ltr">
-                              الرصيد {rawBalance.toLocaleString()} − الدين {debtAmt.toLocaleString()}
-                            </p>
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-muted-foreground">الدين</span>
+                              <span className="font-bold text-danger" dir="ltr">-{debtAmt.toLocaleString()} {selectedCurrency}</span>
+                            </div>
                           )}
-                          <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                          {advanceAmt > 0 && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-muted-foreground">السلفة</span>
+                              <span className="font-bold text-warning" dir="ltr">-{advanceAmt.toLocaleString()} {selectedCurrency}</span>
+                            </div>
+                          )}
+                          {debtAmt > 0 && (
+                            <div className="flex items-center justify-between border-t border-border pt-2">
+                              <span className="text-xs font-medium text-muted-foreground">الصافي (رصيد − دين)</span>
+                              <span className={`font-bold ${net < 0 ? 'text-danger' : 'text-success'}`} dir="ltr">{net.toLocaleString()} {selectedCurrency}</span>
+                            </div>
+                          )}
+                          <div className="flex items-center justify-between text-[11px] text-muted-foreground border-t border-border pt-2">
                             <span>حساب جاري</span>
                             <span dir="ltr">{selected.id}-{selectedCurrency}</span>
                           </div>
