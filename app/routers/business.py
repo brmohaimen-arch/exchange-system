@@ -355,10 +355,20 @@ def create_bank_deposit(account_id: str, data: BankDepositCreate, actor: User = 
     if data.interest_rate < 0:
         raise APIError(code="INVALID_RATE", message_ar="لا يمكن أن تكون نسبة الفائدة سالبة", message_en="Interest rate cannot be negative", status_code=400)
 
+    now = datetime.utcnow()
+    resolved_deposit_date = data.deposit_date or now.strftime("%Y-%m-%d")
+    # A deposit recorded live today (the normal path — the form has no backdating
+    # field) should accrue interest from the actual moment it's created, not from
+    # midnight — otherwise calculating interest seconds after creating the deposit
+    # would wrongly credit however many hours had already passed since midnight.
+    # A genuinely backdated deposit_date has no time-of-day to anchor to, so it
+    # still starts from midnight of that date.
+    initial_last_calculated = now.strftime("%Y-%m-%d %H:%M:%S") if resolved_deposit_date == now.strftime("%Y-%m-%d") else None
+
     deposit = BankDeposit(
         id=new_id(f"bdep_{account_id}"), bank_account_id=account.id, amount=data.amount, currency=account.currency,
-        interest_rate=data.interest_rate, deposit_date=data.deposit_date or datetime.utcnow().strftime("%Y-%m-%d"),
-        accrued_interest=0.0, last_calculated=None, status="active", notes=data.notes
+        interest_rate=data.interest_rate, deposit_date=resolved_deposit_date,
+        accrued_interest=0.0, last_calculated=initial_last_calculated, status="active", notes=data.notes
     )
     db.add(deposit)
     create_audit_log(db, action=AuditAction.CREATE, entity_type="BankDeposit", entity_id=deposit.id, description=f"تم تسجيل وديعة بقيمة {data.amount} {account.currency} بنسبة فائدة {data.interest_rate}% على حساب {account.account_name}")
