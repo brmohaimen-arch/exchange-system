@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Users, Settings, ArrowRightLeft, TrendingUp, Landmark, FileText, Coins, Package, Lock } from 'lucide-react'
+import { LayoutDashboard, Users, Settings, ArrowRightLeft, Landmark, FileText, Coins, Package, Clock, ClipboardList, Building2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth-provider'
 import { useSidebarState } from '@/lib/sidebar-context'
@@ -19,13 +19,14 @@ interface NavItem {
 const navigation: NavItem[] = [
   { name: 'الرئيسية', href: '/dashboard', icon: LayoutDashboard },
   { name: 'العمليات', href: '/transactions', icon: ArrowRightLeft },
-  { name: 'أسعار الصرف', href: '/exchange-rates', icon: TrendingUp },
-  { name: 'العملات', href: '/currencies', icon: Coins, permission: 'إدارة العملات' },
-  { name: 'الخزينة والفروع', href: '/treasury', icon: Landmark },
+  { name: 'الخزنة وحركة اليوم', href: '/treasury', icon: Landmark },
+  { name: 'الورديات وطلبات الموافقة', href: '/shifts', icon: Clock },
+  { name: 'الجرد والمصاريف', href: '/inventory', icon: ClipboardList },
+  { name: 'البنوك والفروع', href: '/banks', icon: Building2 },
+  { name: 'العملات وأسعار الصرف', href: '/currencies', icon: Coins, permission: 'إدارة العملات' },
   { name: 'العملاء', href: '/customers', icon: Users, permission: 'إدارة العملاء' },
   { name: 'الأصول الثابتة', href: '/assets', icon: Package, permission: 'إدارة الأصول' },
-  { name: 'الإقفال اليومي', href: '/closing', icon: Lock, permission: 'اعتماد الإقفالات' },
-  { name: 'التقارير', href: '/reports', icon: FileText, permission: 'رؤية التقارير' },
+  { name: 'التقارير والإقفال اليومي', href: '/reports', icon: FileText, permission: 'رؤية التقارير' },
   { name: 'الإعدادات', href: '/settings', icon: Settings },
 ]
 

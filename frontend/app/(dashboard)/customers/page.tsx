@@ -8,6 +8,7 @@ import { api, newId, openFile, uploadFile, Customer, Debt, Currency, CustomerDoc
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { CurrencyFlag } from '@/components/ui/currency-flag'
 
 const typeLabels: Record<string, string> = { individual: 'فرد', company: 'شركة' }
 const debtStatusClass: Record<string, string> = {
@@ -718,7 +719,7 @@ function CustomersPageInner() {
                         <div className="flex flex-col gap-1">
                           {Object.entries(customer.balances).map(([ccy, amt]) => (
                             <span key={ccy} className="inline-flex w-fit items-center gap-1 rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-bold">
-                              <span>{currencyFlag(ccy)}</span>
+                              <CurrencyFlag code={ccy} flag={currencyFlag(ccy)} />
                               <span>{amt.toLocaleString()} {ccy}</span>
                             </span>
                           ))}
@@ -1335,7 +1336,7 @@ function CustomersPageInner() {
                     {selectedCurrency && (
                       <div className="rounded-lg border border-border bg-secondary/30 p-3">
                         <div className="flex items-center gap-2 mb-1.5">
-                          <span className="text-lg leading-none">{currencyFlag(selectedCurrency)}</span>
+                          <CurrencyFlag code={selectedCurrency} flag={currencyFlag(selectedCurrency)} className="h-4 w-6" />
                           <span className="text-xs font-medium text-muted-foreground">{currencyName(selectedCurrency)}</span>
                         </div>
                         <p className="text-xl font-bold text-foreground" dir="ltr">

@@ -143,7 +143,7 @@ export default function DashboardPage() {
       {/* Manager/approver: pending approvals */}
       {canApprove && pendingApprovalsCount > 0 && (
         <Link
-          href="/treasury"
+          href="/shifts?tab=approvals"
           className="flex items-center justify-between rounded-xl border border-warning/30 bg-warning/5 p-6 shadow-sm hover:bg-warning/10 transition-colors"
         >
           <div className="flex items-center gap-4">

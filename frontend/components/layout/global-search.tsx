@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Search, LayoutDashboard, ArrowRightLeft, TrendingUp, Coins, Landmark, Users,
-  Package, Lock, FileBarChart, Settings, UserRound, Receipt,
+  Search, LayoutDashboard, ArrowRightLeft, Coins, Landmark, Users,
+  Package, Clock, ClipboardList, Building2, FileBarChart, Settings, UserRound, Receipt,
 } from 'lucide-react'
 import {
   CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem, CommandShortcut,
@@ -21,13 +21,14 @@ interface PageEntry {
 const PAGES: PageEntry[] = [
   { label: 'نظرة عامة', href: '/dashboard', icon: LayoutDashboard, keywords: 'الرئيسية لوحة التحكم dashboard home' },
   { label: 'العمليات (بيع وشراء وتبديل)', href: '/transactions', icon: ArrowRightLeft, keywords: 'عملية شراء بيع تبديل transactions buy sell exchange' },
-  { label: 'أسعار الصرف', href: '/exchange-rates', icon: TrendingUp, keywords: 'سعر صرف rates' },
-  { label: 'العملات', href: '/currencies', icon: Coins, keywords: 'عملة currency currencies' },
-  { label: 'الخزينة والفروع', href: '/treasury', icon: Landmark, keywords: 'خزنة فرع بنك وردية جرد مصاريف موافقة treasury vault branch bank shift inventory expenses approvals' },
+  { label: 'الخزنة وحركة اليوم', href: '/treasury', icon: Landmark, keywords: 'خزنة حركة دخول خروج treasury vault movements' },
+  { label: 'الورديات وطلبات الموافقة', href: '/shifts', icon: Clock, keywords: 'وردية موافقة تحويل shifts approvals transfer' },
+  { label: 'الجرد والمصاريف', href: '/inventory', icon: ClipboardList, keywords: 'جرد مصروف inventory expenses' },
+  { label: 'البنوك والفروع', href: '/banks', icon: Building2, keywords: 'بنك فرع bank branch' },
+  { label: 'العملات وأسعار الصرف', href: '/currencies', icon: Coins, keywords: 'عملة سعر صرف currency rates' },
   { label: 'العملاء', href: '/customers', icon: Users, keywords: 'عميل دين مستند customer debt document' },
   { label: 'الأصول الثابتة', href: '/assets', icon: Package, keywords: 'أصل مركبة عقار صيانة إهلاك asset vehicle real estate maintenance depreciation' },
-  { label: 'الإقفال اليومي', href: '/closing', icon: Lock, keywords: 'إقفال closing' },
-  { label: 'التقارير والإقفال', href: '/reports', icon: FileBarChart, keywords: 'تقرير أرباح امتثال قيود reports profit compliance journal' },
+  { label: 'التقارير والإقفال اليومي', href: '/reports', icon: FileBarChart, keywords: 'تقرير أرباح امتثال قيود إقفال reports profit compliance journal closing' },
   { label: 'الإعدادات', href: '/settings', icon: Settings, keywords: 'مستخدم دور صلاحية نسخة احتياطية settings users roles backup' },
 ]
 

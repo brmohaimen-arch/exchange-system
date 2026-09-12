@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText } from 'lucide-react'
 import { api, openFile, downloadFile, Customer, Currency } from '@/lib/api-client'
 import { ApiError } from '@/lib/auth-provider'
+import { CurrencyFlag } from '@/components/ui/currency-flag'
 
 interface StatementData { headers: string[]; rows: string[][]; closingLine: string }
 
@@ -156,7 +157,7 @@ export default function CustomerStatementPage() {
                 onClick={() => setCurrencyFilter(ccy)}
                 className={`flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${currencyFilter === ccy ? 'bg-primary text-primary-foreground' : 'border border-border hover:bg-muted'}`}
               >
-                <span>{currencyFlag(ccy)}</span> {ccy}
+                <CurrencyFlag code={ccy} flag={currencyFlag(ccy)} /> {ccy}
               </button>
             ))}
           </div>
