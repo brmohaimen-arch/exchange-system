@@ -449,6 +449,18 @@ def list_customers(db: Session = Depends(get_db)):
     res = db.scalars(select(Customer)).all()
     return success_response(data=[customer_to_dict(c) for c in res])
 
+@router.get("/customers/next_code")
+def next_customer_code(db: Session = Depends(get_db)):
+    """Suggests the next sequential customer code (001, 002, ...) for the "new
+    customer" form to pre-fill. Looks only at existing ids that are purely
+    numeric — an older or manually-typed id like "C-1024" doesn't participate
+    in the sequence, it just doesn't collide with it either since new codes
+    are zero-padded plain digits."""
+    ids = db.scalars(select(Customer.id)).all()
+    numeric_ids = [int(cid) for cid in ids if cid.isdigit()]
+    next_num = (max(numeric_ids) + 1) if numeric_ids else 1
+    return success_response(data={"code": f"{next_num:03d}"})
+
 @router.post("/customers")
 def create_customer(data: CustomerCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
     if db.get(Customer, data.id):
@@ -704,11 +716,14 @@ def list_customer_account_entries(db: Session = Depends(get_db)):
     res = db.scalars(select(CustomerAccountEntry).order_by(CustomerAccountEntry.timestamp.desc())).all()
     return success_response(data=[customer_account_entry_to_dict(e) for e in res])
 
-def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "", date_to: str = ""):
+def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "", date_to: str = "", currency: str = ""):
     """Every buy/sell/exchange transaction and every deposit/withdraw entry for
     this customer, chronologically — the same activity the كشف حساب modal shows
     on screen. No single running balance column: the customer can hold several
-    currencies at once, so the closing line lists each one's current total instead."""
+    currencies at once, so the closing line lists each one's current total instead.
+    An optional currency filter keeps a multi-currency customer's history from
+    reading as one crowded mixed-currency list — pass e.g. "USD" to see just
+    that account's activity."""
     txs_query = select(Transaction).where(Transaction.customer_id == customer.id, Transaction.type.in_(["buy", "sell", "exchange"]))
     entries_query = select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id == customer.id)
     if date_from:
@@ -717,15 +732,19 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
     if date_to:
         txs_query = txs_query.where(Transaction.timestamp <= date_to + "T23:59:59")
         entries_query = entries_query.where(CustomerAccountEntry.timestamp <= date_to + "T23:59:59")
+    if currency:
+        entries_query = entries_query.where(CustomerAccountEntry.currency == currency)
 
     txs = db.scalars(txs_query).all()
     entries = db.scalars(entries_query).all()
 
     rows_with_ts = []
     for t in txs:
-        currency = t.to_currency if t.type == "sell" else t.from_currency
+        tx_currency = t.to_currency if t.type == "sell" else t.from_currency
+        if currency and tx_currency != currency:
+            continue
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — {t.id}"
-        rows_with_ts.append((t.timestamp, [t.timestamp, detail, f"{t.amount:,.2f}", currency, t.user]))
+        rows_with_ts.append((t.timestamp, [t.timestamp, detail, f"{t.amount:,.2f}", tx_currency, t.user]))
     for e in entries:
         detail = "إيداع في الحساب" if e.type == "deposit" else "سحب من الحساب"
         rows_with_ts.append((e.timestamp, [e.timestamp, detail, f"{e.amount:,.2f}", e.currency, e.user]))
@@ -734,26 +753,27 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
     headers = ["م", "التاريخ", "التفاصيل", "المبلغ", "العملة", "بواسطة"]
     rows = [[str(i)] + row for i, (_, row) in enumerate(rows_with_ts, start=1)]
 
-    closing_line = "الأرصدة الحالية: " + (", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in customer.balances.items()) or "لا توجد أرصدة")
+    balances = {currency: customer.balances.get(currency, 0.0)} if currency else customer.balances
+    closing_line = "الأرصدة الحالية: " + (", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in balances.items()) or "لا توجد أرصدة")
     return headers, rows, closing_line
 
 @router.get("/customers/{customer_id}/statement")
-def get_customer_statement(customer_id: str, date_from: str = "", date_to: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+def get_customer_statement(customer_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     """JSON version of the statement rows, for an on-screen filterable view (as
     opposed to the /export endpoint below, which renders a downloadable file)."""
     customer = db.get(Customer, customer_id)
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
-    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to)
+    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to, currency)
     return success_response(data={"headers": headers, "rows": rows, "closingLine": closing_line})
 
 @router.get("/customers/{customer_id}/statement/export")
-def export_customer_statement(customer_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+def export_customer_statement(customer_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     customer = db.get(Customer, customer_id)
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
 
-    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to)
+    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to, currency)
     if format == "xlsx":
         buf = build_excel(f"كشف حساب {customer.name}", headers, rows)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="statement_{customer.id}.xlsx"'})
@@ -764,14 +784,14 @@ def export_customer_statement(customer_id: str, format: str = "pdf", date_from: 
     return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="statement_{customer.id}.pdf"'})
 
 @router.post("/customers/{customer_id}/send_statement_whatsapp")
-def send_customer_statement_whatsapp(customer_id: str, date_from: str = "", date_to: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
+def send_customer_statement_whatsapp(customer_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     customer = db.get(Customer, customer_id)
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
     if not customer.phone:
         raise APIError(code="NO_PHONE", message_ar="لا يوجد رقم هاتف مسجل لهذا العميل", message_en="This customer has no phone number on file", status_code=400)
 
-    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to)
+    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to, currency)
     try:
         buf = build_statement_pdf(customer.name, customer.phone, customer.id_number, headers, rows, closing_line)
     except ArabicFontUnavailable as e:
@@ -1323,8 +1343,16 @@ def send_debt_receipt_whatsapp(debt_id: str, actor: User = Depends(get_current_u
     return success_response(data={"sent": True}, message_ar="تم إرسال الإيصال عبر واتساب بنجاح")
 
 @router.get("/movements")
-def list_movements(db: Session = Depends(get_db)):
-    res = db.scalars(select(Movement)).all()
+def list_movements(vault_id: str = "", date_from: str = "", date_to: str = "", db: Session = Depends(get_db)):
+    query = select(Movement).where(Movement.entity_type == "vault")
+    if vault_id:
+        query = query.where(Movement.entity_id == vault_id)
+    if date_from:
+        query = query.where(Movement.timestamp >= date_from)
+    if date_to:
+        query = query.where(Movement.timestamp <= date_to + " 23:59:59")
+    query = query.order_by(Movement.timestamp.desc())
+    res = db.scalars(query).all()
     return success_response(data=[movement_to_dict(m) for m in res])
 
 @router.post("/exchange/pos")

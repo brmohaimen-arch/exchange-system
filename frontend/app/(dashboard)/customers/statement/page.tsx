@@ -3,15 +3,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText } from 'lucide-react'
-import { api, openFile, downloadFile, Customer } from '@/lib/api-client'
+import { api, openFile, downloadFile, Customer, Currency } from '@/lib/api-client'
 import { ApiError } from '@/lib/auth-provider'
 
 interface StatementData { headers: string[]; rows: string[][]; closingLine: string }
 
 export default function CustomerStatementPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
+  const [currencies, setCurrencies] = useState<Currency[]>([])
   const [nameFilter, setNameFilter] = useState('')
   const [customerId, setCustomerId] = useState('')
+  const [currencyFilter, setCurrencyFilter] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [statement, setStatement] = useState<StatementData | null>(null)
@@ -22,7 +24,10 @@ export default function CustomerStatementPage() {
 
   useEffect(() => {
     api.get<Customer[]>('/customers').then(setCustomers).catch(() => {})
+    api.get<Currency[]>('/currencies').then(setCurrencies).catch(() => {})
   }, [])
+
+  useEffect(() => { setCurrencyFilter('') }, [customerId])
 
   const filteredCustomers = useMemo(
     () => customers.filter((c) => c.name.toLowerCase().includes(nameFilter.trim().toLowerCase())),
@@ -30,11 +35,17 @@ export default function CustomerStatementPage() {
   )
 
   const selectedCustomer = customers.find((c) => c.id === customerId) || null
+  const customerCurrencies = useMemo(
+    () => (selectedCustomer ? Object.keys(selectedCustomer.balances) : []),
+    [selectedCustomer]
+  )
+  const currencyFlag = (code: string) => currencies.find((c) => c.code === code)?.flag || ''
 
   const query = () => {
     const params = new URLSearchParams()
     if (dateFrom) params.set('date_from', dateFrom)
     if (dateTo) params.set('date_to', dateTo)
+    if (currencyFilter) params.set('currency', currencyFilter)
     return params.toString()
   }
 
@@ -130,6 +141,27 @@ export default function CustomerStatementPage() {
           </div>
         </div>
 
+        {customerCurrencies.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
+            <span className="text-sm font-medium text-foreground">عرض حساب:</span>
+            <button
+              onClick={() => setCurrencyFilter('')}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${!currencyFilter ? 'bg-primary text-primary-foreground' : 'border border-border hover:bg-muted'}`}
+            >
+              كل العملات
+            </button>
+            {customerCurrencies.map((ccy) => (
+              <button
+                key={ccy}
+                onClick={() => setCurrencyFilter(ccy)}
+                className={`flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${currencyFilter === ccy ? 'bg-primary text-primary-foreground' : 'border border-border hover:bg-muted'}`}
+              >
+                <span>{currencyFlag(ccy)}</span> {ccy}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
           <button
             onClick={loadStatement}
@@ -177,11 +209,28 @@ export default function CustomerStatementPage() {
               <tbody className="divide-y divide-border">
                 {statement.rows.length === 0 ? (
                   <tr><td colSpan={statement.headers.length} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذه الفترة</td></tr>
-                ) : statement.rows.map((row, i) => (
-                  <tr key={i} className="hover:bg-muted/50 transition-colors">
-                    {row.map((cell, j) => <td key={j} className="px-4 py-3">{cell}</td>)}
-                  </tr>
-                ))}
+                ) : statement.rows.map((row, i) => {
+                  // Column 2 is "التفاصيل" — only deposit/withdraw entries have a clear
+                  // in/out direction on the customer's own balance; a buy/sell/exchange
+                  // is a two-sided trade, not a simple credit or debit, so it's left
+                  // in the default color.
+                  const detail = row[2] || ''
+                  const isDeposit = detail.includes('إيداع')
+                  const isWithdraw = detail.includes('سحب من الحساب')
+                  return (
+                    <tr key={i} className="hover:bg-muted/50 transition-colors">
+                      {row.map((cell, j) => (
+                        <td
+                          key={j}
+                          dir={j === 3 && (isDeposit || isWithdraw) ? 'ltr' : undefined}
+                          className={`px-4 py-3 ${j === 3 && isDeposit ? 'font-bold text-success' : j === 3 && isWithdraw ? 'font-bold text-danger' : ''}`}
+                        >
+                          {j === 3 && isDeposit ? `+${cell}` : j === 3 && isWithdraw ? `-${cell}` : cell}
+                        </td>
+                      ))}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

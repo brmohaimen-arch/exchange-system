@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, FormEvent, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle, Percent } from 'lucide-react'
-import { api, newId, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction, Customer } from '@/lib/api-client'
+import { api, newId, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction, Customer, Movement } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -33,6 +33,7 @@ const txTypeLabels: Record<string, string> = { buy: 'شراء', sell: 'بيع', 
 
 const tabs = [
   { key: 'vaults', label: 'الخزنات', icon: Landmark },
+  { key: 'movements', label: 'حركة اليوم', icon: ArrowRightLeft },
   { key: 'branches', label: 'الفروع', icon: MapPin },
   { key: 'banks', label: 'البنوك', icon: Building2 },
   { key: 'shifts', label: 'الورديات', icon: Clock },
@@ -106,6 +107,10 @@ function TreasuryPageInner() {
   const [inventoryCounts, setInventoryCounts] = useState<InventoryCountDTO[]>([])
   const [expenses, setExpenses] = useState<DailyExpenseDTO[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
+  const [movements, setMovements] = useState<Movement[]>([])
+  const [movementsDate, setMovementsDate] = useState(new Date().toISOString().slice(0, 10))
+  const [movementsVaultId, setMovementsVaultId] = useState('')
+  const [movementsLoading, setMovementsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -206,6 +211,34 @@ function TreasuryPageInner() {
   }
 
   useEffect(() => { load() }, [])
+
+  const loadMovements = async () => {
+    setMovementsLoading(true)
+    try {
+      const params = new URLSearchParams({ date_from: movementsDate, date_to: movementsDate })
+      if (movementsVaultId) params.set('vault_id', movementsVaultId)
+      const res = await api.get<Movement[]>(`/movements?${params.toString()}`)
+      setMovements(res)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل حركة الخزنة')
+    } finally {
+      setMovementsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (tab === 'movements') loadMovements()
+  }, [tab, movementsDate, movementsVaultId])
+
+  const movementsTotals = useMemo(() => {
+    const totals: Record<string, { in: number; out: number }> = {}
+    for (const m of movements) {
+      if (!totals[m.currency]) totals[m.currency] = { in: 0, out: 0 }
+      totals[m.currency].in += m.amountIn
+      totals[m.currency].out += m.amountOut
+    }
+    return totals
+  }, [movements])
 
   const accountOptions: AccountOption[] = useMemo(() => [
     ...vaults.map((v) => ({ type: 'vault' as const, id: v.id, label: `${v.name} (خزنة)` })),
@@ -1043,6 +1076,88 @@ function TreasuryPageInner() {
             <TablePagination page={transfersPage} totalItems={sortedTransfers.length} onPageChange={setTransfersPage} />
           </div>
         </>
+      )}
+
+      {tab === 'movements' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
+              <input
+                type="date"
+                value={movementsDate}
+                onChange={(e) => setMovementsDate(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">الخزنة</label>
+              <select
+                value={movementsVaultId}
+                onChange={(e) => setMovementsVaultId(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="">كل الخزنات</option>
+                {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {Object.keys(movementsTotals).length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {Object.entries(movementsTotals).map(([ccy, t]) => (
+                <div key={ccy} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">{ccy}</p>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-1 font-bold text-success"><ArrowDownCircle className="h-4 w-4" /> +{t.in.toLocaleString()}</span>
+                    <span className="flex items-center gap-1 font-bold text-danger"><ArrowUpCircle className="h-4 w-4" /> -{t.out.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+            <div className="border-b border-border px-6 py-4 bg-secondary/30">
+              <h3 className="text-lg font-semibold text-foreground">حركة الخزنة — دخول وخروج</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-right">
+                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                  <tr>
+                    <th className="px-6 py-4 font-medium">الوقت</th>
+                    <th className="px-6 py-4 font-medium">الخزنة</th>
+                    <th className="px-6 py-4 font-medium">النوع</th>
+                    <th className="px-6 py-4 font-medium">المبلغ</th>
+                    <th className="px-6 py-4 font-medium">الرصيد بعد</th>
+                    <th className="px-6 py-4 font-medium">بواسطة</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {movementsLoading ? (
+                    <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
+                  ) : movements.length === 0 ? (
+                    <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
+                  ) : movements.map((m) => {
+                    const isIn = m.amountIn > 0
+                    return (
+                      <tr key={m.id} className="hover:bg-muted/50 transition-colors">
+                        <td className="px-6 py-4 text-muted-foreground">{m.timestamp}</td>
+                        <td className="px-6 py-4 font-medium text-foreground">{m.entityName}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{m.type}</td>
+                        <td className={`px-6 py-4 font-bold ${isIn ? 'text-success' : 'text-danger'}`} dir="ltr">
+                          {isIn ? '+' : '-'}{(isIn ? m.amountIn : m.amountOut).toLocaleString()} {m.currency}
+                        </td>
+                        <td className="px-6 py-4">{m.balanceAfter.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{m.user}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       )}
 
       {tab === 'branches' && (

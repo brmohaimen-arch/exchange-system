@@ -225,6 +225,22 @@ export interface Vault {
   lastMovement: string | null
 }
 
+export interface Movement {
+  id: string
+  timestamp: string
+  entityType: string
+  entityId: string
+  entityName: string
+  currency: string
+  type: string
+  amountIn: number
+  amountOut: number
+  balanceBefore: number
+  balanceAfter: number
+  referenceId: string | null
+  user: string
+}
+
 export interface Transaction {
   id: string
   type: string

@@ -64,6 +64,8 @@ function CustomersPageInner() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [debts, setDebts] = useState<Debt[]>([])
   const [currencies, setCurrencies] = useState<Currency[]>([])
+  const currencyFlag = (code: string) => currencies.find((c) => c.code === code)?.flag || ''
+  const currencyName = (code: string) => currencies.find((c) => c.code === code)?.nameAr || code
   const [documents, setDocuments] = useState<CustomerDocument[]>([])
   const [vaults, setVaults] = useState<Vault[]>([])
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
@@ -157,12 +159,18 @@ function CustomersPageInner() {
 
   useEffect(() => { load() }, [])
 
-  const openCreate = () => {
+  const openCreate = async () => {
     setEditingCustomer(null)
     setForm(emptyForm())
     setBalanceRows([])
     setFormError('')
     setShowModal(true)
+    try {
+      const { code } = await api.get<{ code: string }>('/customers/next_code')
+      setForm((f) => ({ ...f, code }))
+    } catch {
+      // best-effort suggestion — the field stays editable either way
+    }
   }
 
   const openEdit = (c: Customer) => {
@@ -691,10 +699,19 @@ function CustomersPageInner() {
                     <td className="px-6 py-4">{customer.name}</td>
                     <td className="px-6 py-4 text-muted-foreground">{typeLabels[customer.type] || customer.type}</td>
                     <td className="px-6 py-4" dir="ltr">{customer.phone}</td>
-                    <td className="px-6 py-4 font-bold">
-                      {Object.keys(customer.balances).length === 0
-                        ? '—'
-                        : Object.entries(customer.balances).map(([ccy, amt]) => `${amt.toLocaleString()} ${ccy}`).join(' / ')}
+                    <td className="px-6 py-4">
+                      {Object.keys(customer.balances).length === 0 ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-1">
+                          {Object.entries(customer.balances).map(([ccy, amt]) => (
+                            <span key={ccy} className="inline-flex w-fit items-center gap-1 rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-bold">
+                              <span>{currencyFlag(ccy)}</span>
+                              <span>{amt.toLocaleString()} {ccy}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-muted-foreground">{customer.debtLimit.toLocaleString()} د.ل</td>
                     <td className="px-6 py-4 text-muted-foreground">{customer.profitPct}%</td>
@@ -1079,10 +1096,10 @@ function CustomersPageInner() {
                   onChange={(e) => setForm({ ...form, code: e.target.value })}
                   disabled={!!editingCustomer}
                   dir="ltr"
-                  placeholder="مثال: C-1024"
+                  placeholder="مثال: 001"
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:bg-muted disabled:text-muted-foreground"
                 />
-                {!editingCustomer && <p className="mt-1 text-xs text-muted-foreground">الرمز الذي تحدده أنت لهذا العميل — لا يمكن تغييره بعد الإنشاء</p>}
+                {!editingCustomer && <p className="mt-1 text-xs text-muted-foreground">رقم مقترح تلقائياً بالتسلسل — يمكنك تعديله إذا احتجت رمزاً مختلفاً، ولا يمكن تغييره بعد الإنشاء</p>}
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">اسم العميل *</label>
@@ -1278,13 +1295,25 @@ function CustomersPageInner() {
               <div className="flex justify-between"><span className="text-muted-foreground">حد الدين</span><span className="font-medium">{selected.debtLimit.toLocaleString()} د.ل</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">نسبة الربح</span><span className="font-medium">{selected.profitPct}%</span></div>
               <div className="pt-2 border-t border-border">
-                <p className="text-muted-foreground mb-1">الأرصدة</p>
+                <p className="text-muted-foreground mb-2">الحسابات — كل عملة بحساب مستقل</p>
                 {Object.keys(selected.balances).length === 0 ? (
                   <p className="text-muted-foreground">لا توجد أرصدة</p>
                 ) : (
-                  Object.entries(selected.balances).map(([ccy, amt]) => (
-                    <div key={ccy} className="flex justify-between"><span>{ccy}</span><span className="font-medium">{amt.toLocaleString()}</span></div>
-                  ))
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {Object.entries(selected.balances).map(([ccy, amt]) => (
+                      <div key={ccy} className="rounded-lg border border-border bg-secondary/30 p-3">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-lg leading-none">{currencyFlag(ccy)}</span>
+                          <span className="text-xs font-medium text-muted-foreground">{currencyName(ccy)}</span>
+                        </div>
+                        <p className="text-xl font-bold text-foreground" dir="ltr">{amt.toLocaleString()} <span className="text-sm font-medium text-muted-foreground">{ccy}</span></p>
+                        <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                          <span>حساب جاري</span>
+                          <span dir="ltr">{selected.id}-{ccy}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
               {selected.notes && (
@@ -1703,7 +1732,9 @@ function CustomersPageInner() {
                   {Object.keys(statementCustomer.balances).length === 0 ? (
                     <span className="text-sm text-muted-foreground">لا توجد أرصدة</span>
                   ) : Object.entries(statementCustomer.balances).map(([ccy, amt]) => (
-                    <span key={ccy} className="rounded-md bg-secondary px-3 py-1 text-sm font-medium">{amt.toLocaleString()} {ccy}</span>
+                    <span key={ccy} className="flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1 text-sm font-medium" dir="ltr">
+                      <span>{currencyFlag(ccy)}</span>{amt.toLocaleString()} {ccy}
+                    </span>
                   ))}
                 </div>
               </div>
@@ -1780,7 +1811,9 @@ function CustomersPageInner() {
                               {e.type === 'deposit' ? 'إيداع' : 'سحب'}
                             </span>
                           </td>
-                          <td className="px-3 py-2 font-medium">{e.amount.toLocaleString()} {e.currency}</td>
+                          <td className={`px-3 py-2 font-bold ${e.type === 'deposit' ? 'text-success' : 'text-danger'}`} dir="ltr">
+                            {e.type === 'deposit' ? '+' : '-'}{e.amount.toLocaleString()} {e.currency}
+                          </td>
                           <td className="px-3 py-2 text-muted-foreground">{e.balanceBefore.toLocaleString()}</td>
                           <td className="px-3 py-2 font-medium">{e.balanceAfter.toLocaleString()}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.vaultName || e.bankAccountName || '—'}</td>
