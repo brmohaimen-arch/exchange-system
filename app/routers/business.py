@@ -13,6 +13,7 @@ from ..models import (
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
+from ..core.export_labels import TX_TYPE_LABELS_AR, PAYMENT_METHOD_LABELS_AR, TX_STATUS_LABELS_AR
 from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
 from ..export_utils import build_excel, build_pdf, build_receipt_pdf, build_statement_pdf, ArabicFontUnavailable
@@ -1172,7 +1173,11 @@ def list_transactions(db: Session = Depends(get_db)):
 def _transactions_export_rows(db: Session):
     res = db.scalars(select(Transaction).order_by(Transaction.timestamp.desc())).all()
     headers = ["رقم العملية", "النوع", "التاريخ", "العميل", "الخزنة", "من عملة", "إلى عملة", "المبلغ", "السعر", "العمولة", "الإجمالي", "طريقة الدفع", "الحالة", "المستخدم"]
-    rows = [[t.id, t.type, t.timestamp, t.customer_name, t.vault_name, t.from_currency, t.to_currency, t.amount, t.rate, t.commission, t.total_amount, t.payment_method, t.status, t.user] for t in res]
+    rows = [[
+        t.id, TX_TYPE_LABELS_AR.get(t.type, t.type), t.timestamp, t.customer_name, t.vault_name, t.from_currency, t.to_currency,
+        t.amount, t.rate, t.commission, t.total_amount, PAYMENT_METHOD_LABELS_AR.get(t.payment_method, t.payment_method),
+        TX_STATUS_LABELS_AR.get(t.status, t.status), t.user,
+    ] for t in res]
     return "سجل العمليات", headers, rows
 
 @router.get("/transactions/export")
@@ -1207,8 +1212,8 @@ def send_transactions_export_whatsapp(format: str = "pdf", actor: User = Depends
     db.commit()
     return success_response(data={"sent": True}, message_ar="تم إرسال التقرير عبر واتساب بنجاح")
 
-_RECEIPT_TYPE_LABELS = {"buy": "شراء عملة", "sell": "بيع عملة", "exchange": "تبديل عملة", "deposit": "إيداع في حساب عميل", "withdraw": "سحب من حساب عميل"}
-_RECEIPT_PAYMENT_LABELS = {"cash": "نقداً", "customer_account": "حساب العميل", "bank_account": "حساب بنكي", "debt": "دين (آجل)"}
+_RECEIPT_TYPE_LABELS = TX_TYPE_LABELS_AR
+_RECEIPT_PAYMENT_LABELS = PAYMENT_METHOD_LABELS_AR
 
 def _build_transaction_receipt(db: Session, transaction_id: str):
     """Builds the receipt PDF for a transaction id — falling back to its

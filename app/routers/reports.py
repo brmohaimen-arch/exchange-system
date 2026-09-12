@@ -9,6 +9,7 @@ from ..database import get_db
 from ..models import Transaction, Debt, Customer, ExchangeRate, User, ApprovalRequest, AuditAction
 from ..core.responses import success_response
 from ..core.errors import APIError
+from ..core.export_labels import TX_TYPE_LABELS_AR, DEBT_STATUS_LABELS_AR
 from ..auth_deps import require_permission
 from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
 from ..whatsapp_gateway import send_whatsapp_document, get_setting as get_whatsapp_setting
@@ -142,7 +143,7 @@ def _profit_report_data(db: Session, date_from: str = "", date_to: str = ""):
     txs = db.scalars(query.order_by(Transaction.timestamp.desc())).all()
 
     headers = ["رقم العملية", "النوع", "التاريخ", "العميل", "من عملة", "إلى عملة", "المبلغ", "السعر", "العمولة", "الربح المتوقع"]
-    rows = [[t.id, t.type, t.timestamp, t.customer_name, t.from_currency, t.to_currency, t.amount, t.rate, t.commission, round(t.expected_profit or 0.0, 3)] for t in txs]
+    rows = [[t.id, TX_TYPE_LABELS_AR.get(t.type, t.type), t.timestamp, t.customer_name, t.from_currency, t.to_currency, t.amount, t.rate, t.commission, round(t.expected_profit or 0.0, 3)] for t in txs]
     return "تقرير الأرباح", headers, rows
 
 @router.get("/profit/export")
@@ -200,7 +201,7 @@ def get_debts_summary(db: Session = Depends(get_db)):
 def _debts_summary_data(db: Session, date_from: str = "", date_to: str = ""):
     all_debts = db.scalars(select(Debt).where(Debt.status != "paid", Debt.status != "cancelled")).all()
     headers = ["رقم الدين", "العميل", "المبلغ", "المتبقي", "العملة", "تاريخ الاستحقاق", "الحالة"]
-    rows = [[d.id, d.customer_name, d.amount, d.remaining_amount, d.currency, d.due_date, d.status] for d in all_debts]
+    rows = [[d.id, d.customer_name, d.amount, d.remaining_amount, d.currency, d.due_date, DEBT_STATUS_LABELS_AR.get(d.status, d.status)] for d in all_debts]
     return "ملخص الديون", headers, rows
 
 @router.get("/debts-summary/export")
@@ -244,7 +245,7 @@ def _cancelled_tx_data(db: Session, date_from: str = "", date_to: str = ""):
     rows_data = _cancelled_tx_rows(db)
     headers = ["رقم العملية", "النوع", "العميل", "المبلغ", "الإجمالي", "بواسطة", "الفرع", "التاريخ", "سبب الإلغاء", "طلب الإلغاء بواسطة"]
     rows = [[
-        r["id"], r["type"], r["customerName"], r["amount"], r["totalAmount"], r["user"], r["branch"], r["timestamp"],
+        r["id"], TX_TYPE_LABELS_AR.get(r["type"], r["type"]), r["customerName"], r["amount"], r["totalAmount"], r["user"], r["branch"], r["timestamp"],
         r["reversalReason"] or "—", r["reversalRequestedBy"] or "—",
     ] for r in rows_data]
     return "العمليات الملغاة", headers, rows

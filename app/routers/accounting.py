@@ -8,6 +8,7 @@ from ..models import (
 from ..tracking import create_audit_log, verify_audit_chain
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
+from ..core.export_labels import JOURNAL_STATUS_LABELS_AR
 from ..auth_deps import require_permission
 from ..id_gen import new_id
 from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
@@ -91,7 +92,7 @@ def list_journal_entries(db: Session = Depends(get_db)):
 def _journal_entries_export_rows(db: Session):
     res = db.scalars(select(JournalEntry).order_by(JournalEntry.date.desc())).all()
     headers = ["رقم القيد", "التاريخ", "نوع العملية", "المرجع", "الوصف", "المستخدم", "الحالة"]
-    rows = [[jv.id, jv.date, jv.tx_type, jv.reference, jv.description, jv.user, jv.status] for jv in res]
+    rows = [[jv.id, jv.date, jv.tx_type, jv.reference, jv.description, jv.user, JOURNAL_STATUS_LABELS_AR.get(jv.status, jv.status)] for jv in res]
     return "القيود المحاسبية", headers, rows
 
 @router.get("/journal_entries/export")
