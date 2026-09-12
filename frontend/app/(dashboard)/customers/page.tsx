@@ -79,6 +79,7 @@ function CustomersPageInner() {
   const [showModal, setShowModal] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null)
   const [selected, setSelected] = useState<Customer | null>(null)
+  const [selectedCurrency, setSelectedCurrency] = useState('')
   const [form, setForm] = useState(emptyForm())
   const [balanceRows, setBalanceRows] = useState<BalanceRow[]>([])
   const [saving, setSaving] = useState(false)
@@ -107,6 +108,7 @@ function CustomersPageInner() {
   const [dwSaving, setDwSaving] = useState(false)
 
   const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null)
+  const [statementCurrency, setStatementCurrency] = useState('')
 
   const [customersPage, setCustomersPage] = useState(1)
   const [debtsPage, setDebtsPage] = useState(1)
@@ -471,11 +473,12 @@ function CustomersPageInner() {
     }
   }
 
-  const sendStatementWhatsapp = async (c: Customer) => {
+  const sendStatementWhatsapp = async (c: Customer, currency: string) => {
     setSendingStatementId(c.id)
     setError('')
     try {
-      await api.post(`/customers/${c.id}/send_statement_whatsapp`, {})
+      const qs = currency ? `?currency=${encodeURIComponent(currency)}` : ''
+      await api.post(`/customers/${c.id}/send_statement_whatsapp${qs}`, {})
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر إرسال كشف الحساب عبر واتساب')
     } finally {
@@ -555,14 +558,23 @@ function CustomersPageInner() {
   const pagedUnlinkedDocuments = paginate(unlinkedDocuments, unlinkedDocsPage)
 
   const statementEntries = useMemo(
-    () => accountEntries.filter((e) => e.customerId === statementCustomer?.id).sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
-    [accountEntries, statementCustomer]
+    () => accountEntries
+      .filter((e) => e.customerId === statementCustomer?.id && (!statementCurrency || e.currency === statementCurrency))
+      .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
+    [accountEntries, statementCustomer, statementCurrency]
   )
   const pagedStatementEntries = paginate(statementEntries, statementPage)
 
   const statementTransactions = useMemo(
-    () => transactions.filter((t) => t.customerId === statementCustomer?.id && ['buy', 'sell', 'exchange'].includes(t.type)).sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
-    [transactions, statementCustomer]
+    () => transactions
+      .filter((t) => {
+        if (t.customerId !== statementCustomer?.id || !['buy', 'sell', 'exchange'].includes(t.type)) return false
+        if (!statementCurrency) return true
+        const txCurrency = t.type === 'sell' ? t.toCurrency : t.fromCurrency
+        return txCurrency === statementCurrency
+      })
+      .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
+    [transactions, statementCustomer, statementCurrency]
   )
   const pagedStatementTransactions = paginate(statementTransactions, statementTxPage)
 
@@ -723,10 +735,21 @@ function CustomersPageInner() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <button onClick={() => setSelected(customer)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                        <button
+                          onClick={() => { setSelected(customer); setSelectedCurrency(Object.keys(customer.balances)[0] || '') }}
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors"
+                        >
                           <Eye className="h-3.5 w-3.5" /> عرض
                         </button>
-                        <button onClick={() => { setStatementCustomer(customer); setStatementPage(1); setStatementTxPage(1) }} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted transition-colors">
+                        <button
+                          onClick={() => {
+                            setStatementCustomer(customer)
+                            setStatementCurrency(Object.keys(customer.balances)[0] || '')
+                            setStatementPage(1)
+                            setStatementTxPage(1)
+                          }}
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted transition-colors"
+                        >
                           <FileText className="h-3.5 w-3.5" /> كشف الحساب
                         </button>
                         {canManage && customer.isActive && (
@@ -1295,25 +1318,36 @@ function CustomersPageInner() {
               <div className="flex justify-between"><span className="text-muted-foreground">حد الدين</span><span className="font-medium">{selected.debtLimit.toLocaleString()} د.ل</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">نسبة الربح</span><span className="font-medium">{selected.profitPct}%</span></div>
               <div className="pt-2 border-t border-border">
-                <p className="text-muted-foreground mb-2">الحسابات — كل عملة بحساب مستقل</p>
+                <p className="text-muted-foreground mb-2">الحساب — كل عملة حساب مستقل</p>
                 {Object.keys(selected.balances).length === 0 ? (
-                  <p className="text-muted-foreground">لا توجد أرصدة</p>
+                  <p className="text-muted-foreground">لا توجد حسابات لهذا العميل بعد</p>
                 ) : (
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {Object.entries(selected.balances).map(([ccy, amt]) => (
-                      <div key={ccy} className="rounded-lg border border-border bg-secondary/30 p-3">
+                  <>
+                    <select
+                      value={selectedCurrency}
+                      onChange={(e) => setSelectedCurrency(e.target.value)}
+                      className="mb-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      {Object.keys(selected.balances).map((ccy) => (
+                        <option key={ccy} value={ccy}>{currencyFlag(ccy)} {currencyName(ccy)} ({ccy})</option>
+                      ))}
+                    </select>
+                    {selectedCurrency && (
+                      <div className="rounded-lg border border-border bg-secondary/30 p-3">
                         <div className="flex items-center gap-2 mb-1.5">
-                          <span className="text-lg leading-none">{currencyFlag(ccy)}</span>
-                          <span className="text-xs font-medium text-muted-foreground">{currencyName(ccy)}</span>
+                          <span className="text-lg leading-none">{currencyFlag(selectedCurrency)}</span>
+                          <span className="text-xs font-medium text-muted-foreground">{currencyName(selectedCurrency)}</span>
                         </div>
-                        <p className="text-xl font-bold text-foreground" dir="ltr">{amt.toLocaleString()} <span className="text-sm font-medium text-muted-foreground">{ccy}</span></p>
+                        <p className="text-xl font-bold text-foreground" dir="ltr">
+                          {(selected.balances[selectedCurrency] ?? 0).toLocaleString()} <span className="text-sm font-medium text-muted-foreground">{selectedCurrency}</span>
+                        </p>
                         <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
                           <span>حساب جاري</span>
-                          <span dir="ltr">{selected.id}-{ccy}</span>
+                          <span dir="ltr">{selected.id}-{selectedCurrency}</span>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    )}
+                  </>
                 )}
               </div>
               {selected.notes && (
@@ -1697,7 +1731,7 @@ function CustomersPageInner() {
               <h3 className="text-lg font-semibold text-foreground">كشف حساب — {statementCustomer.name}</h3>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => sendStatementWhatsapp(statementCustomer)}
+                  onClick={() => sendStatementWhatsapp(statementCustomer, statementCurrency)}
                   disabled={sendingStatementId === statementCustomer.id}
                   className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors disabled:opacity-50"
                 >
@@ -1727,16 +1761,25 @@ function CustomersPageInner() {
                 </div>
               </div>
               <div className="mb-4">
-                <p className="text-sm text-muted-foreground mb-1">الرصيد الحالي</p>
-                <div className="flex flex-wrap gap-3">
-                  {Object.keys(statementCustomer.balances).length === 0 ? (
-                    <span className="text-sm text-muted-foreground">لا توجد أرصدة</span>
-                  ) : Object.entries(statementCustomer.balances).map(([ccy, amt]) => (
-                    <span key={ccy} className="flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1 text-sm font-medium" dir="ltr">
-                      <span>{currencyFlag(ccy)}</span>{amt.toLocaleString()} {ccy}
+                <p className="text-sm font-medium text-foreground mb-2">الحساب</p>
+                {Object.keys(statementCustomer.balances).length === 0 ? (
+                  <span className="text-sm text-muted-foreground">لا توجد حسابات لهذا العميل بعد</span>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <select
+                      value={statementCurrency}
+                      onChange={(e) => { setStatementCurrency(e.target.value); setStatementPage(1); setStatementTxPage(1) }}
+                      className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      {Object.keys(statementCustomer.balances).map((ccy) => (
+                        <option key={ccy} value={ccy}>{currencyFlag(ccy)} {currencyName(ccy)} ({ccy})</option>
+                      ))}
+                    </select>
+                    <span className="flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1.5 text-lg font-bold" dir="ltr">
+                      {(statementCustomer.balances[statementCurrency] ?? 0).toLocaleString()} {statementCurrency}
                     </span>
-                  ))}
-                </div>
+                  </div>
+                )}
               </div>
               <div className="mb-4">
                 <p className="text-sm font-medium text-foreground mb-2">معاملات الصرافة (شراء / بيع / تبديل)</p>
