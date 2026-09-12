@@ -1095,12 +1095,6 @@ def pay_debt(debt_id: str, data: DebtPayment, actor: User = Depends(require_perm
         debt.status = "paid"
     else:
         debt.status = "partially_paid"
-        
-    customer = db.get(Customer, debt.customer_id)
-    if customer:
-        bals = customer.balances.copy()
-        bals[debt.currency] = bals.get(debt.currency, 0.0) + data.amount
-        customer.balances = bals
 
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="Debt", entity_id=debt.id, description=f"تسديد دفعة دين بقيمة {data.amount} {debt.currency}")
     db.commit()
