@@ -142,6 +142,22 @@ class Debt(Base):
     payment_amount: Mapped[float] = mapped_column(Float, default=0.0)  # scheduled installment amount
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     transaction_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+class DebtPaymentRecord(Base):
+    """One row per payment made against a debt — Debt itself only keeps the
+    running paid_amount/remaining_amount, so without this there'd be no way to
+    show individual debt payments on a customer's account statement."""
+    __tablename__ = "debt_payments"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    debt_id: Mapped[str] = mapped_column(String(50), ForeignKey("debts.id"))
+    customer_id: Mapped[str] = mapped_column(String(50), ForeignKey("customers.id"))
+    customer_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+    user: Mapped[str] = mapped_column(String(100), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class Bank(Base):
     __tablename__ = "banks"

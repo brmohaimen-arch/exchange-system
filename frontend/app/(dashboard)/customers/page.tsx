@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent, Suspense } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, Printer, Download, CreditCard, MessageCircle } from 'lucide-react'
-import { api, newId, openFile, uploadFile, Customer, Debt, Currency, CustomerDocument, CustomerAccountEntry, Vault, BankAccount, Transaction } from '@/lib/api-client'
+import { Plus, Eye, Pencil, Trash2, X, Loader2, Users, Landmark, HandCoins, FileText, Upload, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Printer, Download, CreditCard, MessageCircle } from 'lucide-react'
+import { api, newId, openFile, uploadFile, Customer, Debt, DebtPaymentRecord, Currency, CustomerDocument, CustomerAccountEntry, Vault, BankAccount, Transaction } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -72,6 +72,7 @@ function CustomersPageInner() {
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
   const [accountEntries, setAccountEntries] = useState<CustomerAccountEntry[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [debtPayments, setDebtPayments] = useState<DebtPaymentRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [importMsg, setImportMsg] = useState('')
@@ -108,6 +109,11 @@ function CustomersPageInner() {
   const [dwError, setDwError] = useState('')
   const [dwSaving, setDwSaving] = useState(false)
 
+  const [transferCustomer, setTransferCustomer] = useState<Customer | null>(null)
+  const [transferForm, setTransferForm] = useState({ toCustomerId: '', currency: 'LYD', amount: '', notes: '' })
+  const [transferError, setTransferError] = useState('')
+  const [transferSaving, setTransferSaving] = useState(false)
+
   const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null)
   const [statementCurrency, setStatementCurrency] = useState('')
 
@@ -117,6 +123,7 @@ function CustomersPageInner() {
   const [unlinkedDocsPage, setUnlinkedDocsPage] = useState(1)
   const [statementPage, setStatementPage] = useState(1)
   const [statementTxPage, setStatementTxPage] = useState(1)
+  const [statementDebtPage, setStatementDebtPage] = useState(1)
 
   const [connectingDoc, setConnectingDoc] = useState<CustomerDocument | null>(null)
   const [connectCustomerId, setConnectCustomerId] = useState('')
@@ -135,7 +142,7 @@ function CustomersPageInner() {
 
   const load = async () => {
     try {
-      const [custs, debtsData, currs, docs, v, ba, ae, tx] = await Promise.all([
+      const [custs, debtsData, currs, docs, v, ba, ae, tx, dp] = await Promise.all([
         api.get<Customer[]>('/customers'),
         api.get<Debt[]>('/debts'),
         api.get<Currency[]>('/currencies'),
@@ -144,6 +151,7 @@ function CustomersPageInner() {
         api.get<BankAccount[]>('/bank_accounts'),
         api.get<CustomerAccountEntry[]>('/customer_account_entries'),
         api.get<Transaction[]>('/transactions'),
+        api.get<DebtPaymentRecord[]>('/debt_payments'),
       ])
       setCustomers(custs)
       setDebts(debtsData)
@@ -153,6 +161,7 @@ function CustomersPageInner() {
       setBankAccounts(ba)
       setAccountEntries(ae)
       setTransactions(tx)
+      setDebtPayments(dp)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل بيانات العملاء')
     } finally {
@@ -324,6 +333,42 @@ function CustomersPageInner() {
       setDwError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
     } finally {
       setDwSaving(false)
+    }
+  }
+
+  const openTransfer = (c: Customer) => {
+    setTransferCustomer(c)
+    setTransferForm({ toCustomerId: '', currency: Object.keys(c.balances)[0] || 'LYD', amount: '', notes: '' })
+    setTransferError('')
+  }
+
+  const submitTransfer = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!transferCustomer) return
+    setTransferError('')
+    const amount = parseFloat(transferForm.amount)
+    if (!transferForm.toCustomerId) {
+      setTransferError('اختر العميل المستلم')
+      return
+    }
+    if (!amount || amount <= 0) {
+      setTransferError('أدخل مبلغاً صحيحاً')
+      return
+    }
+    setTransferSaving(true)
+    try {
+      await api.post(`/customers/${transferCustomer.id}/transfer`, {
+        to_customer_id: transferForm.toCustomerId,
+        currency: transferForm.currency,
+        amount,
+        notes: transferForm.notes.trim() || null,
+      })
+      setTransferCustomer(null)
+      await load()
+    } catch (err) {
+      setTransferError(err instanceof ApiError ? err.message : 'تعذر تنفيذ التحويل')
+    } finally {
+      setTransferSaving(false)
     }
   }
 
@@ -543,6 +588,45 @@ function CustomersPageInner() {
 
   const openDebtsCount = debts.filter((d) => d.status !== 'paid').length
 
+  // A customer's displayed balance must net against what they still owe —
+  // otherwise "1,600 LYD" reads as available cash even when 1,800 of it is
+  // already spoken for by an open debt. Keyed by customerId -> currency so a
+  // customer with multiple currency accounts nets each one independently.
+  const debtsByCustomerCurrency = useMemo(() => {
+    const map: Record<string, Record<string, number>> = {}
+    for (const d of debts) {
+      if (d.status === 'paid') continue
+      if (!map[d.customerId]) map[d.customerId] = {}
+      map[d.customerId][d.currency] = (map[d.customerId][d.currency] || 0) + d.remainingAmount
+    }
+    return map
+  }, [debts])
+
+  // Union of balance currencies and debt currencies — a customer can owe a
+  // debt in a currency they hold no balance in (shows as a pure negative).
+  const customerCurrencies = (customer: Customer) =>
+    Array.from(new Set([...Object.keys(customer.balances), ...Object.keys(debtsByCustomerCurrency[customer.id] || {})]))
+
+  const netBalance = (customer: Customer, ccy: string) =>
+    (customer.balances[ccy] ?? 0) - (debtsByCustomerCurrency[customer.id]?.[ccy] ?? 0)
+
+  // Company-wide equivalent: total customer balances vs. total open debt, per currency.
+  const companyNetByCurrency = useMemo(() => {
+    const map: Record<string, { balance: number; debt: number }> = {}
+    for (const c of customers) {
+      for (const [ccy, amt] of Object.entries(c.balances)) {
+        if (!map[ccy]) map[ccy] = { balance: 0, debt: 0 }
+        map[ccy].balance += amt
+      }
+    }
+    for (const d of debts) {
+      if (d.status === 'paid') continue
+      if (!map[d.currency]) map[d.currency] = { balance: 0, debt: 0 }
+      map[d.currency].debt += d.remainingAmount
+    }
+    return map
+  }, [customers, debts])
+
   // Newest-first, capped to a page — lists arrive in insertion order from the
   // server, so reversing (or sorting by timestamp where one exists) puts the
   // newest record first before slicing to a page.
@@ -583,6 +667,17 @@ function CustomersPageInner() {
     () => documents.filter((d) => d.customerId === statementCustomer?.id),
     [documents, statementCustomer]
   )
+
+  const statementDebtHistory = useMemo(() => {
+    const created = debts
+      .filter((d) => d.customerId === statementCustomer?.id && (!statementCurrency || d.currency === statementCurrency))
+      .map((d) => ({ key: `debt_${d.id}`, kind: 'created' as const, amount: d.amount, currency: d.currency, user: d.createdBy || '—', timestamp: d.startDate }))
+    const paid = debtPayments
+      .filter((p) => p.customerId === statementCustomer?.id && (!statementCurrency || p.currency === statementCurrency))
+      .map((p) => ({ key: `debtpay_${p.id}`, kind: 'paid' as const, amount: p.amount, currency: p.currency, user: p.user, timestamp: p.timestamp }))
+    return [...created, ...paid].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
+  }, [debts, debtPayments, statementCustomer, statementCurrency])
+  const pagedStatementDebtHistory = paginate(statementDebtHistory, statementDebtPage)
 
   return (
     <div className="space-y-6">
@@ -684,6 +779,30 @@ function CustomersPageInner() {
         </button>
       </div>
 
+      {tab === 'customers' && Object.keys(companyNetByCurrency).length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Object.entries(companyNetByCurrency).map(([ccy, { balance, debt }]) => {
+            const net = balance - debt
+            return (
+              <div key={ccy} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                <div className="flex items-center gap-2 mb-1">
+                  <CurrencyFlag code={ccy} flag={currencyFlag(ccy)} className="h-4 w-6" />
+                  <span className="text-xs font-medium text-muted-foreground">الوضع الإجمالي — {currencyName(ccy)}</span>
+                </div>
+                <p className={`text-lg font-bold ${net < 0 ? 'text-danger' : 'text-success'}`} dir="ltr">
+                  {net.toLocaleString()} <span className="text-xs font-medium text-muted-foreground">{ccy}</span>
+                </p>
+                {debt > 0 && (
+                  <p className="mt-0.5 text-[11px] text-muted-foreground" dir="ltr">
+                    أرصدة {balance.toLocaleString()} − ديون {debt.toLocaleString()}
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {tab === 'customers' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
@@ -713,16 +832,22 @@ function CustomersPageInner() {
                     <td className="px-6 py-4 text-muted-foreground">{typeLabels[customer.type] || customer.type}</td>
                     <td className="px-6 py-4" dir="ltr">{customer.phone}</td>
                     <td className="px-6 py-4">
-                      {Object.keys(customer.balances).length === 0 ? (
+                      {customerCurrencies(customer).length === 0 ? (
                         <span className="text-muted-foreground">—</span>
                       ) : (
                         <div className="flex flex-col gap-1">
-                          {Object.entries(customer.balances).map(([ccy, amt]) => (
-                            <span key={ccy} className="inline-flex w-fit items-center gap-1 rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-bold">
-                              <CurrencyFlag code={ccy} flag={currencyFlag(ccy)} />
-                              <span>{amt.toLocaleString()} {ccy}</span>
-                            </span>
-                          ))}
+                          {customerCurrencies(customer).map((ccy) => {
+                            const net = netBalance(customer, ccy)
+                            return (
+                              <span
+                                key={ccy}
+                                className={`inline-flex w-fit items-center gap-1 rounded-md px-2 py-0.5 text-xs font-bold ${net < 0 ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'}`}
+                              >
+                                <CurrencyFlag code={ccy} flag={currencyFlag(ccy)} />
+                                <span dir="ltr">{net.toLocaleString()} {ccy}</span>
+                              </span>
+                            )
+                          })}
                         </div>
                       )}
                     </td>
@@ -760,6 +885,9 @@ function CustomersPageInner() {
                             </button>
                             <button onClick={() => openDepositWithdraw(customer, 'withdraw')} className="flex items-center gap-1 rounded-md border border-warning/30 px-2 py-1 text-xs font-medium text-warning hover:bg-warning/10 transition-colors">
                               <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
+                            </button>
+                            <button onClick={() => openTransfer(customer)} disabled={Object.keys(customer.balances).length === 0} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors disabled:opacity-40">
+                              <ArrowRightLeft className="h-3.5 w-3.5" /> تحويل
                             </button>
                           </>
                         )}
@@ -1320,7 +1448,7 @@ function CustomersPageInner() {
               <div className="flex justify-between"><span className="text-muted-foreground">نسبة الربح</span><span className="font-medium">{selected.profitPct}%</span></div>
               <div className="pt-2 border-t border-border">
                 <p className="text-muted-foreground mb-2">الحساب — كل عملة حساب مستقل</p>
-                {Object.keys(selected.balances).length === 0 ? (
+                {customerCurrencies(selected).length === 0 ? (
                   <p className="text-muted-foreground">لا توجد حسابات لهذا العميل بعد</p>
                 ) : (
                   <>
@@ -1329,25 +1457,35 @@ function CustomersPageInner() {
                       onChange={(e) => setSelectedCurrency(e.target.value)}
                       className="mb-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                     >
-                      {Object.keys(selected.balances).map((ccy) => (
+                      {customerCurrencies(selected).map((ccy) => (
                         <option key={ccy} value={ccy}>{currencyFlag(ccy)} {currencyName(ccy)} ({ccy})</option>
                       ))}
                     </select>
-                    {selectedCurrency && (
-                      <div className="rounded-lg border border-border bg-secondary/30 p-3">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <CurrencyFlag code={selectedCurrency} flag={currencyFlag(selectedCurrency)} className="h-4 w-6" />
-                          <span className="text-xs font-medium text-muted-foreground">{currencyName(selectedCurrency)}</span>
+                    {selectedCurrency && (() => {
+                      const rawBalance = selected.balances[selectedCurrency] ?? 0
+                      const debtAmt = debtsByCustomerCurrency[selected.id]?.[selectedCurrency] ?? 0
+                      const net = rawBalance - debtAmt
+                      return (
+                        <div className="rounded-lg border border-border bg-secondary/30 p-3">
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <CurrencyFlag code={selectedCurrency} flag={currencyFlag(selectedCurrency)} className="h-4 w-6" />
+                            <span className="text-xs font-medium text-muted-foreground">{currencyName(selectedCurrency)}</span>
+                          </div>
+                          <p className={`text-xl font-bold ${net < 0 ? 'text-danger' : 'text-success'}`} dir="ltr">
+                            {net.toLocaleString()} <span className="text-sm font-medium text-muted-foreground">{selectedCurrency}</span>
+                          </p>
+                          {debtAmt > 0 && (
+                            <p className="mt-1 text-[11px] text-muted-foreground" dir="ltr">
+                              الرصيد {rawBalance.toLocaleString()} − الدين {debtAmt.toLocaleString()}
+                            </p>
+                          )}
+                          <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span>حساب جاري</span>
+                            <span dir="ltr">{selected.id}-{selectedCurrency}</span>
+                          </div>
                         </div>
-                        <p className="text-xl font-bold text-foreground" dir="ltr">
-                          {(selected.balances[selectedCurrency] ?? 0).toLocaleString()} <span className="text-sm font-medium text-muted-foreground">{selectedCurrency}</span>
-                        </p>
-                        <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
-                          <span>حساب جاري</span>
-                          <span dir="ltr">{selected.id}-{selectedCurrency}</span>
-                        </div>
-                      </div>
-                    )}
+                      )
+                    })()}
                   </>
                 )}
               </div>
@@ -1724,6 +1862,84 @@ function CustomersPageInner() {
         </div>
       )}
 
+      {/* Transfer Between Customer Accounts */}
+      {transferCustomer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تحويل من حساب {transferCustomer.name}</h3>
+              <button onClick={() => setTransferCustomer(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={submitTransfer} className="space-y-4 p-6 text-right">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">العميل المستلم *</label>
+                <select
+                  value={transferForm.toCustomerId}
+                  onChange={(e) => setTransferForm({ ...transferForm, toCustomerId: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">اختر العميل</option>
+                  {customers.filter((c) => c.id !== transferCustomer.id && c.isActive).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name} ({c.id})</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                  <select
+                    value={transferForm.currency}
+                    onChange={(e) => setTransferForm({ ...transferForm, currency: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    {Object.keys(transferCustomer.balances).map((ccy) => <option key={ccy} value={ccy}>{ccy}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
+                  <input
+                    type="number"
+                    value={transferForm.amount}
+                    onChange={(e) => setTransferForm({ ...transferForm, amount: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground" dir="ltr">
+                الرصيد المتاح: {(transferCustomer.balances[transferForm.currency] ?? 0).toLocaleString()} {transferForm.currency}
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={transferForm.notes}
+                  onChange={(e) => setTransferForm({ ...transferForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+
+              {transferError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{transferError}</p>}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setTransferCustomer(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={transferSaving}
+                  className="flex items-center gap-2 rounded-md bg-info px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-info/90 disabled:opacity-60"
+                >
+                  {transferSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  تأكيد التحويل
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Customer Statement */}
       {statementCustomer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
@@ -1830,7 +2046,7 @@ function CustomersPageInner() {
               </div>
 
               <div>
-                <p className="text-sm font-medium text-foreground mb-2">حركات الإيداع والسحب على الحساب</p>
+                <p className="text-sm font-medium text-foreground mb-2">حركات الإيداع والسحب والتحويل على الحساب</p>
                 <div className="rounded-md border border-border overflow-x-auto">
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
@@ -1839,7 +2055,7 @@ function CustomersPageInner() {
                         <th className="px-3 py-2 font-medium">المبلغ</th>
                         <th className="px-3 py-2 font-medium">الرصيد قبل</th>
                         <th className="px-3 py-2 font-medium">الرصيد بعد</th>
-                        <th className="px-3 py-2 font-medium">الخزنة</th>
+                        <th className="px-3 py-2 font-medium">المصدر / الوجهة</th>
                         <th className="px-3 py-2 font-medium">بواسطة</th>
                         <th className="px-3 py-2 font-medium">التاريخ</th>
                         <th className="px-3 py-2 font-medium">إيصال</th>
@@ -1847,20 +2063,23 @@ function CustomersPageInner() {
                     </thead>
                     <tbody className="divide-y divide-border">
                       {statementEntries.length === 0 ? (
-                        <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">لا توجد حركات إيداع أو سحب مسجلة</td></tr>
-                      ) : pagedStatementEntries.map((e) => (
+                        <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">لا توجد حركات إيداع أو سحب أو تحويل مسجلة</td></tr>
+                      ) : pagedStatementEntries.map((e) => {
+                        const isInflow = e.type === 'deposit' || e.type === 'transfer_in'
+                        const label = e.type === 'deposit' ? 'إيداع' : e.type === 'withdraw' ? 'سحب' : e.type === 'transfer_in' ? 'تحويل وارد' : 'تحويل صادر'
+                        return (
                         <tr key={e.id}>
                           <td className="px-3 py-2">
-                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${e.type === 'deposit' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}`}>
-                              {e.type === 'deposit' ? 'إيداع' : 'سحب'}
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${isInflow ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}`}>
+                              {label}
                             </span>
                           </td>
-                          <td className={`px-3 py-2 font-bold ${e.type === 'deposit' ? 'text-success' : 'text-danger'}`} dir="ltr">
-                            {e.type === 'deposit' ? '+' : '-'}{e.amount.toLocaleString()} {e.currency}
+                          <td className={`px-3 py-2 font-bold ${isInflow ? 'text-success' : 'text-danger'}`} dir="ltr">
+                            {isInflow ? '+' : '-'}{e.amount.toLocaleString()} {e.currency}
                           </td>
                           <td className="px-3 py-2 text-muted-foreground">{e.balanceBefore.toLocaleString()}</td>
                           <td className="px-3 py-2 font-medium">{e.balanceAfter.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-muted-foreground">{e.vaultName || e.bankAccountName || '—'}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{e.vaultName || e.bankAccountName || e.otherSource || '—'}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.user}</td>
                           <td className="px-3 py-2 text-muted-foreground">{e.timestamp}</td>
                           <td className="px-3 py-2">
@@ -1869,11 +2088,47 @@ function CustomersPageInner() {
                             </button>
                           </td>
                         </tr>
-                      ))}
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
                 <TablePagination page={statementPage} totalItems={statementEntries.length} onPageChange={setStatementPage} />
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-foreground mb-2">الديون</p>
+                <div className="rounded-md border border-border overflow-x-auto">
+                  <table className="w-full text-xs text-right">
+                    <thead className="bg-secondary/50 text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">النوع</th>
+                        <th className="px-3 py-2 font-medium">المبلغ</th>
+                        <th className="px-3 py-2 font-medium">بواسطة</th>
+                        <th className="px-3 py-2 font-medium">التاريخ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {pagedStatementDebtHistory.length === 0 ? (
+                        <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">لا توجد ديون مسجلة</td></tr>
+                      ) : pagedStatementDebtHistory.map((row) => (
+                        <tr key={row.key}>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${row.kind === 'created' ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'}`}>
+                              {row.kind === 'created' ? 'دين جديد' : 'تسديد دفعة'}
+                            </span>
+                          </td>
+                          <td className={`px-3 py-2 font-bold ${row.kind === 'created' ? 'text-danger' : 'text-success'}`} dir="ltr">
+                            {row.kind === 'created' ? '-' : '+'}{row.amount.toLocaleString()} {row.currency}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">{row.user}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{row.timestamp}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePagination page={statementDebtPage} totalItems={statementDebtHistory.length} onPageChange={setStatementDebtPage} />
               </div>
             </div>
           </div>

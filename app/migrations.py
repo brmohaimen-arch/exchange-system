@@ -90,6 +90,7 @@ NEW_COLUMNS = [
     ("fixed_assets", "car_model", "VARCHAR(50)"),
     ("fixed_assets", "vin", "VARCHAR(100)"),
     ("fixed_assets", "make_year", "INTEGER"),
+    ("debts", "created_by", "VARCHAR(100)"),
 ]
 
 

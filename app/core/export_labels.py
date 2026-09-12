@@ -11,6 +11,8 @@ TX_TYPE_LABELS_AR = {
     "exchange": "تبديل عملة",
     "deposit": "إيداع في حساب عميل",
     "withdraw": "سحب من حساب عميل",
+    "transfer_in": "تحويل وارد من عميل",
+    "transfer_out": "تحويل صادر لعميل",
 }
 
 PAYMENT_METHOD_LABELS_AR = {

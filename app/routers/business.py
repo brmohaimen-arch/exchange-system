@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from ..database import get_db
 from ..models import (
-    Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, Transaction, Movement, JournalEntry,
+    Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, DebtPaymentRecord, Transaction, Movement, JournalEntry,
     Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule,
     CustomerAccountEntry
 )
@@ -57,6 +57,7 @@ class BankAccountCreate(BaseModel):
     branch_name: str
     account_name: str
     account_number: str
+    account_type: str = "individual"  # individual, corporate
     currency: str
     balance: float
     is_active: bool = True
@@ -145,6 +146,7 @@ def bank_account_to_dict(ba: BankAccount):
         "branchName": ba.branch_name,
         "accountName": ba.account_name,
         "accountNumber": ba.account_number,
+        "accountType": ba.account_type,
         "currency": ba.currency,
         "balance": ba.balance,
         "isActive": ba.is_active,
@@ -199,7 +201,8 @@ def debt_to_dict(d: Debt):
         "paymentPeriod": d.payment_period,
         "paymentAmount": d.payment_amount,
         "notes": d.notes,
-        "transactionId": d.transaction_id
+        "transactionId": d.transaction_id,
+        "createdBy": d.created_by,
     }
 
 def transaction_to_dict(t: Transaction):
@@ -519,6 +522,12 @@ class CustomerAccountOp(BaseModel):
     amount: float
     notes: str | None = None
 
+class CustomerTransferOp(BaseModel):
+    to_customer_id: str
+    currency: str
+    amount: float
+    notes: str | None = None
+
 def customer_account_entry_to_dict(e: CustomerAccountEntry):
     return {
         "id": e.id,
@@ -586,8 +595,10 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
                 raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ لصرف المبلغ ({source_before} {data.currency})", message_en="Insufficient balance to pay out", status_code=400)
             source_after = source_before - data.amount
     else:
-        if cust_before < data.amount:
-            raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد العميل غير كافٍ ({cust_before} {data.currency})", message_en="Insufficient customer balance", status_code=400)
+        # A customer can withdraw more than they have on account — it's a running
+        # trust relationship, not a hard prepaid limit — so this deliberately allows
+        # the balance to go negative (e.g. -1,500 withdrawing 5,000 more becomes
+        # -6,500) rather than blocking the withdrawal.
         if source_before is not None:
             source_after = source_before + data.amount
         cust_after = cust_before - data.amount
@@ -679,7 +690,7 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         },
         {
             "accountName": f"حساب العميل {customer.name} - {data.currency}", "currency": data.currency,
-            "debit": 0.0 if is_deposit else data.amount, "credit": data.amount if is_deposit else 0.0,
+            "debit": data.amount if is_deposit else 0.0, "credit": 0.0 if is_deposit else data.amount,
             "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
         },
     ]
@@ -708,6 +719,100 @@ def withdraw_from_customer(customer_id: str, data: CustomerAccountOp, actor: Use
     entry = _run_customer_account_op("withdraw", customer_id, data, actor, db)
     return success_response(data=customer_account_entry_to_dict(entry), message_ar="تم تسجيل السحب بنجاح")
 
+@router.post("/customers/{customer_id}/transfer")
+def transfer_between_customers(customer_id: str, data: CustomerTransferOp, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    """Moves money directly from one customer's account to another's, in the same
+    currency — no vault or bank involved on either side, unlike deposit/withdraw."""
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    if data.to_customer_id == customer_id:
+        raise APIError(code="SAME_CUSTOMER", message_ar="لا يمكن التحويل لنفس العميل", message_en="Cannot transfer to the same customer", status_code=400)
+
+    from_customer = db.get(Customer, customer_id)
+    if not from_customer:
+        raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل المرسل غير موجود", message_en="Sending customer not found", status_code=404)
+    if not from_customer.is_active:
+        raise APIError(code="CUSTOMER_INACTIVE", message_ar="لا يمكن التحويل من عميل غير نشط", message_en="Cannot transfer from an inactive customer", status_code=400)
+
+    to_customer = db.get(Customer, data.to_customer_id)
+    if not to_customer:
+        raise APIError(code="RECIPIENT_NOT_FOUND", message_ar="العميل المستلم غير موجود", message_en="Recipient customer not found", status_code=404)
+    if not to_customer.is_active:
+        raise APIError(code="RECIPIENT_INACTIVE", message_ar="لا يمكن التحويل إلى عميل غير نشط", message_en="Cannot transfer to an inactive customer", status_code=400)
+
+    from_before = from_customer.balances.get(data.currency, 0.0)
+    if from_before < data.amount:
+        raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد العميل غير كافٍ ({from_before} {data.currency})", message_en="Insufficient customer balance", status_code=400)
+    from_after = from_before - data.amount
+    to_before = to_customer.balances.get(data.currency, 0.0)
+    to_after = to_before + data.amount
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    transfer_id = new_id("cxfer")
+
+    from_bals = from_customer.balances.copy()
+    from_bals[data.currency] = from_after
+    from_customer.balances = from_bals
+    to_bals = to_customer.balances.copy()
+    to_bals[data.currency] = to_after
+    to_customer.balances = to_bals
+
+    out_entry = CustomerAccountEntry(
+        id=f"{transfer_id}_out", type="transfer_out", customer_id=from_customer.id, customer_name=from_customer.name,
+        other_source=f"تحويل إلى العميل {to_customer.name} ({to_customer.id})",
+        currency=data.currency, amount=data.amount, balance_before=from_before, balance_after=from_after,
+        notes=data.notes, user=actor.name, timestamp=timestamp
+    )
+    in_entry = CustomerAccountEntry(
+        id=f"{transfer_id}_in", type="transfer_in", customer_id=to_customer.id, customer_name=to_customer.name,
+        other_source=f"تحويل من العميل {from_customer.name} ({from_customer.id})",
+        currency=data.currency, amount=data.amount, balance_before=to_before, balance_after=to_after,
+        notes=data.notes, user=actor.name, timestamp=timestamp
+    )
+    db.add(out_entry)
+    db.add(in_entry)
+
+    db.add(Movement(
+        id=new_id(f"m_cust_{transfer_id}_out"), timestamp=timestamp, entity_type="customer", entity_id=from_customer.id,
+        entity_name=from_customer.name, currency=data.currency, type="تحويل صادر لعميل آخر",
+        amount_in=0.0, amount_out=data.amount, balance_before=from_before, balance_after=from_after,
+        reference_id=transfer_id, user=actor.name
+    ))
+    db.add(Movement(
+        id=new_id(f"m_cust_{transfer_id}_in"), timestamp=timestamp, entity_type="customer", entity_id=to_customer.id,
+        entity_name=to_customer.name, currency=data.currency, type="تحويل وارد من عميل آخر",
+        amount_in=data.amount, amount_out=0.0, balance_before=to_before, balance_after=to_after,
+        reference_id=transfer_id, user=actor.name
+    ))
+
+    equivalent_lyd = data.amount
+    if data.currency != "LYD":
+        rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == data.currency, ExchangeRate.to_currency == "LYD"))
+        if rate_row:
+            equivalent_lyd = data.amount * rate_row.sell_rate
+
+    db.add(JournalEntry(
+        id=f"JV-{datetime.utcnow().strftime('%Y%m%d')}-{transfer_id}", date=timestamp,
+        tx_type="تحويل بين حسابات عملاء", reference=transfer_id,
+        description=f"تحويل {data.amount} {data.currency} من حساب العميل {from_customer.name} إلى حساب العميل {to_customer.name}",
+        user=actor.name, status="approved",
+        lines=[
+            {"accountName": f"حساب العميل {from_customer.name} - {data.currency}", "currency": data.currency, "debit": data.amount, "credit": 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            {"accountName": f"حساب العميل {to_customer.name} - {data.currency}", "currency": data.currency, "debit": 0.0, "credit": data.amount, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+        ]
+    ))
+
+    create_audit_log(
+        db, action=AuditAction.CREATE, entity_type="CustomerAccountEntry", entity_id=transfer_id,
+        description=f"تحويل {data.amount} {data.currency} من حساب العميل {from_customer.name} إلى حساب العميل {to_customer.name}",
+        username=actor.username
+    )
+    db.commit()
+    return success_response(
+        data={"from": customer_account_entry_to_dict(out_entry), "to": customer_account_entry_to_dict(in_entry)},
+        message_ar=f"تم تحويل {data.amount} {data.currency} إلى {to_customer.name} بنجاح"
+    )
+
 @router.get("/customer_account_entries")
 def list_customer_account_entries(db: Session = Depends(get_db)):
     res = db.scalars(select(CustomerAccountEntry).order_by(CustomerAccountEntry.timestamp.desc())).all()
@@ -723,17 +828,27 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
     that account's activity."""
     txs_query = select(Transaction).where(Transaction.customer_id == customer.id, Transaction.type.in_(["buy", "sell", "exchange"]))
     entries_query = select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id == customer.id)
+    debts_query = select(Debt).where(Debt.customer_id == customer.id)
+    debt_payments_query = select(DebtPaymentRecord).where(DebtPaymentRecord.customer_id == customer.id)
     if date_from:
         txs_query = txs_query.where(Transaction.timestamp >= date_from)
         entries_query = entries_query.where(CustomerAccountEntry.timestamp >= date_from)
+        debts_query = debts_query.where(Debt.start_date >= date_from)
+        debt_payments_query = debt_payments_query.where(DebtPaymentRecord.timestamp >= date_from)
     if date_to:
         txs_query = txs_query.where(Transaction.timestamp <= date_to + "T23:59:59")
         entries_query = entries_query.where(CustomerAccountEntry.timestamp <= date_to + "T23:59:59")
+        debts_query = debts_query.where(Debt.start_date <= date_to)
+        debt_payments_query = debt_payments_query.where(DebtPaymentRecord.timestamp <= date_to + "T23:59:59")
     if currency:
         entries_query = entries_query.where(CustomerAccountEntry.currency == currency)
+        debts_query = debts_query.where(Debt.currency == currency)
+        debt_payments_query = debt_payments_query.where(DebtPaymentRecord.currency == currency)
 
     txs = db.scalars(txs_query).all()
     entries = db.scalars(entries_query).all()
+    debts = db.scalars(debts_query).all()
+    debt_payments = db.scalars(debt_payments_query).all()
 
     rows_with_ts = []
     for t in txs:
@@ -743,8 +858,21 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — {t.id}"
         rows_with_ts.append((t.timestamp, [t.timestamp, detail, f"{t.amount:,.2f}", tx_currency, t.user]))
     for e in entries:
-        detail = "إيداع في الحساب" if e.type == "deposit" else "سحب من الحساب"
+        if e.type == "deposit":
+            detail = "إيداع في الحساب"
+        elif e.type == "withdraw":
+            detail = "سحب من الحساب"
+        else:
+            # transfer_in / transfer_out — other_source already reads like
+            # "تحويل من/إلى العميل X (id)", so it doubles as the detail text.
+            detail = e.other_source or e.type
         rows_with_ts.append((e.timestamp, [e.timestamp, detail, f"{e.amount:,.2f}", e.currency, e.user]))
+    for d in debts:
+        detail = f"تسجيل دين جديد — استحقاق {d.due_date}"
+        rows_with_ts.append((d.start_date, [d.start_date, detail, f"{d.amount:,.2f}", d.currency, d.created_by or "—"]))
+    for p in debt_payments:
+        detail = "تسديد دفعة دين"
+        rows_with_ts.append((p.timestamp, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
 
     rows_with_ts.sort(key=lambda r: r[0])
     headers = ["م", "التاريخ", "التفاصيل", "المبلغ", "العملة", "بواسطة"]
@@ -1050,7 +1178,7 @@ def list_debts(db: Session = Depends(get_db)):
     return success_response(data=[debt_to_dict(d) for d in res])
 
 @router.post("/debts")
-def create_debt(data: DebtCreate, db: Session = Depends(get_db)):
+def create_debt(data: DebtCreate, actor: User = Depends(require_permission("إدارة الديون")), db: Session = Depends(get_db)):
     debt = Debt(
         id=data.id,
         customer_id=data.customer_id,
@@ -1065,11 +1193,12 @@ def create_debt(data: DebtCreate, db: Session = Depends(get_db)):
         payment_period=data.payment_period,
         payment_amount=data.payment_amount,
         notes=data.notes,
-        transaction_id=data.transaction_id
+        transaction_id=data.transaction_id,
+        created_by=actor.name,
     )
     db.add(debt)
     create_audit_log(db, action=AuditAction.CREATE, entity_type="Debt", entity_id=data.id,
-                     description=f"تسجيل دين جديد للعميل {data.customer_name} بمبلغ {data.amount} {data.currency}")
+                     description=f"تسجيل دين جديد للعميل {data.customer_name} بمبلغ {data.amount} {data.currency}", username=actor.username)
     db.commit()
     return success_response(data=debt_to_dict(debt))
 
@@ -1093,9 +1222,33 @@ def pay_debt(debt_id: str, data: DebtPayment, actor: User = Depends(require_perm
     else:
         debt.status = "partially_paid"
 
+    db.add(DebtPaymentRecord(
+        id=new_id(f"debtpay_{debt_id}"), debt_id=debt.id, customer_id=debt.customer_id, customer_name=debt.customer_name,
+        currency=debt.currency, amount=data.amount, timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        user=actor.name, notes=data.notes
+    ))
+
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="Debt", entity_id=debt.id, description=f"تسديد دفعة دين بقيمة {data.amount} {debt.currency}")
     db.commit()
     return success_response(data=debt_to_dict(debt))
+
+def debt_payment_to_dict(p: DebtPaymentRecord):
+    return {
+        "id": p.id,
+        "debtId": p.debt_id,
+        "customerId": p.customer_id,
+        "customerName": p.customer_name,
+        "currency": p.currency,
+        "amount": p.amount,
+        "timestamp": p.timestamp,
+        "user": p.user,
+        "notes": p.notes,
+    }
+
+@router.get("/debt_payments")
+def list_debt_payments(db: Session = Depends(get_db)):
+    res = db.scalars(select(DebtPaymentRecord).order_by(DebtPaymentRecord.timestamp.desc())).all()
+    return success_response(data=[debt_payment_to_dict(p) for p in res])
 
 # ----------------- COMMISSION / FEE RULES -----------------
 class CommissionRuleCreate(BaseModel):

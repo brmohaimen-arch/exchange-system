@@ -375,6 +375,19 @@ export interface Debt {
   paymentAmount: number
   notes: string | null
   transactionId: string | null
+  createdBy: string | null
+}
+
+export interface DebtPaymentRecord {
+  id: string
+  debtId: string
+  customerId: string
+  customerName: string
+  currency: string
+  amount: number
+  timestamp: string
+  user: string
+  notes: string | null
 }
 
 export interface FixedAsset {
@@ -651,7 +664,7 @@ export interface JournalEntry {
 
 export interface CustomerAccountEntry {
   id: string
-  type: 'deposit' | 'withdraw'
+  type: 'deposit' | 'withdraw' | 'transfer_in' | 'transfer_out'
   customerId: string
   customerName: string
   vaultId: string | null
