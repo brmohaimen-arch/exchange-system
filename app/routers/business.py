@@ -376,19 +376,26 @@ def calculate_bank_deposit_interest(deposit_id: str, actor: User = Depends(requi
     if deposit.interest_rate <= 0:
         raise APIError(code="INTEREST_NOT_CONFIGURED", message_ar="لم يتم تحديد نسبة فائدة لهذه الوديعة", message_en="This deposit has no interest rate set", status_code=400)
 
-    today = datetime.utcnow().date()
+    now = datetime.utcnow()
     last_date_str = deposit.last_calculated or deposit.deposit_date
-    last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date()
-    days_elapsed = (today - last_date).days
+    # last_calculated is stored with full precision (below) so repeat same-day
+    # calculations don't re-count time already paid out; older rows (or the
+    # deposit_date itself, the first time) only ever had a bare date, which
+    # parses fine as midnight of that day.
+    try:
+        last_dt = datetime.strptime(last_date_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        last_dt = datetime.strptime(last_date_str, "%Y-%m-%d")
+    days_elapsed = (now - last_dt).total_seconds() / 86400.0
     if days_elapsed <= 0:
-        raise APIError(code="NO_DAYS_ELAPSED", message_ar="لم يمر يوم كامل بعد منذ آخر احتساب (أو منذ تاريخ الوديعة) لاحتساب فائدة عنه", message_en="No full day has passed since the last calculation (or the deposit date)", status_code=400)
+        raise APIError(code="NO_TIME_ELAPSED", message_ar="لا يمكن احتساب فائدة قبل تاريخ الوديعة أو آخر احتساب", message_en="Cannot calculate interest before the deposit date or the last calculation", status_code=400)
 
     interest = deposit.amount * (deposit.interest_rate / 100.0) * (days_elapsed / 365.0)
     deposit.accrued_interest += interest
-    deposit.last_calculated = today.strftime("%Y-%m-%d")
+    deposit.last_calculated = now.strftime("%Y-%m-%d %H:%M:%S")
 
     account = db.get(BankAccount, deposit.bank_account_id)
-    create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankDeposit", entity_id=deposit_id, description=f"تم احتساب فائدة تلقائية بقيمة {interest:.2f} {deposit.currency} على وديعة بحساب {account.account_name if account else deposit.bank_account_id} عن {days_elapsed} يوم")
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankDeposit", entity_id=deposit_id, description=f"تم احتساب فائدة تلقائية بقيمة {interest:.2f} {deposit.currency} على وديعة بحساب {account.account_name if account else deposit.bank_account_id} عن {days_elapsed:.2f} يوم")
     db.commit()
     return success_response(data=bank_deposit_to_dict(deposit), message_ar=f"تم احتساب فائدة بقيمة {interest:.2f} {deposit.currency}")
 
