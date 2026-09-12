@@ -191,6 +191,7 @@ class BankAccount(Base):
     branch_name: Mapped[str] = mapped_column(String(150), nullable=False)
     account_name: Mapped[str] = mapped_column(String(150), nullable=False)
     account_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(20), default="individual")  # individual, corporate
     currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
     balance: Mapped[float] = mapped_column(Float, default=0.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

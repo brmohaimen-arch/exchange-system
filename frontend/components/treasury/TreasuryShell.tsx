@@ -7,16 +7,22 @@ import { api, newId, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { CurrencyFlag } from '@/components/ui/currency-flag'
 
 interface TransferRow {
   id: string
+  sourceType: string
+  sourceId: string
   sourceName: string
+  destType: string
+  destId: string
   destName: string
   currency: string
   amount: number
   status: string
   requestedBy: string
   timestamp: string
+  notes: string | null
 }
 
 const vaultTypeLabels: Record<string, string> = { main: 'رئيسية', branch: 'فرع', cashier: 'صندوق' }
@@ -36,6 +42,7 @@ const tabs = [
   { key: 'movements', label: 'حركة اليوم', icon: ArrowRightLeft },
   { key: 'branches', label: 'الفروع', icon: MapPin },
   { key: 'banks', label: 'البنوك', icon: Building2 },
+  { key: 'bank_movements', label: 'حركة الحسابات البنكية', icon: ArrowRightLeft },
   { key: 'shifts', label: 'الورديات', icon: Clock },
   { key: 'inventory', label: 'الجرد', icon: ClipboardList },
   { key: 'expenses', label: 'المصاريف اليومية', icon: Receipt },
@@ -59,7 +66,7 @@ function emptyBankForm() {
   return { name: '', code: '', country: 'ليبيا', city: '', phone: '', notes: '' }
 }
 function emptyBankAccountForm() {
-  return { bankId: '', branchId: '', accountName: '', accountNumber: '', currency: 'LYD', balance: '0', newBranch: false, newBranchName: '', newBranchCity: '', newBranchAddress: '', newBranchPhone: '', newBranchManager: '' }
+  return { bankId: '', branchId: '', accountName: '', accountNumber: '', accountType: 'individual' as 'individual' | 'corporate', currency: 'LYD', balance: '0', newBranch: false, newBranchName: '', newBranchCity: '', newBranchAddress: '', newBranchPhone: '', newBranchManager: '' }
 }
 function emptyInventoryForm() {
   return { vaultId: '', currency: 'LYD', actualBalance: '', reason: '', notes: '' }
@@ -118,6 +125,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [movementsDate, setMovementsDate] = useState(new Date().toISOString().slice(0, 10))
   const [movementsVaultId, setMovementsVaultId] = useState('')
   const [movementsLoading, setMovementsLoading] = useState(false)
+  const [bankMovementsDate, setBankMovementsDate] = useState(new Date().toISOString().slice(0, 10))
+  const [bankMovementsAccountId, setBankMovementsAccountId] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -185,6 +194,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [actingExpenseId, setActingExpenseId] = useState<string | null>(null)
 
   const [transfersPage, setTransfersPage] = useState(1)
+  const [bankMovementsPage, setBankMovementsPage] = useState(1)
   const [bankAccountsPage, setBankAccountsPage] = useState(1)
   const [shiftsPage, setShiftsPage] = useState(1)
   const [inventoryPage, setInventoryPage] = useState(1)
@@ -259,6 +269,36 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   // set fetched from the server, so pagination here is purely client-side.
   const sortedTransfers = useMemo(() => [...transfers].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [transfers])
   const pagedTransfers = paginate(sortedTransfers, transfersPage)
+
+  // Same transfer requests, filtered to the ones touching at least one bank
+  // account — the "daily movement" log for bank accounts, mirroring the vault
+  // movements tab but keyed off Transfer (sender+receiver in one row) rather
+  // than Movement (one row per side).
+  const bankTransfers = useMemo(
+    () => sortedTransfers.filter((t) => t.sourceType === 'bank_account' || t.destType === 'bank_account'),
+    [sortedTransfers]
+  )
+  const filteredBankMovements = useMemo(
+    () => bankTransfers.filter((t) => {
+      if (!t.timestamp.startsWith(bankMovementsDate)) return false
+      if (bankMovementsAccountId) return t.sourceId === bankMovementsAccountId || t.destId === bankMovementsAccountId
+      return true
+    }),
+    [bankTransfers, bankMovementsDate, bankMovementsAccountId]
+  )
+  const pagedBankMovements = paginate(filteredBankMovements, bankMovementsPage)
+
+  const bankMovementsTotals = useMemo(() => {
+    const totals: Record<string, { in: number; out: number }> = {}
+    for (const t of filteredBankMovements) {
+      if (!totals[t.currency]) totals[t.currency] = { in: 0, out: 0 }
+      if (t.destType === 'bank_account') totals[t.currency].in += t.amount
+      if (t.sourceType === 'bank_account') totals[t.currency].out += t.amount
+    }
+    return totals
+  }, [filteredBankMovements])
+
+  const bankAccountNumber = (type: string, id: string) => (type === 'bank_account' ? bankAccounts.find((a) => a.id === id)?.accountNumber : undefined)
 
   const sortedBankAccounts = useMemo(() => [...bankAccounts].reverse(), [bankAccounts])
   const pagedBankAccounts = paginate(sortedBankAccounts, bankAccountsPage)
@@ -713,6 +753,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         branch_name: branchName,
         account_name: accountForm.accountName.trim(),
         account_number: accountForm.accountNumber.trim(),
+        account_type: accountForm.accountType,
         currency: accountForm.currency,
         balance: parseFloat(accountForm.balance) || 0,
         is_active: true,
@@ -934,14 +975,23 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <Plus className="h-4 w-4" /> إضافة فرع
             </button>
           )}
-          {tab === 'banks' && canManageBanks && (
+          {tab === 'banks' && (
             <>
-              <button onClick={openCreateAccount} className="flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
-                <Plus className="h-4 w-4" /> إضافة حساب بنكي
-              </button>
-              <button onClick={openCreateBank} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-                <Plus className="h-4 w-4" /> إضافة بنك
-              </button>
+              {canTransfer && (
+                <button onClick={openTransfer} className="flex items-center gap-2 rounded-md border border-info/30 px-4 py-2 text-sm font-medium text-info hover:bg-info/10 transition-colors">
+                  <ArrowRightLeft className="h-4 w-4" /> تحويل أموال
+                </button>
+              )}
+              {canManageBanks && (
+                <>
+                  <button onClick={openCreateAccount} className="flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+                    <Plus className="h-4 w-4" /> إضافة حساب بنكي
+                  </button>
+                  <button onClick={openCreateBank} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+                    <Plus className="h-4 w-4" /> إضافة بنك
+                  </button>
+                </>
+              )}
             </>
           )}
           {tab === 'shifts' && canOpenShift && (
@@ -1011,7 +1061,10 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <p className="text-sm text-muted-foreground">لا توجد أرصدة</p>
                   ) : Object.entries(vault.balances).map(([ccy, amt]) => (
                     <div key={ccy} className="flex justify-between items-center group">
-                      <span className="text-sm text-muted-foreground">رصيد ({ccy})</span>
+                      <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                        <CurrencyFlag code={ccy} flag={currencies.find((c) => c.code === ccy)?.flag} className="h-3.5 w-5" />
+                        رصيد ({ccy})
+                      </span>
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-foreground">{amt.toLocaleString()}</span>
                         {canManageVaults && amt === 0 && (
@@ -1167,6 +1220,95 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         </div>
       )}
 
+      {tab === 'bank_movements' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
+              <input
+                type="date"
+                value={bankMovementsDate}
+                onChange={(e) => setBankMovementsDate(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">الحساب البنكي</label>
+              <select
+                value={bankMovementsAccountId}
+                onChange={(e) => setBankMovementsAccountId(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="">كل الحسابات</option>
+                {bankAccounts.map((a) => <option key={a.id} value={a.id}>{a.bankName} - {a.accountName}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {Object.keys(bankMovementsTotals).length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {Object.entries(bankMovementsTotals).map(([ccy, t]) => (
+                <div key={ccy} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">{ccy}</p>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-1 font-bold text-success"><ArrowDownCircle className="h-4 w-4" /> +{t.in.toLocaleString()}</span>
+                    <span className="flex items-center gap-1 font-bold text-danger"><ArrowUpCircle className="h-4 w-4" /> -{t.out.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+            <div className="border-b border-border px-6 py-4 bg-secondary/30">
+              <h3 className="text-lg font-semibold text-foreground">حركة الحسابات البنكية — دخول وخروج</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-right">
+                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                  <tr>
+                    <th className="px-6 py-4 font-medium">الوقت</th>
+                    <th className="px-6 py-4 font-medium">من</th>
+                    <th className="px-6 py-4 font-medium">رقم حساب المرسل</th>
+                    <th className="px-6 py-4 font-medium">إلى</th>
+                    <th className="px-6 py-4 font-medium">رقم حساب المستلم</th>
+                    <th className="px-6 py-4 font-medium">العملة</th>
+                    <th className="px-6 py-4 font-medium">المبلغ</th>
+                    <th className="px-6 py-4 font-medium">ملاحظات</th>
+                    <th className="px-6 py-4 font-medium">الحالة</th>
+                    <th className="px-6 py-4 font-medium">بواسطة</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {filteredBankMovements.length === 0 ? (
+                    <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
+                  ) : pagedBankMovements.map((t) => {
+                    const st = statusLabels[t.status] || statusLabels.pending
+                    return (
+                      <tr key={t.id} className="hover:bg-muted/50 transition-colors">
+                        <td className="px-6 py-4 text-muted-foreground">{t.timestamp}</td>
+                        <td className="px-6 py-4 font-medium text-foreground">{t.sourceName}</td>
+                        <td className="px-6 py-4 text-muted-foreground" dir="ltr">{bankAccountNumber(t.sourceType, t.sourceId) || '—'}</td>
+                        <td className="px-6 py-4">{t.destName}</td>
+                        <td className="px-6 py-4 text-muted-foreground" dir="ltr">{bankAccountNumber(t.destType, t.destId) || '—'}</td>
+                        <td className="px-6 py-4">{t.currency}</td>
+                        <td className="px-6 py-4 font-bold">{t.amount.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{t.notes || '—'}</td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${st.className}`}>{st.label}</span>
+                        </td>
+                        <td className="px-6 py-4 text-muted-foreground">{t.requestedBy}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <TablePagination page={bankMovementsPage} totalItems={filteredBankMovements.length} onPageChange={setBankMovementsPage} />
+          </div>
+        </div>
+      )}
+
       {tab === 'branches' && (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {branches.length === 0 ? (
@@ -1255,6 +1397,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <th className="px-6 py-4 font-medium">الفرع</th>
                     <th className="px-6 py-4 font-medium">اسم الحساب</th>
                     <th className="px-6 py-4 font-medium">رقم الحساب</th>
+                    <th className="px-6 py-4 font-medium">نوع الحساب</th>
                     <th className="px-6 py-4 font-medium">العملة</th>
                     <th className="px-6 py-4 font-medium">الرصيد</th>
                     <th className="px-6 py-4 font-medium">الحالة</th>
@@ -1263,13 +1406,18 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </thead>
                 <tbody className="divide-y divide-border">
                   {bankAccounts.length === 0 ? (
-                    <tr><td colSpan={8} className="px-6 py-8 text-center text-muted-foreground">لا توجد حسابات بنكية</td></tr>
+                    <tr><td colSpan={9} className="px-6 py-8 text-center text-muted-foreground">لا توجد حسابات بنكية</td></tr>
                   ) : pagedBankAccounts.map((ba) => (
                     <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-6 py-4 font-medium text-foreground">{ba.bankName}</td>
                       <td className="px-6 py-4 text-muted-foreground">{ba.branchName}</td>
                       <td className="px-6 py-4">{ba.accountName}</td>
                       <td className="px-6 py-4" dir="ltr">{ba.accountNumber}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${ba.accountType === 'corporate' ? 'bg-info/10 text-info' : 'bg-secondary text-muted-foreground'}`}>
+                          {ba.accountType === 'corporate' ? 'شركة' : 'فرد'}
+                        </span>
+                      </td>
                       <td className="px-6 py-4">{ba.currency}</td>
                       <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
                       <td className="px-6 py-4">
@@ -2017,6 +2165,13 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   <label className="block text-sm font-medium text-foreground mb-1">رقم الحساب *</label>
                   <input value={accountForm.accountNumber} onChange={(e) => setAccountForm({ ...accountForm, accountNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">نوع الحساب</label>
+                <select value={accountForm.accountType} onChange={(e) => setAccountForm({ ...accountForm, accountType: e.target.value as 'individual' | 'corporate' })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                  <option value="individual">فرد</option>
+                  <option value="corporate">شركة</option>
+                </select>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

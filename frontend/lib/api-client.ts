@@ -340,6 +340,7 @@ export interface BankAccount {
   branchName: string
   accountName: string
   accountNumber: string
+  accountType: 'individual' | 'corporate'
   currency: string
   balance: number
   isActive: boolean
