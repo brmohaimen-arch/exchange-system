@@ -28,7 +28,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
 from reportlab.lib.styles import ParagraphStyle
 
 _LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
@@ -321,24 +321,33 @@ def build_sectioned_pdf(
     empty_style = ParagraphStyle("SectionedEmpty", fontName=font_name, fontSize=9, leading=12, alignment=1, textColor=colors.grey)
     closing_style = ParagraphStyle("SectionedClosing", fontName=font_name, fontSize=11, leading=15, alignment=1, spaceBefore=10)
 
+    # Each section lands on its own page (see the PageBreak below) so a printed
+    # page is a self-contained document — the letterhead and statement info are
+    # re-emitted at the top of every page, not just the first, instead of being
+    # written once before the loop.
+    def add_letterhead():
+        if os.path.exists(_LOGO_PATH):
+            logo = Image(_LOGO_PATH, width=1.5 * cm, height=1.5 * cm)
+            logo.hAlign = "CENTER"
+            elements.append(logo)
+            elements.append(Spacer(1, 0.1 * cm))
+        elements.append(Paragraph(shape_arabic("شركة واكب للخدمات المالية"), company_style))
+        elements.append(Paragraph(" | ".join(COMPANY_PHONES), contact_style))
+        elements.append(Spacer(1, 0.3 * cm))
+        elements.append(Paragraph(shape_arabic(title), info_style))
+        for line in (subtitle_lines or []):
+            elements.append(Paragraph(shape_arabic(line), info_style))
+        elements.append(Spacer(1, 0.4 * cm))
+
     elements = []
-    if os.path.exists(_LOGO_PATH):
-        logo = Image(_LOGO_PATH, width=1.5 * cm, height=1.5 * cm)
-        logo.hAlign = "CENTER"
-        elements.append(logo)
-        elements.append(Spacer(1, 0.1 * cm))
-    elements.append(Paragraph(shape_arabic("شركة واكب للخدمات المالية"), company_style))
-    elements.append(Paragraph(" | ".join(COMPANY_PHONES), contact_style))
-    elements.append(Spacer(1, 0.3 * cm))
-    elements.append(Paragraph(shape_arabic(title), info_style))
-    for line in (subtitle_lines or []):
-        elements.append(Paragraph(shape_arabic(line), info_style))
-    elements.append(Spacer(1, 0.4 * cm))
 
     header_style = ParagraphStyle("SectionedHeader", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white, wordWrap="CJK")
     cell_style = ParagraphStyle("SectionedCell", fontName=font_name, fontSize=9, alignment=1, wordWrap="CJK")
 
-    for name, headers, rows in sections:
+    for idx, (name, headers, rows) in enumerate(sections):
+        if idx > 0:
+            elements.append(PageBreak())
+        add_letterhead()
         title_table = Table([[Paragraph(shape_arabic(name), section_title_style)]], colWidths=[content_width])
         title_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), BRAND_COLOR),
@@ -352,25 +361,26 @@ def build_sectioned_pdf(
         if not rows:
             elements.append(Paragraph(shape_arabic("لا توجد بيانات"), empty_style))
             elements.append(Spacer(1, 0.4 * cm))
-            continue
+        else:
+            approx_col_width = content_width / max(len(headers), 1) - 6
+            display_headers = [Paragraph(shape_arabic(h, approx_col_width, font_name, 9), header_style) for h in reversed(headers)]
+            display_rows = [[Paragraph(shape_arabic(cell, approx_col_width, font_name, 9), cell_style) for cell in reversed(row)] for row in rows]
+            table_data = [display_headers] + display_rows
+            table = Table(table_data, repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            elements.append(table)
+            elements.append(Spacer(1, 0.4 * cm))
 
-        approx_col_width = content_width / max(len(headers), 1) - 6
-        display_headers = [Paragraph(shape_arabic(h, approx_col_width, font_name, 9), header_style) for h in reversed(headers)]
-        display_rows = [[Paragraph(shape_arabic(cell, approx_col_width, font_name, 9), cell_style) for cell in reversed(row)] for row in rows]
-        table_data = [display_headers] + display_rows
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ]))
-        elements.append(table)
-        elements.append(Spacer(1, 0.4 * cm))
-
-    if closing_line:
-        elements.append(Paragraph(shape_arabic(closing_line), closing_style))
+        # Repeated on every page (not just the last) so a page printed on its
+        # own still carries the same closing summary as every other page.
+        if closing_line:
+            elements.append(Paragraph(shape_arabic(closing_line), closing_style))
 
     doc.build(elements)
     buf.seek(0)

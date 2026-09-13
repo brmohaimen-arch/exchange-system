@@ -599,6 +599,46 @@ function AssetsPageInner() {
     }
   }
 
+  const deleteAsset = async (a: FixedAsset) => {
+    if (!(await confirmDialog(`هل تريد حذف الأصل "${a.name}"؟ سيتم حذف كل ما يتبعه من مركبات وعقارات وسجلات صيانة ومستندات.`))) return
+    try {
+      await api.delete(`/assets/${a.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف الأصل')
+    }
+  }
+
+  const deleteVehicle = async (v: Vehicle) => {
+    if (!(await confirmDialog(`هل تريد حذف المركبة "${v.carName}"؟`))) return
+    try {
+      await api.delete(`/vehicles/${v.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف المركبة')
+    }
+  }
+
+  const deleteEstate = async (r: RealEstate) => {
+    if (!(await confirmDialog(`هل تريد حذف العقار "${r.propertyName}"؟`))) return
+    try {
+      await api.delete(`/real_estates/${r.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف العقار')
+    }
+  }
+
+  const deleteMaintenance = async (m: MaintenanceRecord) => {
+    if (!(await confirmDialog(`هل تريد حذف سجل الصيانة "${m.maintenanceType}"؟`))) return
+    try {
+      await api.delete(`/maintenance_records/${m.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف سجل الصيانة')
+    }
+  }
+
   const docStatusClass: Record<string, string> = {
     'ساري': 'bg-success/10 text-success',
     'قارب على الانتهاء': 'bg-warning/10 text-warning',
@@ -686,6 +726,9 @@ function AssetsPageInner() {
                                 </button>
                               </>
                             )}
+                            <button onClick={() => deleteAsset(a)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
+                            </button>
                           </div>
                         </td>
                       )}
@@ -763,9 +806,14 @@ function AssetsPageInner() {
                       </td>
                       {canManage && (
                         <td className="px-3 py-4 sm:px-6">
-                          <button onClick={() => openEditVehicle(v)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
-                            <Pencil className="h-3.5 w-3.5" /> تعديل
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => openEditVehicle(v)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
+                            </button>
+                            <button onClick={() => deleteVehicle(v)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -800,9 +848,14 @@ function AssetsPageInner() {
                   <div className="flex items-center gap-2">
                     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${assetStatusClass[r.status] || 'bg-muted text-muted-foreground'}`}>{r.status}</span>
                     {canManage && (
-                      <button onClick={() => openEditEstate(r)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
-                        <Pencil className="h-3.5 w-3.5" /> تعديل
-                      </button>
+                      <>
+                        <button onClick={() => openEditEstate(r)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                          <Pencil className="h-3.5 w-3.5" /> تعديل
+                        </button>
+                        <button onClick={() => deleteEstate(r)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                          <Trash2 className="h-3.5 w-3.5" /> حذف
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -858,11 +911,16 @@ function AssetsPageInner() {
                       </td>
                       {canManage && (
                         <td className="px-3 py-4 sm:px-6">
-                          {m.status !== 'مكتملة' && (
-                            <button onClick={() => openCompleteMaintenance(m)} className="flex items-center gap-1 text-success hover:text-success/80 transition-colors text-xs font-medium">
-                              <CheckCircle2 className="h-3.5 w-3.5" /> إكمال
+                          <div className="flex items-center gap-2">
+                            {m.status !== 'مكتملة' && (
+                              <button onClick={() => openCompleteMaintenance(m)} className="flex items-center gap-1 text-success hover:text-success/80 transition-colors text-xs font-medium">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> إكمال
+                              </button>
+                            )}
+                            <button onClick={() => deleteMaintenance(m)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
                             </button>
-                          )}
+                          </div>
                         </td>
                       )}
                     </tr>

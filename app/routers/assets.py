@@ -235,7 +235,7 @@ def transfer_asset(asset_id: str, data: AssetTransfer, db: Session = Depends(get
     asset = db.get(FixedAsset, asset_id)
     if not asset:
          raise APIError(code="NOT_FOUND", message_ar="الأصل غير موجود", message_en="Asset not found", status_code=404)
-    
+
     old_branch = asset.branch
     asset.branch = data.to_branch
     asset.location = data.to_location
@@ -244,6 +244,41 @@ def transfer_asset(asset_id: str, data: AssetTransfer, db: Session = Depends(get
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="FixedAsset", entity_id=asset.id, description=f"نقل عهدة الأصل {asset.name} من فرع {old_branch} إلى {data.to_branch}")
     db.commit()
     return success_response(data=asset_to_dict(asset))
+
+@router.delete("/assets/{asset_id}")
+def delete_asset(asset_id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Deleting a fixed asset also clears out everything filed under it (its
+    vehicle/real-estate record, maintenance history, depreciation row, and
+    documents) so nothing is left pointing at an id that no longer exists. A
+    car merely *stored* in this asset as a warehouse is not deleted with it —
+    only unlinked from it."""
+    asset = db.get(FixedAsset, asset_id)
+    if not asset:
+        raise APIError(code="NOT_FOUND", message_ar="الأصل غير موجود", message_en="Asset not found", status_code=404)
+
+    for vehicle in db.scalars(select(Vehicle).where(Vehicle.warehouse_id == asset_id)).all():
+        vehicle.warehouse_id = None
+    for vehicle in db.scalars(select(Vehicle).where(Vehicle.asset_id == asset_id)).all():
+        db.delete(vehicle)
+    for estate in db.scalars(select(RealEstate).where(RealEstate.asset_id == asset_id)).all():
+        db.delete(estate)
+    for record in db.scalars(select(MaintenanceRecord).where(MaintenanceRecord.asset_id == asset_id)).all():
+        db.delete(record)
+    dep = db.get(DepreciationRecord, asset_id)
+    if dep:
+        db.delete(dep)
+    for doc in db.scalars(select(AssetDocument).where(AssetDocument.asset_id == asset_id)).all():
+        if doc.stored_path:
+            try:
+                os.remove(resolve_path(doc.stored_path))
+            except OSError:
+                pass
+        db.delete(doc)
+
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="FixedAsset", entity_id=asset_id, description=f"تم حذف الأصل الثابت: {asset.name}", username=actor.username)
+    db.delete(asset)
+    db.commit()
+    return success_response(data={"deleted": True})
 
 # ----------------- VEHICLES & REAL ESTATE LISTS -----------------
 @router.get("/vehicles")
@@ -301,6 +336,16 @@ def complete_maintenance(id: str, data: MaintenanceComplete, db: Session = Depen
         record.description = f"{record.description} — إقفال: {data.notes}"
     db.commit()
     return success_response(data=maintenance_to_dict(record))
+
+@router.delete("/maintenance_records/{id}")
+def delete_maintenance_record(id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    record = db.get(MaintenanceRecord, id)
+    if not record:
+        raise APIError(code="NOT_FOUND", message_ar="سجل الصيانة غير موجود", message_en="Record not found", status_code=404)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="MaintenanceRecord", entity_id=id, description=f"تم حذف سجل صيانة للأصل {record.asset_name}", username=actor.username)
+    db.delete(record)
+    db.commit()
+    return success_response(data={"deleted": True})
 
 # ----------------- DEPRECIATION RECORDS -----------------
 @router.get("/depreciation_records")
@@ -427,6 +472,16 @@ def update_vehicle(id: str, data: VehicleCreate, db: Session = Depends(get_db)):
     db.commit()
     return success_response(data=vehicle_to_dict(v))
 
+@router.delete("/vehicles/{id}")
+def delete_vehicle(id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    v = db.get(Vehicle, id)
+    if not v:
+        raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="Vehicle", entity_id=id, description=f"تم حذف المركبة: {v.car_name}", username=actor.username)
+    db.delete(v)
+    db.commit()
+    return success_response(data={"deleted": True})
+
 @router.post("/real_estates")
 def create_real_estate(data: RealEstateCreate, db: Session = Depends(get_db)):
     r = RealEstate(**data.model_dump())
@@ -443,3 +498,13 @@ def update_real_estate(id: str, data: RealEstateCreate, db: Session = Depends(ge
         setattr(r, k, val)
     db.commit()
     return success_response(data=estate_to_dict(r))
+
+@router.delete("/real_estates/{id}")
+def delete_real_estate(id: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    r = db.get(RealEstate, id)
+    if not r:
+        raise APIError(code="NOT_FOUND", message_ar="العقار غير موجود", message_en="Real estate not found", status_code=404)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="RealEstate", entity_id=id, description=f"تم حذف العقار: {r.property_name}", username=actor.username)
+    db.delete(r)
+    db.commit()
+    return success_response(data={"deleted": True})

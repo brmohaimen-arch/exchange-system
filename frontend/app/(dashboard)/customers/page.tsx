@@ -500,6 +500,29 @@ function CustomersPageInner() {
     }
   }
 
+  const deleteDebt = async (d: Debt) => {
+    if (!(await confirmDialog(`هل تريد حذف دين العميل ${d.customerName} بمبلغ ${d.amount.toLocaleString()} ${d.currency}؟`))) return
+    try {
+      await api.delete(`/debts/${d.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف الدين')
+    }
+  }
+
+  const deleteAdvance = async (a: Advance) => {
+    const msg = a.remainingAmount > 0
+      ? `هل تريد حذف سلفة العميل ${a.customerName}؟ سيتم إعادة المبلغ المتبقي (${a.remainingAmount.toLocaleString()} ${a.currency}) إلى مصدرها.`
+      : `هل تريد حذف سلفة العميل ${a.customerName}؟`
+    if (!(await confirmDialog(msg))) return
+    try {
+      await api.delete(`/advances/${a.id}`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف السلفة')
+    }
+  }
+
   // ---------------- Customer Documents ----------------
   const openCreateDoc = () => {
     setDocForm(emptyDocForm())
@@ -1166,6 +1189,11 @@ function CustomersPageInner() {
                         >
                           {sendingDebtId === d.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="h-3.5 w-3.5" />} إرسال واتساب
                         </button>
+                        {canManageDebts && (
+                          <button onClick={() => deleteDebt(d)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                            <Trash2 className="h-3.5 w-3.5" /> حذف
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1221,6 +1249,11 @@ function CustomersPageInner() {
                           {canManageDebts && (
                             <button onClick={() => openCreateAdvance({ customerId: a.customerId, currency: a.currency })} className="flex items-center gap-1 text-warning hover:text-warning/80 transition-colors text-xs font-medium">
                               <Plus className="h-3.5 w-3.5" /> زيادة
+                            </button>
+                          )}
+                          {canManageDebts && (
+                            <button onClick={() => deleteAdvance(a)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
                             </button>
                           )}
                         </div>

@@ -1325,6 +1325,19 @@ def list_debt_payments(db: Session = Depends(get_db)):
     res = db.scalars(select(DebtPaymentRecord).order_by(DebtPaymentRecord.timestamp.desc())).all()
     return success_response(data=[debt_payment_to_dict(p) for p in res])
 
+@router.delete("/debts/{debt_id}")
+def delete_debt(debt_id: str, actor: User = Depends(require_permission("إدارة الديون")), db: Session = Depends(get_db)):
+    debt = db.get(Debt, debt_id)
+    if not debt:
+        raise APIError(code="NOT_FOUND", message_ar="الدين غير موجود", message_en="Debt not found", status_code=404)
+    for payment in db.scalars(select(DebtPaymentRecord).where(DebtPaymentRecord.debt_id == debt_id)).all():
+        db.delete(payment)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="Debt", entity_id=debt_id,
+                     description=f"تم حذف دين للعميل {debt.customer_name} بمبلغ {debt.amount} {debt.currency}", username=actor.username)
+    db.delete(debt)
+    db.commit()
+    return success_response(data={"deleted": True})
+
 # ----------------- ADVANCES (سلفة) -----------------
 # Unlike a Debt (a pure paper record — creating or paying one never touches any
 # balance), an Advance is real cash handed to the customer straight out of a
@@ -1513,6 +1526,50 @@ def advance_payment_to_dict(p: AdvancePaymentRecord):
 def list_advance_payments(db: Session = Depends(get_db)):
     res = db.scalars(select(AdvancePaymentRecord).order_by(AdvancePaymentRecord.timestamp.desc())).all()
     return success_response(data=[advance_payment_to_dict(p) for p in res])
+
+@router.delete("/advances/{advance_id}")
+def delete_advance(advance_id: str, actor: User = Depends(require_permission("إدارة الديون")), db: Session = Depends(get_db)):
+    """Deleting a سلفة is different from deleting a Debt: real cash left the
+    vault/bank account when it was created, so any still-outstanding amount is
+    credited back to its source before the record is removed — otherwise that
+    cash would simply vanish from the books with no trace."""
+    advance = db.get(Advance, advance_id)
+    if not advance:
+        raise APIError(code="NOT_FOUND", message_ar="السلفة غير موجودة", message_en="Advance not found", status_code=404)
+
+    if advance.remaining_amount > 0:
+        source_kind, source_obj, source_label, source_before = _resolve_advance_source(db, advance.vault_id, advance.bank_account_id, advance.currency)
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        source_after = _apply_source_delta(source_kind, source_obj, advance.currency, advance.remaining_amount, timestamp)
+
+        db.add(Movement(
+            id=new_id(f"m_advdel_{advance_id}"), timestamp=timestamp, entity_type=source_kind, entity_id=source_obj.id,
+            entity_name=source_label, currency=advance.currency, type="إلغاء سلفة لعميل",
+            amount_in=advance.remaining_amount, amount_out=0.0, balance_before=source_before, balance_after=source_after,
+            reference_id=advance_id, user=actor.name
+        ))
+
+        equivalent_lyd = _advance_equivalent_lyd(db, advance.currency, advance.remaining_amount)
+        source_account_kind = "خزينة" if source_kind == "vault" else "حساب بنكي"
+        db.add(JournalEntry(
+            id=new_id(f"JV-{advance_id}"), date=timestamp,
+            tx_type="إلغاء سلفة", reference=advance_id,
+            description=f"إلغاء سلفة بقيمة {advance.remaining_amount} {advance.currency} للعميل {advance.customer_name} — إعادة إلى {source_account_kind} {source_label}",
+            user=actor.name, status="approved",
+            lines=[
+                {"accountName": f"{source_account_kind} {source_label} - {advance.currency}", "currency": advance.currency, "debit": advance.remaining_amount, "credit": 0.0, "originalAmount": advance.remaining_amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+                {"accountName": f"سلفة العميل {advance.customer_name} - {advance.currency}", "currency": advance.currency, "debit": 0.0, "credit": advance.remaining_amount, "originalAmount": advance.remaining_amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            ]
+        ))
+
+    for payment in db.scalars(select(AdvancePaymentRecord).where(AdvancePaymentRecord.advance_id == advance_id)).all():
+        db.delete(payment)
+
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="Advance", entity_id=advance_id,
+                     description=f"تم حذف سلفة للعميل {advance.customer_name} بمبلغ {advance.amount} {advance.currency}", username=actor.username)
+    db.delete(advance)
+    db.commit()
+    return success_response(data={"deleted": True})
 
 # ----------------- COMMISSION / FEE RULES -----------------
 class CommissionRuleCreate(BaseModel):
