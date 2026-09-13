@@ -7,7 +7,8 @@ import { api, openFile, downloadFile, Customer, Currency } from '@/lib/api-clien
 import { ApiError } from '@/lib/auth-provider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 
-interface StatementData { headers: string[]; rows: string[][]; closingLine: string }
+interface StatementSection { name: string; headers: string[]; rows: string[][] }
+interface StatementData { sections: StatementSection[]; closingLine: string }
 
 export default function CustomerStatementPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -195,47 +196,57 @@ export default function CustomerStatementPage() {
         </div>
       </div>
 
-      {/* Results */}
+      {/* Results — kept separated by kind (trades / deposits & withdrawals /
+          debts / سلف, each debt/سلفة currency its own table) rather than one
+          merged chronological list. */}
       {statement && selectedCustomer && (
-        <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-          <div className="border-b border-border px-6 py-4 bg-secondary/30">
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-card shadow-sm px-6 py-4">
             <h3 className="text-lg font-semibold text-foreground">كشف حساب — {selectedCustomer.name}</h3>
             <p className="text-xs text-muted-foreground mt-1">{selectedCustomer.phone || '—'} · {dateFrom || 'البداية'} إلى {dateTo || 'اليوم'}</p>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm text-right">
-              <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
-                <tr>{statement.headers.map((h) => <th key={h} className="px-4 py-3 font-medium">{h}</th>)}</tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {statement.rows.length === 0 ? (
-                  <tr><td colSpan={statement.headers.length} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذه الفترة</td></tr>
-                ) : statement.rows.map((row, i) => {
-                  // Column 2 is "التفاصيل" — only deposit/withdraw entries have a clear
-                  // in/out direction on the customer's own balance; a buy/sell/exchange
-                  // is a two-sided trade, not a simple credit or debit, so it's left
-                  // in the default color.
-                  const detail = row[2] || ''
-                  const isDeposit = detail.includes('إيداع')
-                  const isWithdraw = detail.includes('سحب من الحساب')
-                  return (
-                    <tr key={i} className="hover:bg-muted/50 transition-colors">
-                      {row.map((cell, j) => (
-                        <td
-                          key={j}
-                          dir={j === 3 && (isDeposit || isWithdraw) ? 'ltr' : undefined}
-                          className={`px-4 py-3 ${j === 3 && isDeposit ? 'font-bold text-success' : j === 3 && isWithdraw ? 'font-bold text-danger' : ''}`}
-                        >
-                          {j === 3 && isDeposit ? `+${cell}` : j === 3 && isWithdraw ? `-${cell}` : cell}
-                        </td>
-                      ))}
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="border-t border-border px-6 py-3 bg-secondary/20 text-sm font-medium text-foreground">
+
+          {statement.sections.map((section) => (
+            <div key={section.name} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+              <div className="border-b border-border px-6 py-3 bg-secondary/30">
+                <h4 className="text-sm font-semibold text-foreground">{section.name}</h4>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-right">
+                  <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                    <tr>{section.headers.map((h) => <th key={h} className="px-4 py-3 font-medium">{h}</th>)}</tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {section.rows.length === 0 ? (
+                      <tr><td colSpan={section.headers.length} className="px-6 py-8 text-center text-muted-foreground">لا توجد بيانات</td></tr>
+                    ) : section.rows.map((row, i) => {
+                      // Column 2 is "التفاصيل" — only deposit/withdraw/سداد entries have a
+                      // clear in/out direction; a buy/sell/exchange is a two-sided trade,
+                      // not a simple credit or debit, so it's left in the default color.
+                      const detail = row[2] || ''
+                      const isIn = detail.includes('إيداع') || detail.includes('تسديد') || detail.includes('تحويل من') || detail.includes('تحويل وارد')
+                      const isOut = detail.includes('سحب من الحساب') || detail.includes('تسجيل دين') || detail.includes('صرف سلفة') || detail.includes('تحويل إلى') || detail.includes('تحويل صادر')
+                      return (
+                        <tr key={i} className="hover:bg-muted/50 transition-colors">
+                          {row.map((cell, j) => (
+                            <td
+                              key={j}
+                              dir={j === 3 && (isIn || isOut) ? 'ltr' : undefined}
+                              className={`px-4 py-3 ${j === 3 && isIn ? 'font-bold text-success' : j === 3 && isOut ? 'font-bold text-danger' : ''}`}
+                            >
+                              {j === 3 && isIn ? `+${cell}` : j === 3 && isOut ? `-${cell}` : cell}
+                            </td>
+                          ))}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+
+          <div className="rounded-xl border border-border bg-card shadow-sm px-6 py-3 text-sm font-medium text-foreground">
             {statement.closingLine}
           </div>
         </div>

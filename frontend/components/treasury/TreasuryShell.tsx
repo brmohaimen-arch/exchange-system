@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, FormEvent, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle, Percent, FileText } from 'lucide-react'
-import { api, newId, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction, Customer, Movement } from '@/lib/api-client'
+import { api, newId, openFile, downloadFile, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction, Customer, Movement } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -203,6 +203,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [statementDateFrom, setStatementDateFrom] = useState('')
   const [statementDateTo, setStatementDateTo] = useState('')
   const [statementCcy, setStatementCcy] = useState('')
+  const [statementDownloading, setStatementDownloading] = useState<string | null>(null)
+  const [statementSending, setStatementSending] = useState(false)
 
   // ---------------- Manual Entry / Quick Operation ----------------
   type QuickOpType = 'deposit' | 'withdraw' | 'advance' | 'debt' | 'other'
@@ -291,6 +293,48 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     setStatementCcy('')
     setStatementItems([])
     setStatementTarget({ kind, id, name })
+  }
+
+  const statementQuery = () => {
+    const params = new URLSearchParams()
+    if (statementDateFrom) params.set('date_from', statementDateFrom)
+    if (statementDateTo) params.set('date_to', statementDateTo)
+    if (statementCcy) params.set('currency', statementCcy)
+    return params.toString()
+  }
+
+  const statementBasePath = () => statementTarget?.kind === 'vault' ? `/vaults/${statementTarget.id}` : `/bank_accounts/${statementTarget?.id}`
+
+  const downloadStatement = async (format: 'pdf' | 'xlsx') => {
+    if (!statementTarget) return
+    const key = `dl-${format}`
+    setStatementDownloading(key)
+    setError('')
+    try {
+      const path = `${statementBasePath()}/statement/export?format=${format}&${statementQuery()}`
+      if (format === 'pdf') {
+        await openFile(path)
+      } else {
+        await downloadFile(path, `statement_${statementTarget.id}.xlsx`)
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل الملف')
+    } finally {
+      setStatementDownloading(null)
+    }
+  }
+
+  const sendStatementWhatsapp = async () => {
+    if (!statementTarget) return
+    setStatementSending(true)
+    setError('')
+    try {
+      await api.post(`${statementBasePath()}/send_statement_whatsapp?${statementQuery()}`, {})
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إرسال كشف الحساب عبر واتساب')
+    } finally {
+      setStatementSending(false)
+    }
   }
 
   // Categorizes a Movement's free-text type into the sections the statement
@@ -2735,6 +2779,29 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <option value="">كل العملات</option>
                     {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
                   </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => downloadStatement('pdf')}
+                    disabled={statementDownloading === 'dl-pdf'}
+                    className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                  >
+                    {statementDownloading === 'dl-pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />} فتح PDF
+                  </button>
+                  <button
+                    onClick={() => downloadStatement('xlsx')}
+                    disabled={statementDownloading === 'dl-xlsx'}
+                    className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                  >
+                    {statementDownloading === 'dl-xlsx' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />} تحميل Excel
+                  </button>
+                  <button
+                    onClick={sendStatementWhatsapp}
+                    disabled={statementSending}
+                    className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted hover:text-success transition-colors disabled:opacity-50"
+                  >
+                    {statementSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightLeft className="h-4 w-4" />} إرسال واتساب
+                  </button>
                 </div>
               </div>
 

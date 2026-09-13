@@ -265,6 +265,118 @@ def build_statement_pdf(customer_name: str, customer_phone: str, customer_id_num
     return buf
 
 
+def build_sectioned_excel(sections: list[tuple[str, list[str], list[list]]]) -> io.BytesIO:
+    """Like build_excel, but for a statement that must stay separated by kind
+    (e.g. trades / deposits-withdrawals / debts / advances) instead of one
+    merged chronological table — each (name, headers, rows) becomes its own
+    sheet, in order, so the categories never bleed into each other."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    used_names: set[str] = set()
+    for name, headers, rows in sections:
+        # Excel sheet names forbid / \ ? * [ ] : and are capped at 31 chars.
+        safe_name = re.sub(r'[\\/?*\[\]:]', '-', name)
+        sheet_name = safe_name[:31]
+        suffix = 2
+        while sheet_name in used_names:
+            sheet_name = f"{safe_name[:28]}({suffix})"
+            suffix += 1
+        used_names.add(sheet_name)
+
+        ws = wb.create_sheet(title=sheet_name)
+        ws.sheet_view.rightToLeft = True
+        header_font = Font(bold=True)
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+        for row_idx, row in enumerate(rows, start=2):
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
+        for col_idx in range(1, len(headers) + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 18
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def build_sectioned_pdf(
+    title: str, sections: list[tuple[str, list[str], list[list]]], closing_line: str = "",
+    subtitle_lines: list[str] | None = None,
+) -> io.BytesIO:
+    """Like build_statement_pdf, but for a statement kept separated by kind —
+    each (name, headers, rows) renders as its own titled table, stacked top to
+    bottom in one document, instead of a single merged chronological table."""
+    font_name = _ensure_font_registered()
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=1 * cm, bottomMargin=1 * cm)
+    content_width = landscape(A4)[0] - 3 * cm
+
+    company_style = ParagraphStyle("SectionedCompany", fontName=font_name, fontSize=15, leading=19, alignment=1, textColor=BRAND_COLOR, spaceAfter=2)
+    contact_style = ParagraphStyle("SectionedContact", fontName=font_name, fontSize=8, leading=11, alignment=1, textColor=colors.grey)
+    info_style = ParagraphStyle("SectionedInfo", fontName=font_name, fontSize=10, leading=14, alignment=1, spaceAfter=2)
+    section_title_style = ParagraphStyle("SectionedSectionTitle", fontName=font_name, fontSize=12, leading=16, alignment=1, textColor=colors.white, spaceAfter=0)
+    empty_style = ParagraphStyle("SectionedEmpty", fontName=font_name, fontSize=9, leading=12, alignment=1, textColor=colors.grey)
+    closing_style = ParagraphStyle("SectionedClosing", fontName=font_name, fontSize=11, leading=15, alignment=1, spaceBefore=10)
+
+    elements = []
+    if os.path.exists(_LOGO_PATH):
+        logo = Image(_LOGO_PATH, width=1.5 * cm, height=1.5 * cm)
+        logo.hAlign = "CENTER"
+        elements.append(logo)
+        elements.append(Spacer(1, 0.1 * cm))
+    elements.append(Paragraph(shape_arabic("شركة واكب للخدمات المالية"), company_style))
+    elements.append(Paragraph(" | ".join(COMPANY_PHONES), contact_style))
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(Paragraph(shape_arabic(title), info_style))
+    for line in (subtitle_lines or []):
+        elements.append(Paragraph(shape_arabic(line), info_style))
+    elements.append(Spacer(1, 0.4 * cm))
+
+    header_style = ParagraphStyle("SectionedHeader", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white, wordWrap="CJK")
+    cell_style = ParagraphStyle("SectionedCell", fontName=font_name, fontSize=9, alignment=1, wordWrap="CJK")
+
+    for name, headers, rows in sections:
+        title_table = Table([[Paragraph(shape_arabic(name), section_title_style)]], colWidths=[content_width])
+        title_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), BRAND_COLOR),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(title_table)
+
+        if not rows:
+            elements.append(Paragraph(shape_arabic("لا توجد بيانات"), empty_style))
+            elements.append(Spacer(1, 0.4 * cm))
+            continue
+
+        approx_col_width = content_width / max(len(headers), 1) - 6
+        display_headers = [Paragraph(shape_arabic(h, approx_col_width, font_name, 9), header_style) for h in reversed(headers)]
+        display_rows = [[Paragraph(shape_arabic(cell, approx_col_width, font_name, 9), cell_style) for cell in reversed(row)] for row in rows]
+        table_data = [display_headers] + display_rows
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 0.4 * cm))
+
+    if closing_line:
+        elements.append(Paragraph(shape_arabic(closing_line), closing_style))
+
+    doc.build(elements)
+    buf.seek(0)
+    return buf
+
+
 def build_receipt_pdf(title: str, subtitle: str, fields: list[tuple[str, str]], footer: str = "") -> io.BytesIO:
     """A single-record printable slip — landscape, with each field as its own
     column (a header row of labels above a row of values) rather than a tall

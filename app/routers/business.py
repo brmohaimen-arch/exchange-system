@@ -3,12 +3,12 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from ..database import get_db
 from ..models import (
     Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, DebtPaymentRecord, Advance, AdvancePaymentRecord, Transaction, Movement, JournalEntry,
     Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule,
-    CustomerAccountEntry
+    CustomerAccountEntry, Transfer
 )
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
@@ -16,7 +16,7 @@ from ..core.errors import APIError
 from ..core.export_labels import TX_TYPE_LABELS_AR, PAYMENT_METHOD_LABELS_AR, TX_STATUS_LABELS_AR
 from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
-from ..export_utils import build_excel, build_pdf, build_receipt_pdf, build_statement_pdf, ArabicFontUnavailable
+from ..export_utils import build_excel, build_pdf, build_receipt_pdf, build_statement_pdf, build_sectioned_excel, build_sectioned_pdf, ArabicFontUnavailable
 from ..file_storage import save_upload, resolve_path
 from ..whatsapp_gateway import send_manager_alert, send_whatsapp_document, get_setting as get_whatsapp_setting
 from ..telegram_gateway import send_manager_alert as send_telegram_alert
@@ -834,14 +834,29 @@ def list_customer_account_entries(db: Session = Depends(get_db)):
     res = db.scalars(select(CustomerAccountEntry).order_by(CustomerAccountEntry.timestamp.desc())).all()
     return success_response(data=[customer_account_entry_to_dict(e) for e in res])
 
-def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "", date_to: str = "", currency: str = ""):
-    """Every buy/sell/exchange transaction and every deposit/withdraw entry for
-    this customer, chronologically — the same activity the كشف حساب modal shows
-    on screen. No single running balance column: the customer can hold several
-    currencies at once, so the closing line lists each one's current total instead.
-    An optional currency filter keeps a multi-currency customer's history from
-    reading as one crowded mixed-currency list — pass e.g. "USD" to see just
-    that account's activity."""
+def _group_rows_by_currency(name_prefix: str, headers: list[str], items_with_ts_ccy_row: list[tuple[str, str, list]]) -> list[tuple[str, list[str], list[list]]]:
+    """Splits a flat (timestamp, currency, row) list into one named section per
+    currency actually present, each sorted and numbered on its own — e.g.
+    "الديون - LYD" and "الديون - USD" as two separate tables instead of one
+    mixed-currency list. With a single currency already filtered upstream,
+    this naturally produces just one section."""
+    by_ccy: dict[str, list[tuple[str, list]]] = {}
+    for ts, ccy, row in items_with_ts_ccy_row:
+        by_ccy.setdefault(ccy, []).append((ts, row))
+    sections = []
+    for ccy in sorted(by_ccy.keys()):
+        entries = sorted(by_ccy[ccy], key=lambda r: r[0])
+        rows = [[str(i)] + row for i, (_, row) in enumerate(entries, start=1)]
+        sections.append((f"{name_prefix} - {ccy}", headers, rows))
+    return sections
+
+def _customer_statement_sections(db: Session, customer: Customer, date_from: str = "", date_to: str = "", currency: str = ""):
+    """Every buy/sell/exchange transaction, deposit/withdraw/transfer entry, debt,
+    and سلفة for this customer — kept separated by kind (and, for debts/سلف,
+    by currency) rather than merged into one chronological list, so e.g. a USD
+    debt and a LYD سلفة never end up interleaved in the same table. Returns
+    (sections, closing_line) where sections is a list of (name, headers, rows)
+    ready for build_sectioned_excel / build_sectioned_pdf."""
     txs_query = select(Transaction).where(Transaction.customer_id == customer.id, Transaction.type.in_(["buy", "sell", "exchange"]))
     entries_query = select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id == customer.id)
     debts_query = select(Debt).where(Debt.customer_id == customer.id)
@@ -876,13 +891,21 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
     advances = db.scalars(advances_query).all()
     advance_payments = db.scalars(advance_payments_query).all()
 
-    rows_with_ts = []
+    detail_headers = ["م", "التاريخ", "التفاصيل", "المبلغ", "العملة", "بواسطة"]
+
+    # 1. معاملات الصرافة — buy/sell/exchange only.
+    trade_rows_with_ts = []
     for t in txs:
         tx_currency = t.to_currency if t.type == "sell" else t.from_currency
         if currency and tx_currency != currency:
             continue
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — {t.id}"
-        rows_with_ts.append((t.timestamp, [t.timestamp, detail, f"{t.amount:,.2f}", tx_currency, t.user]))
+        trade_rows_with_ts.append((t.timestamp, [t.timestamp, detail, f"{t.amount:,.2f}", tx_currency, t.user]))
+    trade_rows_with_ts.sort(key=lambda r: r[0])
+    trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
+
+    # 2. الإيداع والسحب — deposits, withdrawals, and customer-to-customer transfers.
+    dw_rows_with_ts = []
     for e in entries:
         if e.type == "deposit":
             detail = "إيداع في الحساب"
@@ -892,39 +915,55 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
             # transfer_in / transfer_out — other_source already reads like
             # "تحويل من/إلى العميل X (id)", so it doubles as the detail text.
             detail = e.other_source or e.type
-        rows_with_ts.append((e.timestamp, [e.timestamp, detail, f"{e.amount:,.2f}", e.currency, e.user]))
+        dw_rows_with_ts.append((e.timestamp, [e.timestamp, detail, f"{e.amount:,.2f}", e.currency, e.user]))
+    dw_rows_with_ts.sort(key=lambda r: r[0])
+    dw_rows = [[str(i)] + row for i, (_, row) in enumerate(dw_rows_with_ts, start=1)]
+
+    # 3. الديون — grouped into one table per currency.
+    debt_items = []
     for d in debts:
         detail = f"تسجيل دين جديد — استحقاق {d.due_date}"
-        rows_with_ts.append((d.start_date, [d.start_date, detail, f"{d.amount:,.2f}", d.currency, d.created_by or "—"]))
+        debt_items.append((d.start_date, d.currency, [d.start_date, detail, f"{d.amount:,.2f}", d.currency, d.created_by or "—"]))
     for p in debt_payments:
-        detail = "تسديد دفعة دين"
-        rows_with_ts.append((p.timestamp, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
+        debt_items.append((p.timestamp, p.currency, [p.timestamp, "تسديد دفعة دين", f"{p.amount:,.2f}", p.currency, p.user]))
+    debt_sections = _group_rows_by_currency("الديون", detail_headers, debt_items)
+
+    # 4. السلف — grouped into one table per currency.
+    advance_items = []
     for a in advances:
         source_label = a.vault_name or a.bank_account_name
         detail = f"صرف سلفة — من {source_label}"
-        rows_with_ts.append((a.timestamp, [a.timestamp, detail, f"{a.amount:,.2f}", a.currency, a.created_by]))
+        advance_items.append((a.timestamp, a.currency, [a.timestamp, detail, f"{a.amount:,.2f}", a.currency, a.created_by]))
     for p in advance_payments:
         source_label = p.vault_name or p.bank_account_name
         detail = f"تسديد دفعة سلفة — إلى {source_label}"
-        rows_with_ts.append((p.timestamp, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
+        advance_items.append((p.timestamp, p.currency, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
+    advance_sections = _group_rows_by_currency("السلف", detail_headers, advance_items)
 
-    rows_with_ts.sort(key=lambda r: r[0])
-    headers = ["م", "التاريخ", "التفاصيل", "المبلغ", "العملة", "بواسطة"]
-    rows = [[str(i)] + row for i, (_, row) in enumerate(rows_with_ts, start=1)]
+    sections = [
+        ("معاملات الصرافة", detail_headers, trade_rows),
+        ("الإيداع والسحب", detail_headers, dw_rows),
+        *debt_sections,
+        *advance_sections,
+    ]
 
     balances = {currency: customer.balances.get(currency, 0.0)} if currency else customer.balances
     closing_line = "الأرصدة الحالية: " + (", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in balances.items()) or "لا توجد أرصدة")
-    return headers, rows, closing_line
+    return sections, closing_line
 
 @router.get("/customers/{customer_id}/statement")
 def get_customer_statement(customer_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
-    """JSON version of the statement rows, for an on-screen filterable view (as
-    opposed to the /export endpoint below, which renders a downloadable file)."""
+    """JSON version of the statement sections, for an on-screen filterable view
+    (as opposed to the /export endpoint below, which renders a downloadable
+    file). Kept separated by kind, same as the export."""
     customer = db.get(Customer, customer_id)
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
-    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to, currency)
-    return success_response(data={"headers": headers, "rows": rows, "closingLine": closing_line})
+    sections, closing_line = _customer_statement_sections(db, customer, date_from, date_to, currency)
+    return success_response(data={
+        "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
+        "closingLine": closing_line,
+    })
 
 @router.get("/customers/{customer_id}/statement/export")
 def export_customer_statement(customer_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
@@ -932,12 +971,13 @@ def export_customer_statement(customer_id: str, format: str = "pdf", date_from: 
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
 
-    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to, currency)
+    sections, closing_line = _customer_statement_sections(db, customer, date_from, date_to, currency)
     if format == "xlsx":
-        buf = build_excel(f"كشف حساب {customer.name}", headers, rows)
+        buf = build_sectioned_excel(sections)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="statement_{customer.id}.xlsx"'})
     try:
-        buf = build_statement_pdf(customer.name, customer.phone, customer.id_number, headers, rows, closing_line)
+        info_line = f"الهاتف: {customer.phone}" + (f"  —  الرقم الوطني: {customer.id_number}" if customer.id_number else "")
+        buf = build_sectioned_pdf(f"كشف حساب — {customer.name}", sections, closing_line, subtitle_lines=[info_line])
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="statement_{customer.id}.pdf"'})
@@ -950,9 +990,10 @@ def send_customer_statement_whatsapp(customer_id: str, date_from: str = "", date
     if not customer.phone:
         raise APIError(code="NO_PHONE", message_ar="لا يوجد رقم هاتف مسجل لهذا العميل", message_en="This customer has no phone number on file", status_code=400)
 
-    headers, rows, closing_line = _customer_statement_rows(db, customer, date_from, date_to, currency)
+    sections, closing_line = _customer_statement_sections(db, customer, date_from, date_to, currency)
     try:
-        buf = build_statement_pdf(customer.name, customer.phone, customer.id_number, headers, rows, closing_line)
+        info_line = f"الهاتف: {customer.phone}" + (f"  —  الرقم الوطني: {customer.id_number}" if customer.id_number else "")
+        buf = build_sectioned_pdf(f"كشف حساب — {customer.name}", sections, closing_line, subtitle_lines=[info_line])
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
 
@@ -1797,6 +1838,150 @@ def manual_bank_entry(account_id: str, data: ManualEntryOp, actor: User = Depend
         raise APIError(code="CURRENCY_MISMATCH", message_ar=f"عملة الحساب البنكي ({account.currency}) لا تطابق عملة القيد ({data.currency})", message_en="Bank account currency mismatch", status_code=400)
     _apply_manual_entry(db, "bank_account", account, f"{account.bank_name} - {account.account_name}", data, actor)
     return success_response(data=bank_account_to_dict(account), message_ar="تم تسجيل القيد اليدوي بنجاح")
+
+def _categorize_movement_type(t: str) -> str:
+    """Same categorization the on-screen vault/bank statement modal uses
+    client-side — kept here too so the exported PDF/Excel matches it exactly."""
+    if "سلفة" in t:
+        return "advance"
+    if t.startswith("قيد يدوي"):
+        return "manual"
+    if "فائدة وديعة" in t:
+        return "interest"
+    if "حساب عميل" in t:
+        return "customer"
+    if "إلى بنك" in t or "من بنك" in t or "حساب بنكي" in t:
+        return "transfer_direct"
+    if any(k in t for k in ("عملة ورقية", "تبديل عملة", "مقبوضات صرافة", "مدفوعات صرافة")) or t.startswith("عكس عملية"):
+        return "trade"
+    return "other"
+
+def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, date_from: str = "", date_to: str = "", currency: str = ""):
+    """Builds the same separated sections as the on-screen vault/bank account
+    statement — معاملات الصرافة / إيداع وسحب العملاء / السلف / فوائد بنكية /
+    قيود يدوية / تحويلات مباشرة مع خزنة أو بنك / أخرى, plus a "التحويلات بين
+    الحسابات" section from the Transfer/approval system — for the PDF/Excel
+    export and WhatsApp send. Returns (sections, closing_line)."""
+    mv_query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id)
+    if date_from:
+        mv_query = mv_query.where(Movement.timestamp >= date_from)
+    if date_to:
+        mv_query = mv_query.where(Movement.timestamp <= date_to + " 23:59:59")
+    if currency:
+        mv_query = mv_query.where(Movement.currency == currency)
+    movements = db.scalars(mv_query.order_by(Movement.timestamp)).all()
+
+    groups: dict[str, list[Movement]] = {"trade": [], "customer": [], "advance": [], "interest": [], "manual": [], "transfer_direct": [], "other": []}
+    for m in movements:
+        groups[_categorize_movement_type(m.type)].append(m)
+
+    mv_headers = ["م", "الوقت", "النوع", "المبلغ", "الرصيد بعد", "بواسطة"]
+
+    def mv_rows(items: list[Movement]) -> list[list]:
+        rows = []
+        for i, m in enumerate(items, start=1):
+            is_in = m.amount_in > 0
+            amount_str = f"{'+' if is_in else '-'}{(m.amount_in if is_in else m.amount_out):,.2f} {m.currency}"
+            rows.append([str(i), m.timestamp, m.type, amount_str, f"{m.balance_after:,.2f}", m.user])
+        return rows
+
+    sections = [
+        ("معاملات الصرافة", mv_headers, mv_rows(groups["trade"])),
+        ("إيداع وسحب العملاء", mv_headers, mv_rows(groups["customer"])),
+        ("السلف", mv_headers, mv_rows(groups["advance"])),
+        ("فوائد بنكية", mv_headers, mv_rows(groups["interest"])),
+        ("قيود يدوية", mv_headers, mv_rows(groups["manual"])),
+        ("تحويلات مباشرة مع خزنة/بنك", mv_headers, mv_rows(groups["transfer_direct"])),
+        ("أخرى", mv_headers, mv_rows(groups["other"])),
+    ]
+
+    # Transfers via the approval system — only ones actually approved, since a
+    # pending/rejected transfer never moved any cash.
+    tr_query = select(Transfer).where(Transfer.status == "approved", or_(Transfer.source_id == entity_id, Transfer.dest_id == entity_id))
+    if currency:
+        tr_query = tr_query.where(Transfer.currency == currency)
+    transfers = db.scalars(tr_query.order_by(Transfer.timestamp)).all()
+    if date_from:
+        transfers = [t for t in transfers if t.timestamp[:10] >= date_from]
+    if date_to:
+        transfers = [t for t in transfers if t.timestamp[:10] <= date_to]
+
+    tr_headers = ["م", "الوقت", "من", "إلى", "المبلغ", "بواسطة"]
+    tr_rows = []
+    for i, t in enumerate(transfers, start=1):
+        is_in = t.dest_id == entity_id
+        amount_str = f"{'+' if is_in else '-'}{t.amount:,.2f} {t.currency}"
+        tr_rows.append([str(i), t.timestamp, t.source_name, t.dest_name, amount_str, t.requested_by])
+    sections.append(("التحويلات بين الحسابات", tr_headers, tr_rows))
+
+    totals: dict[str, dict[str, float]] = {}
+    for m in movements:
+        t = totals.setdefault(m.currency, {"in": 0.0, "out": 0.0})
+        t["in"] += m.amount_in
+        t["out"] += m.amount_out
+    closing_line = "الإجمالي: " + (
+        ", ".join(f"{ccy} — دخول {v['in']:,.2f} / خروج {v['out']:,.2f}" for ccy, v in totals.items())
+        or "لا توجد حركات في هذه الفترة"
+    )
+    return sections, closing_line
+
+def _entity_statement_export(db: Session, entity_kind: str, entity_id: str, entity_name: str, format: str, date_from: str, date_to: str, currency: str):
+    sections, closing_line = _entity_statement_sections(db, entity_kind, entity_id, date_from, date_to, currency)
+    if format == "xlsx":
+        buf = build_sectioned_excel(sections)
+        return buf.read(), "xlsx"
+    try:
+        buf = build_sectioned_pdf(f"كشف حساب — {entity_name}", sections, closing_line)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return buf.read(), "pdf"
+
+@router.get("/vaults/{vault_id}/statement/export")
+def export_vault_statement(vault_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    content, ext = _entity_statement_export(db, "vault", vault_id, vault.name, format, date_from, date_to, currency)
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
+    disposition = "attachment" if ext == "xlsx" else "inline"
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="statement_{vault_id}.{ext}"'})
+
+@router.get("/bank_accounts/{account_id}/statement/export")
+def export_bank_account_statement(account_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+    content, ext = _entity_statement_export(db, "bank_account", account_id, f"{account.bank_name} - {account.account_name}", format, date_from, date_to, currency)
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
+    disposition = "attachment" if ext == "xlsx" else "inline"
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="statement_{account_id}.{ext}"'})
+
+def _send_entity_statement_whatsapp(db: Session, entity_kind: str, entity_id: str, entity_name: str, date_from: str, date_to: str, currency: str, actor: User):
+    manager_phone = get_whatsapp_setting(db, "whatsappManagerPhone", "")
+    if not manager_phone:
+        raise APIError(code="NO_PHONE", message_ar="لم يتم تحديد رقم هاتف المدير في الإعدادات لاستقبال التقارير", message_en="No manager phone configured in settings to receive reports", status_code=400)
+    content, _ = _entity_statement_export(db, entity_kind, entity_id, entity_name, "pdf", date_from, date_to, currency)
+    result = send_whatsapp_document(db, manager_phone, content, f"statement_{entity_id}.pdf", caption=f"كشف حساب — {entity_name}")
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال كشف الحساب عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="Statement", entity_id=entity_id, description=f"تم إرسال كشف حساب {entity_name} عبر واتساب إلى {manager_phone}", username=actor.username)
+    db.commit()
+
+@router.post("/vaults/{vault_id}/send_statement_whatsapp")
+def send_vault_statement_whatsapp(vault_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    _send_entity_statement_whatsapp(db, "vault", vault_id, vault.name, date_from, date_to, currency, actor)
+    return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحساب عبر واتساب بنجاح")
+
+@router.post("/bank_accounts/{account_id}/send_statement_whatsapp")
+def send_bank_account_statement_whatsapp(account_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+    _send_entity_statement_whatsapp(db, "bank_account", account_id, f"{account.bank_name} - {account.account_name}", date_from, date_to, currency, actor)
+    return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحساب عبر واتساب بنجاح")
 
 @router.post("/exchange/pos")
 def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
