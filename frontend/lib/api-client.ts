@@ -398,8 +398,10 @@ export interface Advance {
   currency: string
   amount: number
   remainingAmount: number
-  vaultId: string
-  vaultName: string
+  vaultId: string | null
+  vaultName: string | null
+  bankAccountId: string | null
+  bankAccountName: string | null
   status: string
   notes: string | null
   createdBy: string
@@ -413,8 +415,10 @@ export interface AdvancePaymentRecord {
   customerName: string
   currency: string
   amount: number
-  vaultId: string
-  vaultName: string
+  vaultId: string | null
+  vaultName: string | null
+  bankAccountId: string | null
+  bankAccountName: string | null
   timestamp: string
   user: string
   notes: string | null

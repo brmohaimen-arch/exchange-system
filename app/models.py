@@ -160,11 +160,12 @@ class DebtPaymentRecord(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class Advance(Base):
-    """A cash advance (سلفة) handed to a customer straight out of a vault — unlike
-    Debt, which is a pure paper record that never moves cash, creating an Advance
-    immediately debits the vault, and repaying one credits it back. Tracked as its
-    own third number alongside a customer's balance and debt, not merged into
-    either."""
+    """A cash advance (سلفة) handed to a customer straight out of a vault or bank
+    account — unlike Debt, which is a pure paper record that never moves cash,
+    creating an Advance immediately debits the source, and repaying one credits
+    it back. Tracked as its own third number alongside a customer's balance and
+    debt, not merged into either. Exactly one of vault_id/bank_account_id is set,
+    mirroring the same choice on a customer deposit/withdrawal."""
     __tablename__ = "advances"
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
     customer_id: Mapped[str] = mapped_column(String(50), ForeignKey("customers.id"))
@@ -172,8 +173,10 @@ class Advance(Base):
     currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     remaining_amount: Mapped[float] = mapped_column(Float, nullable=False)
-    vault_id: Mapped[str] = mapped_column(String(50), ForeignKey("vaults.id"))
-    vault_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    vault_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("vaults.id"), nullable=True)
+    vault_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bank_account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("bank_accounts.id"), nullable=True)
+    bank_account_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active")  # active, paid
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -189,8 +192,10 @@ class AdvancePaymentRecord(Base):
     customer_name: Mapped[str] = mapped_column(String(150), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
     amount: Mapped[float] = mapped_column(Float, nullable=False)
-    vault_id: Mapped[str] = mapped_column(String(50), ForeignKey("vaults.id"))
-    vault_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    vault_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("vaults.id"), nullable=True)
+    vault_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bank_account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("bank_accounts.id"), nullable=True)
+    bank_account_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
     user: Mapped[str] = mapped_column(String(100), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

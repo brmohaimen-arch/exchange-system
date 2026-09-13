@@ -475,7 +475,7 @@ function CustomersPageInner() {
   const openPayAdvance = (a: Advance) => {
     setPayingAdvance(a)
     setAdvancePayAmount('')
-    setAdvancePayVaultId(a.vaultId)
+    setAdvancePayVaultId(a.vaultId || '')
     setAdvancePayError('')
   }
 
@@ -1204,7 +1204,7 @@ function CustomersPageInner() {
                       <td className="px-6 py-4">{a.amount.toLocaleString()} {a.currency}</td>
                       <td className="px-6 py-4 text-success">{paidSoFar.toLocaleString()} {a.currency}</td>
                       <td className="px-6 py-4 font-bold" dir="ltr">-{a.remainingAmount.toLocaleString()} {a.currency}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{a.vaultName}</td>
+                      <td className="px-6 py-4 text-muted-foreground">{a.vaultName || a.bankAccountName}</td>
                       <td className="px-6 py-4 text-muted-foreground">{a.timestamp}</td>
                       <td className="px-6 py-4">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${advanceStatusClass[a.status] || 'bg-muted text-muted-foreground'}`}>

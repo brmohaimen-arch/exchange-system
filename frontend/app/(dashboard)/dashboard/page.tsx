@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowUpRight, DollarSign, Users, Activity, CreditCard, Clock, ShieldCheck, PlayCircle, Lock } from 'lucide-react'
-import { api, Transaction, Customer, Vault, Shift, ApprovalRequestDTO } from '@/lib/api-client'
+import { ArrowUpRight, DollarSign, Users, Activity, CreditCard, Landmark, Clock, ShieldCheck, PlayCircle, Lock } from 'lucide-react'
+import { api, Transaction, Customer, Vault, Shift, ApprovalRequestDTO, BankAccount, ExchangeRate } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 
 const statusLabel: Record<string, { label: string; className: string }> = {
@@ -27,6 +27,8 @@ export default function DashboardPage() {
   const [vaults, setVaults] = useState<Vault[]>([])
   const [shifts, setShifts] = useState<Shift[]>([])
   const [approvals, setApprovals] = useState<ApprovalRequestDTO[]>([])
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
+  const [rates, setRates] = useState<ExchangeRate[]>([])
   const [profit, setProfit] = useState(0)
 
   const isCashier = hasPermission('تنفيذ بيع عملة') || hasPermission('تنفيذ شراء عملة')
@@ -46,15 +48,19 @@ export default function DashboardPage() {
           canSeeProfit ? api.get<{ summary: { totalProfit: number } }>(`/reports/profit?date_from=${today}&date_to=${today}`) : Promise.resolve(null),
           api.get<Shift[]>('/shifts'),
           canApprove ? api.get<ApprovalRequestDTO[]>('/approvals') : Promise.resolve([]),
+          api.get<BankAccount[]>('/bank_accounts'),
+          api.get<ExchangeRate[]>('/currencies/rates'),
         ])
         if (cancelled) return
-        const [txs, custs, vlts, profitData, sh, ap] = results
+        const [txs, custs, vlts, profitData, sh, ap, ba, rt] = results
         if (txs.status === 'fulfilled') setTransactions(txs.value)
         if (custs.status === 'fulfilled') setCustomers(custs.value)
         if (vlts.status === 'fulfilled') setVaults(vlts.value)
         if (profitData.status === 'fulfilled' && profitData.value) setProfit(profitData.value.summary.totalProfit)
         if (sh.status === 'fulfilled') setShifts(sh.value)
         if (ap.status === 'fulfilled') setApprovals(ap.value as ApprovalRequestDTO[])
+        if (ba.status === 'fulfilled') setBankAccounts(ba.value)
+        if (rt.status === 'fulfilled') setRates(rt.value)
       } catch (err) {
         if (!cancelled) setError(err instanceof ApiError ? err.message : 'تعذر تحميل بيانات لوحة التحكم')
       } finally {
@@ -78,6 +84,14 @@ export default function DashboardPage() {
   // vault, and not converting other currencies into a LYD-equivalent estimate.
   const mainVaultLYD = (vaults.find((v) => v.type === 'main') || vaults.find((v) => v.id === 'v_main'))?.balances['LYD'] ?? 0
 
+  // Every bank account holds a single currency — convert each to its LYD
+  // equivalent at the office's buy rate before summing into one company-wide total.
+  const totalBankBalanceLYD = bankAccounts.reduce((sum, a) => {
+    if (a.currency === 'LYD') return sum + a.balance
+    const rate = rates.find((r) => r.fromCurrency === a.currency && r.toCurrency === 'LYD')
+    return sum + (rate ? a.balance * rate.buyRate : 0)
+  }, 0)
+
   const recent = [...(isCashier && !canSeeReports ? transactions.filter((t) => t.vaultId === myVault?.id) : transactions)]
     .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
     .slice(0, 6)
@@ -87,6 +101,7 @@ export default function DashboardPage() {
     { title: 'العملاء النشطون', value: fmt(activeCustomers), icon: Users },
     { title: isCashier ? 'معاملاتي اليوم' : 'المعاملات اليوم', value: fmt(isCashier ? myTodaysTx.length : todaysTxCount), icon: Activity },
     canSeeReports && { title: 'رصيد الخزنة الرئيسية (د.ل)', value: fmt(mainVaultLYD), icon: CreditCard },
+    canSeeReports && { title: 'إجمالي أرصدة الحسابات البنكية (د.ل)', value: fmt(totalBankBalanceLYD), icon: Landmark },
   ].filter(Boolean) as { title: string; value: string; icon: typeof DollarSign }[]
 
   if (loading) {

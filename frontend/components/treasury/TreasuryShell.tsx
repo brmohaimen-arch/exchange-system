@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, FormEvent, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle, Percent } from 'lucide-react'
+import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle, Percent, FileText } from 'lucide-react'
 import { api, newId, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction, Customer, Movement } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
@@ -195,6 +195,24 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
   const [transfersPage, setTransfersPage] = useState(1)
   const [bankMovementsPage, setBankMovementsPage] = useState(1)
+
+  // ---------------- Vault / Bank Account Statement ----------------
+  const [statementTarget, setStatementTarget] = useState<{ kind: 'vault' | 'bank_account'; id: string; name: string } | null>(null)
+  const [statementItems, setStatementItems] = useState<Movement[]>([])
+  const [statementLoading, setStatementLoading] = useState(false)
+  const [statementDateFrom, setStatementDateFrom] = useState('')
+  const [statementDateTo, setStatementDateTo] = useState('')
+  const [statementCcy, setStatementCcy] = useState('')
+
+  // ---------------- Manual Entry / Quick Operation ----------------
+  type QuickOpType = 'deposit' | 'withdraw' | 'advance' | 'debt' | 'other'
+  const [manualEntryTarget, setManualEntryTarget] = useState<{ kind: 'vault' | 'bank_account'; id: string; name: string; currency?: string } | null>(null)
+  const [manualEntryForm, setManualEntryForm] = useState({
+    opType: 'deposit' as QuickOpType, customerId: '', direction: 'in' as 'in' | 'out',
+    currency: 'LYD', amount: '', description: '', dueDate: '', notes: '',
+  })
+  const [manualEntryError, setManualEntryError] = useState('')
+  const [savingManualEntry, setSavingManualEntry] = useState(false)
   const [bankAccountsPage, setBankAccountsPage] = useState(1)
   const [shiftsPage, setShiftsPage] = useState(1)
   const [inventoryPage, setInventoryPage] = useState(1)
@@ -246,6 +264,154 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   useEffect(() => {
     if (tab === 'movements') loadMovements()
   }, [tab, movementsDate, movementsVaultId])
+
+  const loadStatement = async () => {
+    if (!statementTarget) return
+    setStatementLoading(true)
+    try {
+      const params = new URLSearchParams({ entity_type: statementTarget.kind, entity_id: statementTarget.id })
+      if (statementDateFrom) params.set('date_from', statementDateFrom)
+      if (statementDateTo) params.set('date_to', statementDateTo)
+      const res = await api.get<Movement[]>(`/movements?${params.toString()}`)
+      setStatementItems(res)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحساب')
+    } finally {
+      setStatementLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (statementTarget) loadStatement()
+  }, [statementTarget, statementDateFrom, statementDateTo])
+
+  const openStatement = (kind: 'vault' | 'bank_account', id: string, name: string) => {
+    setStatementDateFrom('')
+    setStatementDateTo('')
+    setStatementCcy('')
+    setStatementItems([])
+    setStatementTarget({ kind, id, name })
+  }
+
+  // Categorizes a Movement's free-text type into the sections the statement
+  // separates — debts never touch a vault/bank balance (they're a pure paper
+  // record), so only cash-moving activity ever shows up here.
+  const categorizeMovement = (type: string): 'trade' | 'customer' | 'advance' | 'manual' | 'interest' | 'transfer' | 'other' => {
+    if (type.includes('سلفة')) return 'advance'
+    if (type.startsWith('قيد يدوي')) return 'manual'
+    if (type.includes('فائدة وديعة')) return 'interest'
+    if (type.includes('حساب عميل')) return 'customer'
+    if (type.includes('إلى بنك') || type.includes('من بنك') || type.includes('حساب بنكي')) return 'transfer'
+    if (type.includes('عملة ورقية') || type.includes('تبديل عملة') || type.includes('مقبوضات صرافة') || type.includes('مدفوعات صرافة') || type.startsWith('عكس عملية')) return 'trade'
+    return 'other'
+  }
+
+  const statementFiltered = useMemo(
+    () => statementItems.filter((m) => !statementCcy || m.currency === statementCcy),
+    [statementItems, statementCcy]
+  )
+
+  const statementByCategory = useMemo(() => {
+    const groups: Record<string, Movement[]> = { trade: [], customer: [], advance: [], manual: [], interest: [], transfer: [], other: [] }
+    for (const m of statementFiltered) groups[categorizeMovement(m.type)].push(m)
+    return groups
+  }, [statementFiltered])
+
+  const statementTransfers = useMemo(() => {
+    if (!statementTarget) return []
+    return transfers.filter((t) => {
+      // A pending/rejected transfer never actually moved cash — showing it
+      // with a +/- amount in a cash statement would misrepresent history.
+      if (t.status !== 'approved') return false
+      const involved = t.sourceId === statementTarget.id || t.destId === statementTarget.id
+      if (!involved) return false
+      if (!statementDateFrom && !statementDateTo) return true
+      const day = t.timestamp.slice(0, 10)
+      if (statementDateFrom && day < statementDateFrom) return false
+      if (statementDateTo && day > statementDateTo) return false
+      return true
+    }).filter((t) => !statementCcy || t.currency === statementCcy)
+  }, [transfers, statementTarget, statementDateFrom, statementDateTo, statementCcy])
+
+  const statementTotals = useMemo(() => {
+    const totals: Record<string, { in: number; out: number }> = {}
+    for (const m of statementFiltered) {
+      if (!totals[m.currency]) totals[m.currency] = { in: 0, out: 0 }
+      totals[m.currency].in += m.amountIn
+      totals[m.currency].out += m.amountOut
+    }
+    return totals
+  }, [statementFiltered])
+
+  const openManualEntry = (kind: 'vault' | 'bank_account', id: string, name: string, currency?: string) => {
+    setManualEntryTarget({ kind, id, name, currency })
+    setManualEntryForm({
+      opType: 'deposit', customerId: '', direction: 'in',
+      currency: currency || 'LYD', amount: '', description: '', dueDate: '', notes: '',
+    })
+    setManualEntryError('')
+  }
+
+  const submitManualEntry = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!manualEntryTarget) return
+    setManualEntryError('')
+    const { opType, customerId, currency, amount: amountStr, description, dueDate, notes, direction } = manualEntryForm
+    const amount = parseFloat(amountStr)
+    const customer = customers.find((c) => c.id === customerId)
+    const isVault = manualEntryTarget.kind === 'vault'
+
+    if (!amount || amount <= 0) {
+      setManualEntryError('أدخل مبلغاً صحيحاً')
+      return
+    }
+    if (opType !== 'other' && !customer) {
+      setManualEntryError('اختر العميل')
+      return
+    }
+    if (opType === 'debt' && !dueDate) {
+      setManualEntryError('تاريخ الاستحقاق مطلوب')
+      return
+    }
+    if (opType === 'other' && !description.trim()) {
+      setManualEntryError('وصف العملية مطلوب')
+      return
+    }
+
+    setSavingManualEntry(true)
+    try {
+      if (opType === 'deposit' || opType === 'withdraw') {
+        await api.post(`/customers/${customer!.id}/${opType}`, {
+          vault_id: isVault ? manualEntryTarget.id : null,
+          bank_account_id: isVault ? null : manualEntryTarget.id,
+          currency, amount, notes: notes.trim() || null,
+        })
+      } else if (opType === 'advance') {
+        await api.post('/advances', {
+          id: newId('adv'), customer_id: customer!.id, customer_name: customer!.name, currency, amount,
+          vault_id: isVault ? manualEntryTarget.id : null,
+          bank_account_id: isVault ? null : manualEntryTarget.id,
+          notes: notes.trim() || null,
+        })
+      } else if (opType === 'debt') {
+        await api.post('/debts', {
+          id: newId('debt'), customer_id: customer!.id, customer_name: customer!.name, currency, amount,
+          start_date: new Date().toISOString().slice(0, 10), due_date: dueDate, payment_period: 'none', payment_amount: 0,
+          notes: notes.trim() || null,
+        })
+      } else {
+        const path = isVault ? `/vaults/${manualEntryTarget.id}/manual_entry` : `/bank_accounts/${manualEntryTarget.id}/manual_entry`
+        await api.post(path, { direction, currency, amount, description: description.trim(), notes: notes.trim() || null })
+      }
+      setManualEntryTarget(null)
+      await load()
+      if (statementTarget?.id === manualEntryTarget.id) await loadStatement()
+    } catch (err) {
+      setManualEntryError(err instanceof ApiError ? err.message : 'تعذر تسجيل العملية')
+    } finally {
+      setSavingManualEntry(false)
+    }
+  }
 
   const movementsTotals = useMemo(() => {
     const totals: Record<string, { in: number; out: number }> = {}
@@ -1078,19 +1244,27 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   {vault.lastMovement && (
                     <p className="pt-2 border-t border-border text-[11px] text-muted-foreground">آخر حركة: {vault.lastMovement}</p>
                   )}
-                  {canManageVaults && (
-                    <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-border">
-                      <button onClick={() => openEditBalances(vault)} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
-                        <Wallet className="h-3.5 w-3.5" /> تعديل الأرصدة
-                      </button>
-                      <button onClick={() => openEditVault(vault)} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
-                        <Pencil className="h-3.5 w-3.5" /> تعديل البيانات
-                      </button>
-                      <button onClick={() => deleteVault(vault)} className="flex items-center gap-1.5 rounded-md border border-danger/30 px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
-                        <Trash2 className="h-3.5 w-3.5" /> حذف الخزنة
-                      </button>
-                    </div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-border">
+                    <button onClick={() => openStatement('vault', vault.id, vault.name)} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
+                      <FileText className="h-3.5 w-3.5" /> كشف الحساب
+                    </button>
+                    {canManageVaults && (
+                      <>
+                        <button onClick={() => openManualEntry('vault', vault.id, vault.name)} className="flex items-center gap-1.5 rounded-md border border-info/30 px-3 py-1.5 text-xs font-medium text-info hover:bg-info/10 transition-colors">
+                          <Plus className="h-3.5 w-3.5" /> قيد يدوي
+                        </button>
+                        <button onClick={() => openEditBalances(vault)} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
+                          <Wallet className="h-3.5 w-3.5" /> تعديل الأرصدة
+                        </button>
+                        <button onClick={() => openEditVault(vault)} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors">
+                          <Pencil className="h-3.5 w-3.5" /> تعديل البيانات
+                        </button>
+                        <button onClick={() => deleteVault(vault)} className="flex items-center gap-1.5 rounded-md border border-danger/30 px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
+                          <Trash2 className="h-3.5 w-3.5" /> حذف الخزنة
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
@@ -1429,6 +1603,12 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                       {canManageBanks && (
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-1.5 flex-wrap">
+                            <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <FileText className="h-3.5 w-3.5" /> كشف الحساب
+                            </button>
+                            <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
+                              <Plus className="h-3.5 w-3.5" /> قيد يدوي
+                            </button>
                             <button onClick={() => openBankOp(ba, 'deposit')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors">
                               <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
                             </button>
@@ -2421,6 +2601,252 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   </table>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Entry / Quick Operation Modal */}
+      {manualEntryTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">عملية يدوية — {manualEntryTarget.name}</h3>
+              <button onClick={() => setManualEntryTarget(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={submitManualEntry} className="space-y-4 p-6 text-right">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">نوع العملية *</label>
+                <select
+                  value={manualEntryForm.opType}
+                  onChange={(e) => setManualEntryForm({ ...manualEntryForm, opType: e.target.value as QuickOpType })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="deposit">إيداع لعميل</option>
+                  <option value="withdraw">سحب من عميل</option>
+                  <option value="advance">سلفة لعميل</option>
+                  <option value="debt">دين على عميل</option>
+                  <option value="other">أخرى (قيد يدوي)</option>
+                </select>
+              </div>
+
+              {manualEntryForm.opType !== 'other' && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">العميل *</label>
+                  <select
+                    value={manualEntryForm.customerId}
+                    onChange={(e) => setManualEntryForm({ ...manualEntryForm, customerId: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="">اختر عميلاً</option>
+                    {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {manualEntryForm.opType === 'other' && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">الاتجاه *</label>
+                  <div className="flex gap-4 text-sm">
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={manualEntryForm.direction === 'in'} onChange={() => setManualEntryForm({ ...manualEntryForm, direction: 'in' })} />
+                      قيد (دخول)
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={manualEntryForm.direction === 'out'} onChange={() => setManualEntryForm({ ...manualEntryForm, direction: 'out' })} />
+                      صرف (خروج)
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {manualEntryForm.opType === 'debt' && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">تاريخ الاستحقاق *</label>
+                  <input type="date" value={manualEntryForm.dueDate} onChange={(e) => setManualEntryForm({ ...manualEntryForm, dueDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <p className="mt-1 text-xs text-muted-foreground">تسجيل الدين لا يحرك رصيد {manualEntryTarget.kind === 'vault' ? 'الخزنة' : 'الحساب البنكي'} — هو سجل مستحق منفصل.</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                  {manualEntryTarget.kind === 'bank_account' ? (
+                    <input value={manualEntryForm.currency} disabled className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground" />
+                  ) : (
+                    <select value={manualEntryForm.currency} onChange={(e) => setManualEntryForm({ ...manualEntryForm, currency: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                      {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                    </select>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
+                  <input type="number" value={manualEntryForm.amount} onChange={(e) => setManualEntryForm({ ...manualEntryForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+
+              {manualEntryForm.opType === 'other' && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">وصف العملية *</label>
+                  <input value={manualEntryForm.description} onChange={(e) => setManualEntryForm({ ...manualEntryForm, description: e.target.value })} placeholder="مثال: تصحيح خطأ عد، مصروف نثري..." className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea value={manualEntryForm.notes} onChange={(e) => setManualEntryForm({ ...manualEntryForm, notes: e.target.value })} rows={2} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              {manualEntryError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{manualEntryError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setManualEntryTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={savingManualEntry} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {savingManualEntry && <Loader2 className="h-4 w-4 animate-spin" />} تنفيذ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Vault / Bank Account Statement Modal */}
+      {statementTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-4xl rounded-xl border border-border bg-card shadow-xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4 shrink-0">
+              <h3 className="text-lg font-semibold text-foreground">كشف حساب — {statementTarget.name}</h3>
+              <button onClick={() => setStatementTarget(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 overflow-y-auto">
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">من تاريخ</label>
+                  <input type="date" value={statementDateFrom} onChange={(e) => setStatementDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">إلى تاريخ</label>
+                  <input type="date" value={statementDateTo} onChange={(e) => setStatementDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">العملة</label>
+                  <select value={statementCcy} onChange={(e) => setStatementCcy(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                    <option value="">كل العملات</option>
+                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {Object.keys(statementTotals).length > 0 && (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {Object.entries(statementTotals).map(([ccy, t]) => (
+                    <div key={ccy} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                      <p className="text-xs font-medium text-muted-foreground mb-2">{ccy}</p>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="flex items-center gap-1 font-bold text-success"><ArrowDownCircle className="h-4 w-4" /> +{t.in.toLocaleString()}</span>
+                        <span className="flex items-center gap-1 font-bold text-danger"><ArrowUpCircle className="h-4 w-4" /> -{t.out.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {statementLoading ? (
+                <p className="text-center text-sm text-muted-foreground py-8">جاري التحميل...</p>
+              ) : (
+                <>
+                  {([
+                    ['trade', 'معاملات الصرافة'],
+                    ['customer', 'إيداع وسحب العملاء'],
+                    ['advance', 'السلف'],
+                    ['interest', 'فوائد بنكية'],
+                    ['manual', 'قيود يدوية'],
+                    ['other', 'أخرى'],
+                  ] as const).map(([key, label]) => {
+                    const rows = statementByCategory[key]
+                    if (rows.length === 0) return null
+                    return (
+                      <div key={key}>
+                        <p className="text-sm font-medium text-foreground mb-2">{label}</p>
+                        <div className="rounded-md border border-border overflow-x-auto">
+                          <table className="w-full text-xs text-right">
+                            <thead className="bg-secondary/50 text-muted-foreground">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">الوقت</th>
+                                <th className="px-3 py-2 font-medium">النوع</th>
+                                <th className="px-3 py-2 font-medium">المبلغ</th>
+                                <th className="px-3 py-2 font-medium">الرصيد بعد</th>
+                                <th className="px-3 py-2 font-medium">بواسطة</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border">
+                              {rows.map((m) => {
+                                const isIn = m.amountIn > 0
+                                return (
+                                  <tr key={m.id}>
+                                    <td className="px-3 py-2 text-muted-foreground">{m.timestamp}</td>
+                                    <td className="px-3 py-2">{m.type}</td>
+                                    <td className={`px-3 py-2 font-bold ${isIn ? 'text-success' : 'text-danger'}`} dir="ltr">
+                                      {isIn ? '+' : '-'}{(isIn ? m.amountIn : m.amountOut).toLocaleString()} {m.currency}
+                                    </td>
+                                    <td className="px-3 py-2">{m.balanceAfter.toLocaleString()}</td>
+                                    <td className="px-3 py-2 text-muted-foreground">{m.user}</td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                  {statementTransfers.length > 0 && (
+                    <div>
+                      <p className="text-sm font-medium text-foreground mb-2">التحويلات بين الحسابات</p>
+                      <div className="rounded-md border border-border overflow-x-auto">
+                        <table className="w-full text-xs text-right">
+                          <thead className="bg-secondary/50 text-muted-foreground">
+                            <tr>
+                              <th className="px-3 py-2 font-medium">الوقت</th>
+                              <th className="px-3 py-2 font-medium">من</th>
+                              <th className="px-3 py-2 font-medium">إلى</th>
+                              <th className="px-3 py-2 font-medium">المبلغ</th>
+                              <th className="px-3 py-2 font-medium">الحالة</th>
+                              <th className="px-3 py-2 font-medium">بواسطة</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {statementTransfers.map((t) => {
+                              const st = statusLabels[t.status] || statusLabels.pending
+                              const isIn = t.destId === statementTarget.id
+                              return (
+                                <tr key={t.id}>
+                                  <td className="px-3 py-2 text-muted-foreground">{t.timestamp}</td>
+                                  <td className="px-3 py-2">{t.sourceName}</td>
+                                  <td className="px-3 py-2">{t.destName}</td>
+                                  <td className={`px-3 py-2 font-bold ${isIn ? 'text-success' : 'text-danger'}`} dir="ltr">
+                                    {isIn ? '+' : '-'}{t.amount.toLocaleString()} {t.currency}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${st.className}`}>{st.label}</span>
+                                  </td>
+                                  <td className="px-3 py-2 text-muted-foreground">{t.requestedBy}</td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {statementFiltered.length === 0 && statementTransfers.length === 0 && (
+                    <p className="text-center text-sm text-muted-foreground py-8">لا توجد حركات في هذه الفترة</p>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>

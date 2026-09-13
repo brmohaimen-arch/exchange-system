@@ -178,6 +178,87 @@ def migrate_customer_documents_nullable_customer(engine: Engine) -> None:
     print("[migrations] Rebuilt customer_documents with nullable customer_id/customer_name")
 
 
+def migrate_advances_nullable_vault(engine: Engine) -> None:
+    """advances.vault_id/vault_name were NOT NULL from day one, but an advance can
+    now be disbursed from a bank account instead of a vault. Same SQLite
+    table-rebuild pattern as the customer_account_entries migration above."""
+    inspector = inspect(engine)
+    if "advances" not in inspector.get_table_names():
+        return
+    columns = {c["name"]: c for c in inspector.get_columns("advances")}
+    if columns.get("vault_id", {}).get("nullable", True):
+        return  # already migrated (or a fresh table create_all() already made nullable)
+
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS advances_new"))
+        conn.execute(text("""
+            CREATE TABLE advances_new (
+                id VARCHAR(50) PRIMARY KEY,
+                customer_id VARCHAR(50) NOT NULL REFERENCES customers(id),
+                customer_name VARCHAR(150) NOT NULL,
+                currency VARCHAR(10) REFERENCES currencies(code),
+                amount FLOAT NOT NULL,
+                remaining_amount FLOAT NOT NULL,
+                vault_id VARCHAR(50) REFERENCES vaults(id),
+                vault_name VARCHAR(100),
+                bank_account_id VARCHAR(50) REFERENCES bank_accounts(id),
+                bank_account_name VARCHAR(150),
+                status VARCHAR(50),
+                notes TEXT,
+                created_by VARCHAR(100) NOT NULL,
+                timestamp VARCHAR(50) NOT NULL
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO advances_new
+                (id, customer_id, customer_name, currency, amount, remaining_amount, vault_id, vault_name, status, notes, created_by, timestamp)
+            SELECT id, customer_id, customer_name, currency, amount, remaining_amount, vault_id, vault_name, status, notes, created_by, timestamp
+            FROM advances
+        """))
+        conn.execute(text("DROP TABLE advances"))
+        conn.execute(text("ALTER TABLE advances_new RENAME TO advances"))
+    print("[migrations] Rebuilt advances with nullable vault + new bank_account columns")
+
+
+def migrate_advance_payments_nullable_vault(engine: Engine) -> None:
+    """Same as migrate_advances_nullable_vault, for advance_payments."""
+    inspector = inspect(engine)
+    if "advance_payments" not in inspector.get_table_names():
+        return
+    columns = {c["name"]: c for c in inspector.get_columns("advance_payments")}
+    if columns.get("vault_id", {}).get("nullable", True):
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS advance_payments_new"))
+        conn.execute(text("""
+            CREATE TABLE advance_payments_new (
+                id VARCHAR(50) PRIMARY KEY,
+                advance_id VARCHAR(50) NOT NULL REFERENCES advances(id),
+                customer_id VARCHAR(50) NOT NULL REFERENCES customers(id),
+                customer_name VARCHAR(150) NOT NULL,
+                currency VARCHAR(10) REFERENCES currencies(code),
+                amount FLOAT NOT NULL,
+                vault_id VARCHAR(50) REFERENCES vaults(id),
+                vault_name VARCHAR(100),
+                bank_account_id VARCHAR(50) REFERENCES bank_accounts(id),
+                bank_account_name VARCHAR(150),
+                timestamp VARCHAR(50) NOT NULL,
+                user VARCHAR(100) NOT NULL,
+                notes TEXT
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO advance_payments_new
+                (id, advance_id, customer_id, customer_name, currency, amount, vault_id, vault_name, timestamp, user, notes)
+            SELECT id, advance_id, customer_id, customer_name, currency, amount, vault_id, vault_name, timestamp, user, notes
+            FROM advance_payments
+        """))
+        conn.execute(text("DROP TABLE advance_payments"))
+        conn.execute(text("ALTER TABLE advance_payments_new RENAME TO advance_payments"))
+    print("[migrations] Rebuilt advance_payments with nullable vault + new bank_account columns")
+
+
 def run_startup_migrations(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -199,6 +280,8 @@ def run_startup_migrations(engine: Engine) -> None:
 
     migrate_customer_account_entries_nullable_vault(engine)
     migrate_customer_documents_nullable_customer(engine)
+    migrate_advances_nullable_vault(engine)
+    migrate_advance_payments_nullable_vault(engine)
 
 
 def migrate_plaintext_passwords(db: Session) -> None:

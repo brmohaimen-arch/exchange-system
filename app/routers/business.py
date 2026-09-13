@@ -102,12 +102,14 @@ class AdvanceCreate(BaseModel):
     customer_name: str
     currency: str
     amount: float
-    vault_id: str
+    vault_id: str | None = None
+    bank_account_id: str | None = None
     notes: str | None = None
 
 class AdvancePaymentOp(BaseModel):
     amount: float
-    vault_id: str
+    vault_id: str | None = None
+    bank_account_id: str | None = None
     notes: str | None = None
 
 class POSOperation(BaseModel):
@@ -898,10 +900,12 @@ def _customer_statement_rows(db: Session, customer: Customer, date_from: str = "
         detail = "تسديد دفعة دين"
         rows_with_ts.append((p.timestamp, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
     for a in advances:
-        detail = f"صرف سلفة — من خزنة {a.vault_name}"
+        source_label = a.vault_name or a.bank_account_name
+        detail = f"صرف سلفة — من {source_label}"
         rows_with_ts.append((a.timestamp, [a.timestamp, detail, f"{a.amount:,.2f}", a.currency, a.created_by]))
     for p in advance_payments:
-        detail = f"تسديد دفعة سلفة — إلى خزنة {p.vault_name}"
+        source_label = p.vault_name or p.bank_account_name
+        detail = f"تسديد دفعة سلفة — إلى {source_label}"
         rows_with_ts.append((p.timestamp, [p.timestamp, detail, f"{p.amount:,.2f}", p.currency, p.user]))
 
     rows_with_ts.sort(key=lambda r: r[0])
@@ -1296,6 +1300,8 @@ def advance_to_dict(a: Advance):
         "remainingAmount": a.remaining_amount,
         "vaultId": a.vault_id,
         "vaultName": a.vault_name,
+        "bankAccountId": a.bank_account_id,
+        "bankAccountName": a.bank_account_name,
         "status": a.status,
         "notes": a.notes,
         "createdBy": a.created_by,
@@ -1307,6 +1313,38 @@ def _advance_equivalent_lyd(db: Session, currency: str, amount: float) -> float:
         return amount
     rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == currency, ExchangeRate.to_currency == "LYD"))
     return amount * rate_row.sell_rate if rate_row else amount
+
+def _resolve_advance_source(db: Session, vault_id: str | None, bank_account_id: str | None, currency: str):
+    """A سلفة can be funded from a vault or a bank account — exactly one of the
+    two. Returns (kind, obj, label, balance_before). A bank account only ever
+    holds one currency, so its currency must match the advance's exactly."""
+    if bool(vault_id) == bool(bank_account_id):
+        raise APIError(code="INVALID_SOURCE", message_ar="حدد خزنة أو حساب بنكي واحد فقط كمصدر", message_en="Provide exactly one of vault_id or bank_account_id", status_code=400)
+    if vault_id:
+        vault = db.get(Vault, vault_id)
+        if not vault:
+            raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+        return "vault", vault, vault.name, vault.balances.get(currency, 0.0)
+    bank_acc = db.get(BankAccount, bank_account_id)
+    if not bank_acc:
+        raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+    if bank_acc.currency != currency:
+        raise APIError(code="CURRENCY_MISMATCH", message_ar=f"عملة الحساب البنكي ({bank_acc.currency}) لا تطابق عملة السلفة ({currency})", message_en="Bank account currency does not match the advance currency", status_code=400)
+    return "bank_account", bank_acc, f"{bank_acc.bank_name} - {bank_acc.account_name}", bank_acc.balance
+
+def _apply_source_delta(source_kind: str, source_obj, currency: str, delta: float, timestamp: str) -> float:
+    """Applies delta (positive = increase, negative = decrease) to a vault or bank
+    account's balance and returns the resulting balance."""
+    if source_kind == "vault":
+        bals = source_obj.balances.copy()
+        after = bals.get(currency, 0.0) + delta
+        bals[currency] = after
+        source_obj.balances = bals
+    else:
+        after = source_obj.balance + delta
+        source_obj.balance = after
+    source_obj.last_movement = timestamp
+    return after
 
 @router.get("/advances")
 def list_advances(db: Session = Depends(get_db)):
@@ -1320,48 +1358,44 @@ def create_advance(data: AdvanceCreate, actor: User = Depends(require_permission
     customer = db.get(Customer, data.customer_id)
     if not customer:
         raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
-    vault = db.get(Vault, data.vault_id)
-    if not vault:
-        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
-    vault_before = vault.balances.get(data.currency, 0.0)
-    if vault_before < data.amount:
-        raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الخزنة غير كافٍ ({vault_before} {data.currency})", message_en="Insufficient vault balance", status_code=400)
+    source_kind, source_obj, source_label, source_before = _resolve_advance_source(db, data.vault_id, data.bank_account_id, data.currency)
+    if source_before < data.amount:
+        raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح في {source_label} غير كافٍ ({source_before} {data.currency})", message_en="Insufficient balance", status_code=400)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    vault_after = vault_before - data.amount
-    v_bals = vault.balances.copy()
-    v_bals[data.currency] = vault_after
-    vault.balances = v_bals
-    vault.last_movement = timestamp
+    source_after = _apply_source_delta(source_kind, source_obj, data.currency, -data.amount, timestamp)
 
     advance = Advance(
         id=data.id, customer_id=customer.id, customer_name=customer.name, currency=data.currency,
-        amount=data.amount, remaining_amount=data.amount, vault_id=vault.id, vault_name=vault.name,
+        amount=data.amount, remaining_amount=data.amount,
+        vault_id=source_obj.id if source_kind == "vault" else None, vault_name=source_label if source_kind == "vault" else None,
+        bank_account_id=source_obj.id if source_kind == "bank_account" else None, bank_account_name=source_label if source_kind == "bank_account" else None,
         status="active", notes=data.notes, created_by=actor.name, timestamp=timestamp
     )
     db.add(advance)
 
     db.add(Movement(
-        id=new_id(f"m_advance_{data.id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
-        entity_name=vault.name, currency=data.currency, type="صرف سلفة لعميل",
-        amount_in=0.0, amount_out=data.amount, balance_before=vault_before, balance_after=vault_after,
+        id=new_id(f"m_advance_{data.id}"), timestamp=timestamp, entity_type=source_kind, entity_id=source_obj.id,
+        entity_name=source_label, currency=data.currency, type="صرف سلفة لعميل",
+        amount_in=0.0, amount_out=data.amount, balance_before=source_before, balance_after=source_after,
         reference_id=data.id, user=actor.name
     ))
 
     equivalent_lyd = _advance_equivalent_lyd(db, data.currency, data.amount)
+    source_account_kind = "خزينة" if source_kind == "vault" else "حساب بنكي"
     db.add(JournalEntry(
         id=f"JV-{datetime.utcnow().strftime('%Y%m%d')}-{data.id}", date=timestamp,
         tx_type="صرف سلفة", reference=data.id,
-        description=f"صرف سلفة بقيمة {data.amount} {data.currency} للعميل {customer.name} من خزنة {vault.name}",
+        description=f"صرف سلفة بقيمة {data.amount} {data.currency} للعميل {customer.name} من {source_account_kind} {source_label}",
         user=actor.name, status="approved",
         lines=[
             {"accountName": f"سلفة العميل {customer.name} - {data.currency}", "currency": data.currency, "debit": data.amount, "credit": 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
-            {"accountName": f"خزينة {vault.name} - {data.currency}", "currency": data.currency, "debit": 0.0, "credit": data.amount, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            {"accountName": f"{source_account_kind} {source_label} - {data.currency}", "currency": data.currency, "debit": 0.0, "credit": data.amount, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
         ]
     ))
 
     create_audit_log(db, action=AuditAction.CREATE, entity_type="Advance", entity_id=data.id,
-                     description=f"صرف سلفة بقيمة {data.amount} {data.currency} للعميل {customer.name} من خزنة {vault.name}", username=actor.username)
+                     description=f"صرف سلفة بقيمة {data.amount} {data.currency} للعميل {customer.name} من {source_account_kind} {source_label}", username=actor.username)
     db.commit()
     return success_response(data=advance_to_dict(advance), message_ar="تم صرف السلفة بنجاح")
 
@@ -1374,17 +1408,10 @@ def pay_advance(advance_id: str, data: AdvancePaymentOp, actor: User = Depends(r
         raise APIError(code="NOT_FOUND", message_ar="السلفة غير موجودة", message_en="Advance not found", status_code=404)
     if data.amount > advance.remaining_amount:
         raise APIError(code="OVERPAYMENT", message_ar="المبلغ المدفوع أكبر من المتبقي", message_en="Amount exceeds remaining advance", status_code=400)
-    vault = db.get(Vault, data.vault_id)
-    if not vault:
-        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    source_kind, source_obj, source_label, source_before = _resolve_advance_source(db, data.vault_id, data.bank_account_id, advance.currency)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    vault_before = vault.balances.get(advance.currency, 0.0)
-    vault_after = vault_before + data.amount
-    v_bals = vault.balances.copy()
-    v_bals[advance.currency] = vault_after
-    vault.balances = v_bals
-    vault.last_movement = timestamp
+    source_after = _apply_source_delta(source_kind, source_obj, advance.currency, data.amount, timestamp)
 
     advance.remaining_amount -= data.amount
     if advance.remaining_amount <= 0.0:
@@ -1393,25 +1420,28 @@ def pay_advance(advance_id: str, data: AdvancePaymentOp, actor: User = Depends(r
 
     db.add(AdvancePaymentRecord(
         id=new_id(f"advpay_{advance_id}"), advance_id=advance.id, customer_id=advance.customer_id, customer_name=advance.customer_name,
-        currency=advance.currency, amount=data.amount, vault_id=vault.id, vault_name=vault.name,
+        currency=advance.currency, amount=data.amount,
+        vault_id=source_obj.id if source_kind == "vault" else None, vault_name=source_label if source_kind == "vault" else None,
+        bank_account_id=source_obj.id if source_kind == "bank_account" else None, bank_account_name=source_label if source_kind == "bank_account" else None,
         timestamp=timestamp, user=actor.name, notes=data.notes
     ))
 
     db.add(Movement(
-        id=new_id(f"m_advpay_{advance_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
-        entity_name=vault.name, currency=advance.currency, type="تحصيل سداد سلفة من عميل",
-        amount_in=data.amount, amount_out=0.0, balance_before=vault_before, balance_after=vault_after,
+        id=new_id(f"m_advpay_{advance_id}"), timestamp=timestamp, entity_type=source_kind, entity_id=source_obj.id,
+        entity_name=source_label, currency=advance.currency, type="تحصيل سداد سلفة من عميل",
+        amount_in=data.amount, amount_out=0.0, balance_before=source_before, balance_after=source_after,
         reference_id=advance_id, user=actor.name
     ))
 
     equivalent_lyd = _advance_equivalent_lyd(db, advance.currency, data.amount)
+    source_account_kind = "خزينة" if source_kind == "vault" else "حساب بنكي"
     db.add(JournalEntry(
         id=new_id(f"JV-{advance_id}"), date=timestamp,
         tx_type="تسديد سلفة", reference=advance_id,
-        description=f"تسديد دفعة سلفة بقيمة {data.amount} {advance.currency} من العميل {advance.customer_name} إلى خزنة {vault.name}",
+        description=f"تسديد دفعة سلفة بقيمة {data.amount} {advance.currency} من العميل {advance.customer_name} إلى {source_account_kind} {source_label}",
         user=actor.name, status="approved",
         lines=[
-            {"accountName": f"خزينة {vault.name} - {advance.currency}", "currency": advance.currency, "debit": data.amount, "credit": 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            {"accountName": f"{source_account_kind} {source_label} - {advance.currency}", "currency": advance.currency, "debit": data.amount, "credit": 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
             {"accountName": f"سلفة العميل {advance.customer_name} - {advance.currency}", "currency": advance.currency, "debit": 0.0, "credit": data.amount, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
         ]
     ))
@@ -1431,6 +1461,8 @@ def advance_payment_to_dict(p: AdvancePaymentRecord):
         "amount": p.amount,
         "vaultId": p.vault_id,
         "vaultName": p.vault_name,
+        "bankAccountId": p.bank_account_id,
+        "bankAccountName": p.bank_account_name,
         "timestamp": p.timestamp,
         "user": p.user,
         "notes": p.notes,
@@ -1682,10 +1714,14 @@ def send_debt_receipt_whatsapp(debt_id: str, actor: User = Depends(get_current_u
     return success_response(data={"sent": True}, message_ar="تم إرسال الإيصال عبر واتساب بنجاح")
 
 @router.get("/movements")
-def list_movements(vault_id: str = "", date_from: str = "", date_to: str = "", db: Session = Depends(get_db)):
-    query = select(Movement).where(Movement.entity_type == "vault")
-    if vault_id:
-        query = query.where(Movement.entity_id == vault_id)
+def list_movements(vault_id: str = "", entity_type: str = "vault", entity_id: str = "", date_from: str = "", date_to: str = "", db: Session = Depends(get_db)):
+    """entity_type defaults to "vault" for backward compatibility with the existing
+    vault movements tab; pass entity_type="bank_account" (+ entity_id, or the legacy
+    vault_id param) to get the same feed for a bank account instead."""
+    query = select(Movement).where(Movement.entity_type == entity_type)
+    target_id = entity_id or vault_id
+    if target_id:
+        query = query.where(Movement.entity_id == target_id)
     if date_from:
         query = query.where(Movement.timestamp >= date_from)
     if date_to:
@@ -1693,6 +1729,74 @@ def list_movements(vault_id: str = "", date_from: str = "", date_to: str = "", d
     query = query.order_by(Movement.timestamp.desc())
     res = db.scalars(query).all()
     return success_response(data=[movement_to_dict(m) for m in res])
+
+class ManualEntryOp(BaseModel):
+    direction: str  # in, out
+    currency: str
+    amount: float
+    description: str
+    notes: str | None = None
+
+def _apply_manual_entry(db: Session, entity_kind: str, entity_obj, entity_label: str, data: ManualEntryOp, actor: User):
+    """Shared "أخرى" manual adjustment for a vault or bank account — a plain
+    cash in/out with a free-text reason, not tied to a customer or any of the
+    other tracked operations (deposit/withdraw/debt/سلفة)."""
+    if data.direction not in ("in", "out"):
+        raise APIError(code="INVALID_DIRECTION", message_ar="اتجاه العملية يجب أن يكون قيد أو صرف", message_en="direction must be 'in' or 'out'", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    if not data.description.strip():
+        raise APIError(code="INVALID_DESCRIPTION", message_ar="وصف العملية مطلوب", message_en="Description is required", status_code=400)
+
+    before = entity_obj.balances.get(data.currency, 0.0) if entity_kind == "vault" else entity_obj.balance
+    if data.direction == "out" and before < data.amount:
+        raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ ({before} {data.currency})", message_en="Insufficient balance", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    delta = data.amount if data.direction == "in" else -data.amount
+    after = _apply_source_delta(entity_kind, entity_obj, data.currency, delta, timestamp)
+
+    entry_id = new_id(f"me_{entity_obj.id}")
+    db.add(Movement(
+        id=entry_id, timestamp=timestamp, entity_type=entity_kind, entity_id=entity_obj.id,
+        entity_name=entity_label, currency=data.currency, type=f"قيد يدوي: {data.description.strip()}",
+        amount_in=data.amount if data.direction == "in" else 0.0, amount_out=data.amount if data.direction == "out" else 0.0,
+        balance_before=before, balance_after=after, reference_id=entry_id, user=actor.name
+    ))
+
+    equivalent_lyd = _advance_equivalent_lyd(db, data.currency, data.amount)
+    source_account_kind = "خزينة" if entity_kind == "vault" else "حساب بنكي"
+    db.add(JournalEntry(
+        id=new_id(f"JV-{entry_id}"), date=timestamp, tx_type="قيد يدوي", reference=entry_id,
+        description=f"قيد يدوي ({data.description.strip()}) بقيمة {data.amount} {data.currency} على {source_account_kind} {entity_label}",
+        user=actor.name, status="approved",
+        lines=[
+            {"accountName": f"{source_account_kind} {entity_label} - {data.currency}", "currency": data.currency, "debit": data.amount if data.direction == "in" else 0.0, "credit": data.amount if data.direction == "out" else 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            {"accountName": f"قيود يدوية متنوعة - {data.currency}", "currency": data.currency, "debit": data.amount if data.direction == "out" else 0.0, "credit": data.amount if data.direction == "in" else 0.0, "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+        ]
+    ))
+
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="ManualEntry", entity_id=entry_id,
+                     description=f"قيد يدوي ({data.description.strip()}) بقيمة {data.amount} {data.currency} على {source_account_kind} {entity_label}", username=actor.username)
+    db.commit()
+
+@router.post("/vaults/{vault_id}/manual_entry")
+def manual_vault_entry(vault_id: str, data: ManualEntryOp, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    _apply_manual_entry(db, "vault", vault, vault.name, data, actor)
+    return success_response(data={"id": vault.id, "balances": vault.balances}, message_ar="تم تسجيل القيد اليدوي بنجاح")
+
+@router.post("/bank_accounts/{account_id}/manual_entry")
+def manual_bank_entry(account_id: str, data: ManualEntryOp, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+    if data.currency != account.currency:
+        raise APIError(code="CURRENCY_MISMATCH", message_ar=f"عملة الحساب البنكي ({account.currency}) لا تطابق عملة القيد ({data.currency})", message_en="Bank account currency mismatch", status_code=400)
+    _apply_manual_entry(db, "bank_account", account, f"{account.bank_name} - {account.account_name}", data, actor)
+    return success_response(data=bank_account_to_dict(account), message_ar="تم تسجيل القيد اليدوي بنجاح")
 
 @router.post("/exchange/pos")
 def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
