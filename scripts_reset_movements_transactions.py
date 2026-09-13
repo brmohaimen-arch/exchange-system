@@ -36,7 +36,6 @@ This is irreversible except by restoring the backup it makes in step 1.
 """
 import shutil
 import sqlite3
-import sys
 from datetime import datetime
 
 DB_PATH = "sql_app.db"
@@ -64,8 +63,6 @@ WIPE_TABLES = [
 ]
 
 def main():
-    sys.stdout.reconfigure(encoding="utf-8")
-
     backup_path = f"{DB_PATH}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     print(f"Backing up {DB_PATH} -> {backup_path}")
     shutil.copy2(DB_PATH, backup_path)
