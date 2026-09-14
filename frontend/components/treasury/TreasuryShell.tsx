@@ -68,7 +68,7 @@ function emptyBankForm() {
   return { name: '', code: '', country: 'ليبيا', city: '', phone: '', notes: '' }
 }
 function emptyBankAccountForm() {
-  return { bankId: '', branchId: '', accountName: '', accountNumber: '', accountType: 'individual' as 'individual' | 'corporate', currency: 'LYD', balance: '0', newBranch: false, newBranchName: '', newBranchCity: '', newBranchAddress: '', newBranchPhone: '', newBranchManager: '' }
+  return { bankId: '', branchId: '', accountName: '', accountNumber: '', accountType: 'individual' as 'individual' | 'corporate', currency: 'LYD', balance: '0', customerId: '', newBranch: false, newBranchName: '', newBranchCity: '', newBranchAddress: '', newBranchPhone: '', newBranchManager: '' }
 }
 function emptyInventoryForm() {
   return { vaultId: '', currency: 'LYD', actualBalance: '', reason: '', notes: '' }
@@ -164,6 +164,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [bankFormError, setBankFormError] = useState('')
 
   const [showAccountModal, setShowAccountModal] = useState(false)
+  const [editingAccount, setEditingAccount] = useState<BankAccount | null>(null)
   const [accountForm, setAccountForm] = useState(emptyBankAccountForm())
   const [accountFormError, setAccountFormError] = useState('')
 
@@ -393,10 +394,17 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     return totals
   }, [statementFiltered])
 
+  // A customer's own bank account can't be the "funding source" for crediting/
+  // debiting that same customer's separate wallet-with-us balance (deposit/
+  // withdraw/advance) — those opTypes only make sense against a company-
+  // controlled vault/bank account, so they're hidden for a customer-owned target.
+  const isCustomerOwnedTarget = (kind: 'vault' | 'bank_account', id: string) =>
+    kind === 'bank_account' && !!bankAccounts.find((a) => a.id === id)?.customerId
+
   const openManualEntry = (kind: 'vault' | 'bank_account', id: string, name: string, currency?: string) => {
     setManualEntryTarget({ kind, id, name, currency })
     setManualEntryForm({
-      opType: 'deposit', customerId: '', direction: 'in',
+      opType: isCustomerOwnedTarget(kind, id) ? 'other' : 'deposit', customerId: '', direction: 'in',
       currency: currency || 'LYD', amount: '', description: '', dueDate: '', notes: '',
     })
     setManualEntryError('')
@@ -967,7 +975,20 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
   // ---------------- Bank Accounts ----------------
   const openCreateAccount = () => {
+    setEditingAccount(null)
     setAccountForm(emptyBankAccountForm())
+    setAccountFormError('')
+    setShowAccountModal(true)
+  }
+
+  const openEditAccount = (account: BankAccount) => {
+    setEditingAccount(account)
+    setAccountForm({
+      bankId: account.bankId, branchId: account.branchId, accountName: account.accountName,
+      accountNumber: account.accountNumber, accountType: account.accountType, currency: account.currency,
+      balance: String(account.balance), customerId: account.customerId || '',
+      newBranch: false, newBranchName: '', newBranchCity: '', newBranchAddress: '', newBranchPhone: '', newBranchManager: '',
+    })
     setAccountFormError('')
     setShowAccountModal(true)
   }
@@ -1008,8 +1029,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         branchId = newBranchId
         branchName = accountForm.newBranchName.trim()
       }
-      await api.post('/bank_accounts', {
-        id: newId('ba'),
+      const payload = {
+        id: editingAccount?.id || newId('ba'),
         bank_id: bank.id,
         bank_name: bank.name,
         branch_id: branchId,
@@ -1021,11 +1042,17 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         balance: parseFloat(accountForm.balance) || 0,
         is_active: true,
         notes: null,
-      })
+        customer_id: accountForm.customerId || null,
+      }
+      if (editingAccount) {
+        await api.put(`/bank_accounts/${editingAccount.id}`, payload)
+      } else {
+        await api.post('/bank_accounts', payload)
+      }
       setShowAccountModal(false)
       await load()
     } catch (err) {
-      setAccountFormError(err instanceof ApiError ? err.message : 'تعذر إضافة الحساب البنكي')
+      setAccountFormError(err instanceof ApiError ? err.message : 'تعذر حفظ الحساب البنكي')
     } finally {
       setSaving(false)
     }
@@ -1708,6 +1735,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                             <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
                               <FileText className="h-3.5 w-3.5" /> كشف الحساب
                             </button>
+                            <button onClick={() => openEditAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
+                            </button>
                             <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
                               <Plus className="h-3.5 w-3.5" /> قيد يدوي
                             </button>
@@ -1781,6 +1811,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
                               <FileText className="h-3.5 w-3.5" /> كشف الحساب
+                            </button>
+                            <button onClick={() => openEditAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
                             </button>
                             <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
                               <Plus className="h-3.5 w-3.5" /> قيد يدوي
@@ -2560,7 +2593,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-xl">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
-              <h3 className="text-lg font-semibold text-foreground">إضافة حساب بنكي</h3>
+              <h3 className="text-lg font-semibold text-foreground">{editingAccount ? 'تعديل حساب بنكي' : 'إضافة حساب بنكي'}</h3>
               <button onClick={() => setShowAccountModal(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
             </div>
             <form onSubmit={submitAccount} className="space-y-4 p-6 text-right max-h-[70vh] overflow-y-auto">
@@ -2618,6 +2651,14 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   <option value="corporate">شركة</option>
                 </select>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">مالك الحساب</label>
+                <select value={accountForm.customerId} onChange={(e) => setAccountForm({ ...accountForm, customerId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                  <option value="">حساب الشركة</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name} (حساب عميل)</option>)}
+                </select>
+                <p className="mt-1 text-xs text-muted-foreground">اختر عميلاً لإضافة حساب إضافي له (مثلاً بعملة مختلفة) — أو اتركه "حساب الشركة" لحساب تابع للشركة.</p>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
@@ -2626,7 +2667,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">الرصيد الافتتاحي</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">{editingAccount ? 'الرصيد' : 'الرصيد الافتتاحي'}</label>
                   <input type="number" value={accountForm.balance} onChange={(e) => setAccountForm({ ...accountForm, balance: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
@@ -2889,12 +2930,19 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   onChange={(e) => setManualEntryForm({ ...manualEntryForm, opType: e.target.value as QuickOpType })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="deposit">إيداع لعميل</option>
-                  <option value="withdraw">سحب من عميل</option>
-                  <option value="advance">سلفة لعميل</option>
+                  {!isCustomerOwnedTarget(manualEntryTarget.kind, manualEntryTarget.id) && (
+                    <>
+                      <option value="deposit">إيداع لعميل</option>
+                      <option value="withdraw">سحب من عميل</option>
+                      <option value="advance">سلفة لعميل</option>
+                    </>
+                  )}
                   <option value="debt">دين على عميل</option>
                   <option value="other">أخرى (قيد يدوي)</option>
                 </select>
+                {isCustomerOwnedTarget(manualEntryTarget.kind, manualEntryTarget.id) && (
+                  <p className="mt-1 text-xs text-muted-foreground">هذا حساب خاص بعميل — لا يمكن استخدامه كمصدر تمويل لإيداع/سحب/سلفة عميل آخر (أو العميل نفسه)، فقط قيد يدوي بسيط أو تسجيل دين.</p>
+                )}
               </div>
 
               {manualEntryForm.opType !== 'other' && (

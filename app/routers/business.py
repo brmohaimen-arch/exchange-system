@@ -62,6 +62,7 @@ class BankAccountCreate(BaseModel):
     balance: float
     is_active: bool = True
     notes: str | None = None
+    customer_id: str | None = None  # set to make this a customer-owned account instead of a company one
 
 class CustomerCreate(BaseModel):
     id: str
@@ -334,8 +335,13 @@ def list_bank_accounts(db: Session = Depends(get_db)):
     res = db.scalars(select(BankAccount)).all()
     return success_response(data=[bank_account_to_dict(ba) for ba in res])
 
+def _validate_bank_account_customer(db: Session, customer_id: str | None):
+    if customer_id and not db.get(Customer, customer_id):
+        raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل المحدد غير موجود", message_en="Customer not found", status_code=400)
+
 @router.post("/bank_accounts")
 def create_bank_account(data: BankAccountCreate, db: Session = Depends(get_db)):
+    _validate_bank_account_customer(db, data.customer_id)
     ac = BankAccount(**data.model_dump())
     db.add(ac)
     db.commit()
@@ -346,6 +352,7 @@ def update_bank_account(account_id: str, data: BankAccountCreate, db: Session = 
     account = db.get(BankAccount, account_id)
     if not account:
         raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
+    _validate_bank_account_customer(db, data.customer_id)
     for k, v in data.model_dump().items():
         setattr(account, k, v)
     db.commit()
