@@ -5,7 +5,7 @@ from ..database import get_db
 from ..models import (
     Branch, Vault, BankAccount, Customer, Shift, Transfer, ApprovalRequest, InventoryCount, DailyExpense,
     AuditAction, Notification, NotificationType, NotificationStatus, User, Role, JournalEntry, ExchangeRate,
-    DailyClosing, Transaction, FixedAsset, Vehicle
+    DailyClosing, Transaction, FixedAsset, Vehicle, Movement
 )
 from ..id_gen import new_id
 from ..tracking import create_audit_log
@@ -667,45 +667,70 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
 
                 approval.status = "approved"
                 transfer.status = "approved"
+                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
                 if transfer.source_type == "vault":
                     src_bal = src.balances.copy()
-                    src_bal[transfer.currency] = src_bal.get(transfer.currency, 0.0) - transfer.amount
+                    src_after = src_bal.get(transfer.currency, 0.0) - transfer.amount
+                    src_bal[transfer.currency] = src_after
                     src.balances = src_bal
                 elif transfer.source_type == "bank_account":
                     src.balance -= transfer.amount
+                    src_after = src.balance
                 elif transfer.source_type == "customer":
                     src_bal = src.balances.copy()
-                    src_bal[transfer.currency] = src_bal.get(transfer.currency, 0.0) - transfer.amount
+                    src_after = src_bal.get(transfer.currency, 0.0) - transfer.amount
+                    src_bal[transfer.currency] = src_after
                     src.balances = src_bal
 
+                # Recorded as a Movement so this transfer shows up in that
+                # entity's statement and — same as every other money-moving
+                # operation — can be undone via "عكس القيد" if approved by
+                # mistake, instead of only being fixable with a manual
+                # opposite transfer.
+                db.add(Movement(
+                    id=new_id(f"m_xfer_src_{transfer.id}"), timestamp=timestamp, entity_type=transfer.source_type,
+                    entity_id=transfer.source_id, entity_name=transfer.source_name, currency=transfer.currency,
+                    type=f"تحويل صادر إلى {transfer.dest_name}", amount_in=0.0, amount_out=transfer.amount,
+                    balance_before=src_balance, balance_after=src_after, reference_id=transfer.id, user=actor.name
+                ))
+
+                dst = None
                 if transfer.dest_type == "vault":
                     dst = db.get(Vault, transfer.dest_id)
                     if dst:
                         dst_bal = dst.balances.copy()
-                        dst_bal[transfer.currency] = dst_bal.get(transfer.currency, 0.0) + transfer.amount
+                        dst_before = dst_bal.get(transfer.currency, 0.0)
+                        dst_bal[transfer.currency] = dst_before + transfer.amount
                         dst.balances = dst_bal
                 elif transfer.dest_type == "bank_account":
                     dst = db.get(BankAccount, transfer.dest_id)
                     if dst:
+                        dst_before = dst.balance
                         dst.balance += transfer.amount
                 elif transfer.dest_type == "customer":
                     dst = db.get(Customer, transfer.dest_id)
                     if dst:
                         dst_bal = dst.balances.copy()
-                        dst_bal[transfer.currency] = dst_bal.get(transfer.currency, 0.0) + transfer.amount
+                        dst_before = dst_bal.get(transfer.currency, 0.0)
+                        dst_bal[transfer.currency] = dst_before + transfer.amount
                         dst.balances = dst_bal
-            else:
-                approval.status = "approved"
 
-                # Doc requirement: every financial transaction must produce a balanced
-                # journal entry — transfers moved balances above but never recorded one.
+                if dst is not None:
+                    dst_after = dst_before + transfer.amount
+                    db.add(Movement(
+                        id=new_id(f"m_xfer_dst_{transfer.id}"), timestamp=timestamp, entity_type=transfer.dest_type,
+                        entity_id=transfer.dest_id, entity_name=transfer.dest_name, currency=transfer.currency,
+                        type=f"تحويل وارد من {transfer.source_name}", amount_in=transfer.amount, amount_out=0.0,
+                        balance_before=dst_before, balance_after=dst_after, reference_id=transfer.id, user=actor.name
+                    ))
+
+                # Doc requirement: every financial transaction must produce a balanced journal entry.
                 equivalent_lyd = transfer.amount
                 if transfer.currency != "LYD":
                     rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == transfer.currency, ExchangeRate.to_currency == "LYD"))
                     if rate_row:
                         equivalent_lyd = transfer.amount * rate_row.sell_rate
-                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
                 jv_lines = [
                     {
                         "accountName": f"{transfer.dest_name} - {transfer.currency}", "currency": transfer.currency,
@@ -719,11 +744,13 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                     },
                 ]
                 db.add(JournalEntry(
-                    id=f"JV-{datetime.utcnow().strftime('%Y%m%d')}-{transfer.id}", date=timestamp,
+                    id=f"JV-{timestamp[:10].replace('-', '')}-{transfer.id}", date=timestamp,
                     tx_type="تحويل بين الحسابات", reference=transfer.id,
                     description=f"قيد تلقائي لتحويل {transfer.amount} {transfer.currency} من {transfer.source_name} إلى {transfer.dest_name}",
                     user=actor.name, status="approved", lines=jv_lines
                 ))
+            else:
+                approval.status = "approved"
 
         elif approval.type == "reversal":
             approval.status = "approved"
