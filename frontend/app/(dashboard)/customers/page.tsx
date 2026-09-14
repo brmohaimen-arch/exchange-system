@@ -125,12 +125,20 @@ function CustomersPageInner() {
 
   const [depositWithdrawCustomer, setDepositWithdrawCustomer] = useState<Customer | null>(null)
   const [depositWithdrawType, setDepositWithdrawType] = useState<'deposit' | 'withdraw'>('deposit')
-  const [dwForm, setDwForm] = useState({ sourceType: 'vault' as 'vault' | 'bank_account' | 'other', vaultId: '', bankAccountId: '', otherSource: '', currency: 'LYD', amount: '', notes: '' })
+  const [dwForm, setDwForm] = useState({
+    destination: 'wallet' as 'wallet' | 'own_bank_account',
+    sourceType: 'vault' as 'vault' | 'bank_account' | 'other', vaultId: '', bankAccountId: '', otherSource: '',
+    ownBankAccountId: '', currency: 'LYD', amount: '', notes: '',
+  })
   const [dwError, setDwError] = useState('')
   const [dwSaving, setDwSaving] = useState(false)
 
   const [transferCustomer, setTransferCustomer] = useState<Customer | null>(null)
-  const [transferForm, setTransferForm] = useState({ toCustomerId: '', currency: 'LYD', amount: '', notes: '' })
+  const [transferForm, setTransferForm] = useState({
+    mode: 'customer' as 'customer' | 'own_bank_account',
+    toCustomerId: '', ownBankAccountId: '', ownDirection: 'to_bank_account' as 'to_bank_account' | 'to_wallet',
+    currency: 'LYD', amount: '', notes: '',
+  })
   const [transferError, setTransferError] = useState('')
   const [transferSaving, setTransferSaving] = useState(false)
 
@@ -329,10 +337,16 @@ function CustomersPageInner() {
     }
   }
 
+  const customerOwnAccounts = (customerId: string) => bankAccounts.filter((b) => b.customerId === customerId)
+
   const openDepositWithdraw = (c: Customer, type: 'deposit' | 'withdraw') => {
     setDepositWithdrawCustomer(c)
     setDepositWithdrawType(type)
-    setDwForm({ sourceType: 'vault', vaultId: vaults[0]?.id || '', bankAccountId: bankAccounts[0]?.id || '', otherSource: '', currency: 'LYD', amount: '', notes: '' })
+    const ownAccounts = customerOwnAccounts(c.id)
+    setDwForm({
+      destination: 'wallet', sourceType: 'vault', vaultId: vaults[0]?.id || '', bankAccountId: bankAccounts[0]?.id || '',
+      otherSource: '', ownBankAccountId: ownAccounts[0]?.id || '', currency: 'LYD', amount: '', notes: '',
+    })
     setDwError('')
   }
 
@@ -341,10 +355,42 @@ function CustomersPageInner() {
     if (!depositWithdrawCustomer) return
     setDwError('')
     const amount = parseFloat(dwForm.amount)
+    if (!amount || amount <= 0) {
+      setDwError('المبلغ مطلوب')
+      return
+    }
+
+    // Depositing/withdrawing straight into the customer's own linked bank
+    // account moves real cash between it and a vault — a different operation
+    // from crediting/debiting their separate wallet-with-us balance below.
+    if (dwForm.destination === 'own_bank_account') {
+      if (!dwForm.ownBankAccountId || !dwForm.vaultId) {
+        setDwError('حساب العميل البنكي والخزنة حقول مطلوبة')
+        return
+      }
+      setDwSaving(true)
+      try {
+        const account = bankAccounts.find((b) => b.id === dwForm.ownBankAccountId)
+        await api.post(`/bank_accounts/${dwForm.ownBankAccountId}/${depositWithdrawType}`, {
+          vault_id: dwForm.vaultId,
+          currency: account?.currency || 'LYD',
+          amount,
+          notes: dwForm.notes.trim() || null,
+        })
+        setDepositWithdrawCustomer(null)
+        await load()
+      } catch (err) {
+        setDwError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
+      } finally {
+        setDwSaving(false)
+      }
+      return
+    }
+
     const sourceLabel = { vault: 'الخزنة', bank_account: 'الحساب البنكي', other: 'وصف المصدر' }[dwForm.sourceType]
     const sourceOk = dwForm.sourceType === 'vault' ? !!dwForm.vaultId : dwForm.sourceType === 'bank_account' ? !!dwForm.bankAccountId : !!dwForm.otherSource.trim()
-    if (!sourceOk || !amount || amount <= 0) {
-      setDwError(`${sourceLabel} والمبلغ حقول مطلوبة`)
+    if (!sourceOk) {
+      setDwError(`${sourceLabel} مطلوب`)
       return
     }
     setDwSaving(true)
@@ -368,7 +414,11 @@ function CustomersPageInner() {
 
   const openTransfer = (c: Customer) => {
     setTransferCustomer(c)
-    setTransferForm({ toCustomerId: '', currency: Object.keys(c.balances)[0] || 'LYD', amount: '', notes: '' })
+    const ownAccounts = customerOwnAccounts(c.id)
+    setTransferForm({
+      mode: 'customer', toCustomerId: '', ownBankAccountId: ownAccounts[0]?.id || '', ownDirection: 'to_bank_account',
+      currency: Object.keys(c.balances)[0] || 'LYD', amount: '', notes: '',
+    })
     setTransferError('')
   }
 
@@ -377,12 +427,42 @@ function CustomersPageInner() {
     if (!transferCustomer) return
     setTransferError('')
     const amount = parseFloat(transferForm.amount)
-    if (!transferForm.toCustomerId) {
-      setTransferError('اختر العميل المستلم')
-      return
-    }
     if (!amount || amount <= 0) {
       setTransferError('أدخل مبلغاً صحيحاً')
+      return
+    }
+
+    // Moving money between the customer's own wallet-with-us and their own
+    // linked bank account is a pure reclassification of money they already
+    // own — no vault or another customer involved — so it reuses the plain
+    // deposit/withdraw endpoints with that bank account as the counterpart.
+    if (transferForm.mode === 'own_bank_account') {
+      if (!transferForm.ownBankAccountId) {
+        setTransferError('اختر حساب العميل البنكي')
+        return
+      }
+      const account = bankAccounts.find((b) => b.id === transferForm.ownBankAccountId)
+      const op = transferForm.ownDirection === 'to_bank_account' ? 'withdraw' : 'deposit'
+      setTransferSaving(true)
+      try {
+        await api.post(`/customers/${transferCustomer.id}/${op}`, {
+          bank_account_id: transferForm.ownBankAccountId,
+          currency: account?.currency || 'LYD',
+          amount,
+          notes: transferForm.notes.trim() || null,
+        })
+        setTransferCustomer(null)
+        await load()
+      } catch (err) {
+        setTransferError(err instanceof ApiError ? err.message : 'تعذر تنفيذ التحويل')
+      } finally {
+        setTransferSaving(false)
+      }
+      return
+    }
+
+    if (!transferForm.toCustomerId) {
+      setTransferError('اختر العميل المستلم')
       return
     }
     setTransferSaving(true)
@@ -2167,81 +2247,137 @@ function CustomersPageInner() {
               </button>
             </div>
             <form onSubmit={submitDepositWithdraw} className="space-y-4 p-6 text-right">
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">مصدر العملية *</label>
-                <div className="flex gap-4 text-sm">
-                  <label className="flex items-center gap-1.5">
-                    <input type="radio" checked={dwForm.sourceType === 'vault'} onChange={() => setDwForm({ ...dwForm, sourceType: 'vault' })} />
-                    خزنة
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <input type="radio" checked={dwForm.sourceType === 'bank_account'} onChange={() => setDwForm({ ...dwForm, sourceType: 'bank_account' })} />
-                    حساب بنكي
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <input type="radio" checked={dwForm.sourceType === 'other'} onChange={() => setDwForm({ ...dwForm, sourceType: 'other' })} />
-                    أخرى
-                  </label>
-                </div>
-              </div>
-              {dwForm.sourceType === 'vault' ? (
+              {customerOwnAccounts(depositWithdrawCustomer.id).length > 0 && (
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">الخزنة *</label>
-                  <select
-                    value={dwForm.vaultId}
-                    onChange={(e) => setDwForm({ ...dwForm, vaultId: e.target.value })}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  >
-                    <option value="">اختر</option>
-                    {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                  </select>
-                </div>
-              ) : dwForm.sourceType === 'bank_account' ? (
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">الحساب البنكي *</label>
-                  <select
-                    value={dwForm.bankAccountId}
-                    onChange={(e) => setDwForm({ ...dwForm, bankAccountId: e.target.value })}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  >
-                    <option value="">اختر</option>
-                    {bankAccounts.map((b) => <option key={b.id} value={b.id}>{b.bankName} - {b.accountName}</option>)}
-                  </select>
-                </div>
-              ) : (
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">وصف المصدر *</label>
-                  <input
-                    type="text"
-                    value={dwForm.otherSource}
-                    onChange={(e) => setDwForm({ ...dwForm, otherSource: e.target.value })}
-                    placeholder="مثال: مبلغ نقدي خارج الخزنة"
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">لن يتم خصم/إضافة هذا المبلغ من أي خزنة أو حساب بنكي مسجل في النظام.</p>
+                  <label className="block text-sm font-medium text-foreground mb-1">الوجهة *</label>
+                  <div className="flex gap-4 text-sm">
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={dwForm.destination === 'wallet'} onChange={() => setDwForm({ ...dwForm, destination: 'wallet' })} />
+                      رصيد العميل لدينا
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={dwForm.destination === 'own_bank_account'} onChange={() => setDwForm({ ...dwForm, destination: 'own_bank_account' })} />
+                      حساب العميل البنكي الخاص
+                    </label>
+                  </div>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
-                  <select
-                    value={dwForm.currency}
-                    onChange={(e) => setDwForm({ ...dwForm, currency: e.target.value })}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  >
-                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                  <input
-                    type="number"
-                    value={dwForm.amount}
-                    onChange={(e) => setDwForm({ ...dwForm, amount: e.target.value })}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                </div>
-              </div>
+
+              {dwForm.destination === 'own_bank_account' ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">حساب العميل البنكي *</label>
+                    <select
+                      value={dwForm.ownBankAccountId}
+                      onChange={(e) => setDwForm({ ...dwForm, ownBankAccountId: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value="">اختر</option>
+                      {customerOwnAccounts(depositWithdrawCustomer.id).map((b) => <option key={b.id} value={b.id}>{b.bankName} - {b.accountName} ({b.currency})</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">الخزنة * <span className="text-xs font-normal text-muted-foreground">({depositWithdrawType === 'deposit' ? 'يخرج منها المبلغ إلى الحساب' : 'يعود إليها المبلغ من الحساب'})</span></label>
+                    <select
+                      value={dwForm.vaultId}
+                      onChange={(e) => setDwForm({ ...dwForm, vaultId: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value="">اختر</option>
+                      {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">
+                      المبلغ * {dwForm.ownBankAccountId && <span className="text-xs font-normal text-muted-foreground">({bankAccounts.find((b) => b.id === dwForm.ownBankAccountId)?.currency})</span>}
+                    </label>
+                    <input
+                      type="number"
+                      value={dwForm.amount}
+                      onChange={(e) => setDwForm({ ...dwForm, amount: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">مصدر العملية *</label>
+                    <div className="flex gap-4 text-sm">
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" checked={dwForm.sourceType === 'vault'} onChange={() => setDwForm({ ...dwForm, sourceType: 'vault' })} />
+                        خزنة
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" checked={dwForm.sourceType === 'bank_account'} onChange={() => setDwForm({ ...dwForm, sourceType: 'bank_account' })} />
+                        حساب بنكي
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" checked={dwForm.sourceType === 'other'} onChange={() => setDwForm({ ...dwForm, sourceType: 'other' })} />
+                        أخرى
+                      </label>
+                    </div>
+                  </div>
+                  {dwForm.sourceType === 'vault' ? (
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">الخزنة *</label>
+                      <select
+                        value={dwForm.vaultId}
+                        onChange={(e) => setDwForm({ ...dwForm, vaultId: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      >
+                        <option value="">اختر</option>
+                        {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                      </select>
+                    </div>
+                  ) : dwForm.sourceType === 'bank_account' ? (
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">الحساب البنكي *</label>
+                      <select
+                        value={dwForm.bankAccountId}
+                        onChange={(e) => setDwForm({ ...dwForm, bankAccountId: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      >
+                        <option value="">اختر</option>
+                        {bankAccounts.map((b) => <option key={b.id} value={b.id}>{b.bankName} - {b.accountName}</option>)}
+                      </select>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">وصف المصدر *</label>
+                      <input
+                        type="text"
+                        value={dwForm.otherSource}
+                        onChange={(e) => setDwForm({ ...dwForm, otherSource: e.target.value })}
+                        placeholder="مثال: مبلغ نقدي خارج الخزنة"
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">لن يتم خصم/إضافة هذا المبلغ من أي خزنة أو حساب بنكي مسجل في النظام.</p>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                      <select
+                        value={dwForm.currency}
+                        onChange={(e) => setDwForm({ ...dwForm, currency: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      >
+                        {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
+                      <input
+                        type="number"
+                        value={dwForm.amount}
+                        onChange={(e) => setDwForm({ ...dwForm, amount: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea
@@ -2285,43 +2421,101 @@ function CustomersPageInner() {
               </button>
             </div>
             <form onSubmit={submitTransfer} className="space-y-4 p-6 text-right">
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">العميل المستلم *</label>
-                <select
-                  value={transferForm.toCustomerId}
-                  onChange={(e) => setTransferForm({ ...transferForm, toCustomerId: e.target.value })}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">اختر العميل</option>
-                  {customers.filter((c) => c.id !== transferCustomer.id && c.isActive).map((c) => (
-                    <option key={c.id} value={c.id}>{c.name} ({c.id})</option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
+              {customerOwnAccounts(transferCustomer.id).length > 0 && (
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
-                  <select
-                    value={transferForm.currency}
-                    onChange={(e) => setTransferForm({ ...transferForm, currency: e.target.value })}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  >
-                    {Object.keys(transferCustomer.balances).map((ccy) => <option key={ccy} value={ccy}>{ccy}</option>)}
-                  </select>
+                  <label className="block text-sm font-medium text-foreground mb-1">نوع التحويل *</label>
+                  <div className="flex gap-4 text-sm">
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={transferForm.mode === 'customer'} onChange={() => setTransferForm({ ...transferForm, mode: 'customer' })} />
+                      إلى عميل آخر
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={transferForm.mode === 'own_bank_account'} onChange={() => setTransferForm({ ...transferForm, mode: 'own_bank_account' })} />
+                      إلى/من حسابه البنكي الخاص
+                    </label>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                  <input
-                    type="number"
-                    value={transferForm.amount}
-                    onChange={(e) => setTransferForm({ ...transferForm, amount: e.target.value })}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground" dir="ltr">
-                الرصيد المتاح: {(transferCustomer.balances[transferForm.currency] ?? 0).toLocaleString()} {transferForm.currency}
-              </p>
+              )}
+
+              {transferForm.mode === 'own_bank_account' ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">الاتجاه *</label>
+                    <div className="flex gap-4 text-sm">
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" checked={transferForm.ownDirection === 'to_bank_account'} onChange={() => setTransferForm({ ...transferForm, ownDirection: 'to_bank_account' })} />
+                        من الرصيد إلى الحساب البنكي
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" checked={transferForm.ownDirection === 'to_wallet'} onChange={() => setTransferForm({ ...transferForm, ownDirection: 'to_wallet' })} />
+                        من الحساب البنكي إلى الرصيد
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">حساب العميل البنكي *</label>
+                    <select
+                      value={transferForm.ownBankAccountId}
+                      onChange={(e) => setTransferForm({ ...transferForm, ownBankAccountId: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value="">اختر</option>
+                      {customerOwnAccounts(transferCustomer.id).map((b) => <option key={b.id} value={b.id}>{b.bankName} - {b.accountName} ({b.currency})</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">
+                      المبلغ * {transferForm.ownBankAccountId && <span className="text-xs font-normal text-muted-foreground">({bankAccounts.find((b) => b.id === transferForm.ownBankAccountId)?.currency})</span>}
+                    </label>
+                    <input
+                      type="number"
+                      value={transferForm.amount}
+                      onChange={(e) => setTransferForm({ ...transferForm, amount: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">العميل المستلم *</label>
+                    <select
+                      value={transferForm.toCustomerId}
+                      onChange={(e) => setTransferForm({ ...transferForm, toCustomerId: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value="">اختر العميل</option>
+                      {customers.filter((c) => c.id !== transferCustomer.id && c.isActive).map((c) => (
+                        <option key={c.id} value={c.id}>{c.name} ({c.id})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                      <select
+                        value={transferForm.currency}
+                        onChange={(e) => setTransferForm({ ...transferForm, currency: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      >
+                        {Object.keys(transferCustomer.balances).map((ccy) => <option key={ccy} value={ccy}>{ccy}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
+                      <input
+                        type="number"
+                        value={transferForm.amount}
+                        onChange={(e) => setTransferForm({ ...transferForm, amount: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground" dir="ltr">
+                    الرصيد المتاح: {(transferCustomer.balances[transferForm.currency] ?? 0).toLocaleString()} {transferForm.currency}
+                  </p>
+                </>
+              )}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea
