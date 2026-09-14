@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
 from ..models import (
-    JournalEntry, AuditLog, LoginLog, SystemSetting, Backup, AuditAction, User
+    JournalEntry, AuditLog, LoginLog, SystemSetting, Backup, AuditAction, User, Movement, Vault, BankAccount, Customer
 )
 from ..tracking import create_audit_log, verify_audit_chain
 from ..core.responses import success_response, error_response
@@ -127,14 +127,85 @@ def send_journal_entries_export_whatsapp(format: str = "pdf", actor: User = Depe
     db.commit()
     return success_response(data={"sent": True}, message_ar="تم إرسال التقرير عبر واتساب بنجاح")
 
+# Operation types that must NOT go through this generic reversal — each needs
+# extra state fixed up beyond a plain vault/bank/customer balance (a linked
+# Debt/Advance record, an approval workflow, a partially-paid installment,
+# etc.) that a blind Movement-based undo can't safely reconstruct. They have
+# their own dedicated, purpose-built reversal/delete flows instead.
+_SPECIALIZED_REVERSAL_TX_TYPES = {
+    "شراء عملة": 'استخدم زر "طلب عكس العملية" في صفحة العمليات بدلاً من هذا — تلك العملية تحتاج موافقة المدير وتتعامل مع الديون المرتبطة بها.',
+    "بيع عملة": 'استخدم زر "طلب عكس العملية" في صفحة العمليات بدلاً من هذا — تلك العملية تحتاج موافقة المدير وتتعامل مع الديون المرتبطة بها.',
+    "تبديل عملة": 'استخدم زر "طلب عكس العملية" في صفحة العمليات بدلاً من هذا — تلك العملية تحتاج موافقة المدير وتتعامل مع الديون المرتبطة بها.',
+    "صرف سلفة": 'استخدم زر "حذف" على هذه السلفة في تبويب "السلف" بصفحة العملاء بدلاً من هذا — يعيد المبلغ المتبقي تلقائياً لمصدره.',
+    "تسديد سلفة": 'لا يمكن عكس دفعة سداد سلفة من هنا — استخدم "حذف" على السلفة نفسها في تبويب "السلف" إذا لزم الأمر.',
+    "إلغاء سلفة": "لا يمكن عكس إلغاء سلفة.",
+}
+
 @router.post("/journal_entries/{entry_id}/reverse")
 def reverse_journal_entry(entry_id: str, data: ReversalRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Reverses both the accounting record AND the real money it moved.
+    Previously this only flipped the JournalEntry's debit/credit lines and
+    left every vault/bank/customer balance untouched — a purely cosmetic
+    reversal that made the ledger look corrected while the actual cash never
+    moved back. It now walks every Movement row recorded under the same
+    reference (exactly how the money-moving operation logged its own
+    effects) and undoes each one on the real entity, mirroring the proven
+    pattern already used for transaction reversals."""
     jv = db.get(JournalEntry, entry_id)
     if not jv:
         raise APIError(code="NOT_FOUND", message_ar="القيد المحاسبي غير موجود", message_en="Journal entry not found", status_code=404)
-    
+
     if jv.status == "reversed":
         raise APIError(code="ALREADY_REVERSED", message_ar="القيد ملغي بالفعل سابقا", message_en="Journal entry already reversed", status_code=400)
+
+    specialized_message = _SPECIALIZED_REVERSAL_TX_TYPES.get(jv.tx_type)
+    if specialized_message:
+        raise APIError(code="USE_DEDICATED_REVERSAL", message_ar=specialized_message, message_en="This operation type has its own dedicated reversal flow", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+
+    # Undo every real balance this operation touched, using the exact Movement
+    # rows recorded when it happened (entity_type/entity_id/currency/amount_in/
+    # amount_out) — not re-derived, so this is exact regardless of what else
+    # has happened to that vault/bank/customer since.
+    movements = db.scalars(select(Movement).where(Movement.reference_id == jv.reference)).all()
+    for m in movements:
+        if m.entity_type == "vault":
+            entity = db.get(Vault, m.entity_id)
+            if not entity:
+                continue
+            balance_before = entity.balances.get(m.currency, 0.0)
+            bals = entity.balances.copy()
+            bals[m.currency] = balance_before - m.amount_in + m.amount_out
+            entity.balances = bals
+            balance_after = bals[m.currency]
+            entity.last_movement = timestamp
+        elif m.entity_type == "bank_account":
+            entity = db.get(BankAccount, m.entity_id)
+            if not entity:
+                continue
+            balance_before = entity.balance
+            entity.balance = balance_before - m.amount_in + m.amount_out
+            balance_after = entity.balance
+            entity.last_movement = timestamp
+        elif m.entity_type == "customer":
+            entity = db.get(Customer, m.entity_id)
+            if not entity:
+                continue
+            balance_before = entity.balances.get(m.currency, 0.0)
+            bals = entity.balances.copy()
+            bals[m.currency] = balance_before - m.amount_in + m.amount_out
+            entity.balances = bals
+            balance_after = bals[m.currency]
+        else:
+            continue
+
+        db.add(Movement(
+            id=new_id(f"m_rev_{m.id}"), timestamp=timestamp, entity_type=m.entity_type, entity_id=m.entity_id,
+            entity_name=m.entity_name, currency=m.currency, type=f"عكس قيد — {m.type}",
+            amount_in=m.amount_out, amount_out=m.amount_in,
+            balance_before=balance_before, balance_after=balance_after, reference_id=jv.reference, user=actor.name
+        ))
 
     # Mark original JV as reversed
     jv.status = "reversed"
@@ -156,7 +227,7 @@ def reverse_journal_entry(entry_id: str, data: ReversalRequest, actor: User = De
 
     rev_jv = JournalEntry(
         id=f"REV-{jv.id}",
-        date=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        date=timestamp,
         tx_type=f"إلغاء قيد {jv.tx_type}",
         reference=jv.reference,
         description=f"قيد عكسي تلقائي لإلغاء القيد {jv.id} — السبب: {data.reason}",
@@ -166,7 +237,7 @@ def reverse_journal_entry(entry_id: str, data: ReversalRequest, actor: User = De
     )
     db.add(rev_jv)
 
-    create_audit_log(db, action=AuditAction.REVERSE, entity_type="JournalEntry", entity_id=jv.id, description=f"تم إنشاء قيد عكسي لإلغاء القيد {jv.id} بسبب: {data.reason}", username=actor.username)
+    create_audit_log(db, action=AuditAction.REVERSE, entity_type="JournalEntry", entity_id=jv.id, description=f"تم إنشاء قيد عكسي لإلغاء القيد {jv.id} بسبب: {data.reason} (وتمت إعادة الأرصدة الفعلية)", username=actor.username)
     db.commit()
     return success_response(data=jv_to_dict(jv))
 

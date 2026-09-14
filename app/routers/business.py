@@ -662,24 +662,36 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
             raise APIError(code="ACCOUNT_INACTIVE", message_ar="لا يمكن تنفيذ عملية على حساب بنكي غير نشط", message_en="Cannot operate on an inactive bank account", status_code=400)
         source_before = bank_acc.balance
 
-    # Note the source (vault/bank) side moves OPPOSITE to the customer's own balance:
-    # a "deposit" to the customer's account is funded by the office paying it out of
-    # the vault/bank (source decreases), and a "withdraw" from the customer's account
-    # returns that cash to the vault/bank (source increases).
+    # A vault or a company bank account is real money changing hands with the
+    # outside world: on a deposit the customer physically hands over cash, so
+    # it moves INTO the vault/bank right alongside crediting their balance —
+    # both sides increase together (and decrease together on a withdrawal).
+    #
+    # The customer's OWN bank account (see customer-owned BankAccount) is the
+    # opposite case: it's the customer's own money simply being reclassified
+    # between two things we track for them (their wallet-with-us vs. their
+    # own bank account), so it moves OPPOSITE their wallet balance — exactly
+    # like the old (and now-removed) blanket assumption below used to, but
+    # only for this one case.
+    is_own_account_transfer = bool(bank_acc and bank_acc.customer_id == customer_id)
+    source_increases = (not is_deposit) if is_own_account_transfer else is_deposit
+
     if is_deposit:
         cust_after = cust_before + data.amount
-        if source_before is not None:
-            if source_before < data.amount:
-                raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ لصرف المبلغ ({source_before} {data.currency})", message_en="Insufficient balance to pay out", status_code=400)
-            source_after = source_before - data.amount
     else:
         # A customer can withdraw more than they have on account — it's a running
         # trust relationship, not a hard prepaid limit — so this deliberately allows
         # the balance to go negative (e.g. -1,500 withdrawing 5,000 more becomes
         # -6,500) rather than blocking the withdrawal.
-        if source_before is not None:
-            source_after = source_before + data.amount
         cust_after = cust_before - data.amount
+
+    if source_before is not None:
+        if source_increases:
+            source_after = source_before + data.amount
+        else:
+            if source_before < data.amount:
+                raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ ({source_before} {data.currency})", message_en="Insufficient balance", status_code=400)
+            source_after = source_before - data.amount
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     entry_id = data.id or new_id(f"cae_{op_type}")
@@ -697,7 +709,7 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         shift = db.scalar(select(Shift).where(Shift.vault_id == vault.id, Shift.status == "open"))
         if shift:
             expected = shift.expected_balances.copy()
-            expected[data.currency] = expected.get(data.currency, 0.0) + (-data.amount if is_deposit else data.amount)
+            expected[data.currency] = expected.get(data.currency, 0.0) + (data.amount if source_increases else -data.amount)
             shift.expected_balances = expected
     elif bank_acc:
         bank_acc.balance = source_after
@@ -726,16 +738,19 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         db.add(Movement(
             id=new_id(f"m_vault_{entry_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
             entity_name=vault.name, currency=data.currency,
-            type="دفع نقدي لإيداع حساب عميل" if is_deposit else "تحصيل نقدي من سحب حساب عميل",
-            amount_in=0.0 if is_deposit else data.amount, amount_out=data.amount if is_deposit else 0.0,
+            type="تحصيل نقدي من إيداع حساب عميل" if is_deposit else "دفع نقدي لسحب حساب عميل",
+            amount_in=data.amount if source_increases else 0.0, amount_out=0.0 if source_increases else data.amount,
             balance_before=source_before, balance_after=source_after, reference_id=entry_id, user=actor.name
         ))
     elif bank_acc:
+        if is_own_account_transfer:
+            bank_type = "تحويل من رصيد العميل إلى حسابه البنكي" if source_increases else "تحويل من حساب العميل البنكي إلى رصيده"
+        else:
+            bank_type = "تحصيل لحساب بنكي من إيداع حساب عميل" if is_deposit else "دفع من حساب بنكي لسحب حساب عميل"
         db.add(Movement(
             id=new_id(f"m_bank_{entry_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=bank_acc.id,
-            entity_name=bank_acc_label, currency=data.currency,
-            type="دفع من حساب بنكي لإيداع حساب عميل" if is_deposit else "تحصيل لحساب بنكي من سحب حساب عميل",
-            amount_in=0.0 if is_deposit else data.amount, amount_out=data.amount if is_deposit else 0.0,
+            entity_name=bank_acc_label, currency=data.currency, type=bank_type,
+            amount_in=data.amount if source_increases else 0.0, amount_out=0.0 if source_increases else data.amount,
             balance_before=source_before, balance_after=source_after, reference_id=entry_id, user=actor.name
         ))
     # No Movement for an "other" source — there's no tracked balance on that side to log against.
@@ -760,15 +775,21 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
 
     source_label = vault.name if vault else bank_acc_label if bank_acc else (data.other_source or "مصدر آخر")
     source_kind = "خزينة" if vault else "حساب بنكي" if bank_acc else "مصدر آخر"
+    # A vault/company bank account is an asset (debit = increase); the
+    # customer's own bank account is money held for them, just like their
+    # wallet, so it's treated the same way (credit = increase) — keeping the
+    # entry balanced (one debit, one credit) in both cases.
+    source_is_asset = not is_own_account_transfer
     lines = [
         {
             "accountName": f"{source_kind} {source_label} - {data.currency}", "currency": data.currency,
-            "debit": 0.0 if is_deposit else data.amount, "credit": data.amount if is_deposit else 0.0,
+            "debit": data.amount if (source_increases == source_is_asset) else 0.0,
+            "credit": 0.0 if (source_increases == source_is_asset) else data.amount,
             "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
         },
         {
             "accountName": f"حساب العميل {customer.name} - {data.currency}", "currency": data.currency,
-            "debit": data.amount if is_deposit else 0.0, "credit": 0.0 if is_deposit else data.amount,
+            "debit": 0.0 if is_deposit else data.amount, "credit": data.amount if is_deposit else 0.0,
             "originalAmount": data.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
         },
     ]
