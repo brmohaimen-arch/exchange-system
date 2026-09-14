@@ -689,7 +689,10 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         if source_increases:
             source_after = source_before + data.amount
         else:
-            if source_before < data.amount:
+            # A customer's own bank account is allowed to go negative here too
+            # (same سلفة-style trust relationship as their wallet) — only a
+            # real vault or company bank account must stay non-negative.
+            if not is_own_account_transfer and source_before < data.amount:
                 raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ ({source_before} {data.currency})", message_en="Insufficient balance", status_code=400)
             source_after = source_before - data.amount
 
@@ -1116,7 +1119,12 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
         account_after = account_before + data.amount
         vault_after = vault_before - data.amount  # cash leaves the drawer, goes to the bank
     else:
-        if account_before < data.amount:
+        # A customer's own bank account is allowed to go negative — the company
+        # paying out more than the account holds is effectively an advance
+        # (سلفة) against that specific account, the same trust relationship
+        # already allowed on a customer's wallet balance. A company-owned
+        # account has no such allowance — it can never go negative.
+        if not account.customer_id and account_before < data.amount:
             raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الحساب البنكي غير كافٍ ({account_before} {account.currency})", message_en="Insufficient bank account balance", status_code=400)
         account_after = account_before - data.amount
         vault_after = vault_before + data.amount  # cash comes out of the bank, into the drawer

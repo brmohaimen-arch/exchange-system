@@ -1776,7 +1776,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                               <td className="px-6 py-4">
                                 <span className="inline-flex items-center gap-1"><CurrencyFlag code={ba.currency} flag={currencies.find((c) => c.code === ba.currency)?.flag} className="h-3.5 w-5" /> {ba.currency}</span>
                               </td>
-                              <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
+                              <td className={`px-6 py-4 font-bold ${ba.balance < 0 ? 'text-danger' : ''}`} dir="ltr">{ba.balance.toLocaleString()}</td>
                               <td className="px-6 py-4">
                                 <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                                   ${ba.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
@@ -1880,7 +1880,10 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                                     <td className="px-6 py-4">
                                       <span className="inline-flex items-center gap-1"><CurrencyFlag code={ba.currency} flag={currencies.find((c) => c.code === ba.currency)?.flag} className="h-3.5 w-5" /> {ba.currency}</span>
                                     </td>
-                                    <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
+                                    <td className={`px-6 py-4 font-bold ${ba.balance < 0 ? 'text-danger' : ''}`} dir="ltr">
+                                      {ba.balance.toLocaleString()}
+                                      {ba.balance < 0 && <span className="mr-1.5 rounded-full bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium">سلفة</span>}
+                                    </td>
                                     <td className="px-6 py-4">
                                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                                         ${ba.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
