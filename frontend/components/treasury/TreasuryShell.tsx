@@ -1009,6 +1009,16 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     setShowAccountModal(true)
   }
 
+  // Same modal, but pre-selects a customer — used from a customer's own card
+  // in the "حسابات العملاء" tab so adding their 2nd/3rd account doesn't
+  // require re-picking them from the full customer list.
+  const openCreateAccountForCustomer = (customerId: string) => {
+    setEditingAccount(null)
+    setAccountForm({ ...emptyBankAccountForm(), customerId })
+    setAccountFormError('')
+    setShowAccountModal(true)
+  }
+
   const openEditAccount = (account: BankAccount) => {
     setEditingAccount(account)
     setAccountForm({
@@ -1312,10 +1322,19 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               )}
             </>
           )}
-          {tab === 'customer_bank_accounts' && canTransfer && (
-            <button onClick={openTransfer} className="flex items-center gap-2 rounded-md border border-info/30 px-4 py-2 text-sm font-medium text-info hover:bg-info/10 transition-colors">
-              <ArrowRightLeft className="h-4 w-4" /> تحويل أموال
-            </button>
+          {tab === 'customer_bank_accounts' && (
+            <>
+              {canTransfer && (
+                <button onClick={openTransfer} className="flex items-center gap-2 rounded-md border border-info/30 px-4 py-2 text-sm font-medium text-info hover:bg-info/10 transition-colors">
+                  <ArrowRightLeft className="h-4 w-4" /> تحويل أموال
+                </button>
+              )}
+              {canManageBanks && (
+                <button onClick={openCreateAccount} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+                  <Plus className="h-4 w-4" /> إضافة حساب بنكي
+                </button>
+              )}
+            </>
           )}
           {tab === 'shifts' && canOpenShift && (
             <button onClick={openShift} disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
@@ -1820,12 +1839,19 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <div className="space-y-6">
                 {pagedCustomerAccountGroups.map((cg) => (
                   <div key={cg.customerId} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-                    <div className="border-b border-border px-6 py-4 bg-secondary/30 flex items-center gap-2">
-                      <Wallet className="h-4 w-4 text-primary" />
-                      <h4 className="text-sm font-semibold text-foreground">{cg.customerName}</h4>
-                      <span className="text-xs text-muted-foreground">
-                        — {cg.banks.reduce((n, b) => n + b.accounts.length, 0)} {cg.banks.reduce((n, b) => n + b.accounts.length, 0) === 1 ? 'حساب' : 'حسابات'} في {cg.banks.length} {cg.banks.length === 1 ? 'بنك' : 'بنوك'}
-                      </span>
+                    <div className="border-b border-border px-6 py-4 bg-secondary/30 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Wallet className="h-4 w-4 text-primary" />
+                        <h4 className="text-sm font-semibold text-foreground">{cg.customerName}</h4>
+                        <span className="text-xs text-muted-foreground">
+                          — {cg.banks.reduce((n, b) => n + b.accounts.length, 0)} {cg.banks.reduce((n, b) => n + b.accounts.length, 0) === 1 ? 'حساب' : 'حسابات'} في {cg.banks.length} {cg.banks.length === 1 ? 'بنك' : 'بنوك'}
+                        </span>
+                      </div>
+                      {canManageBanks && (
+                        <button onClick={() => openCreateAccountForCustomer(cg.customerId)} className="flex items-center gap-1 rounded-md border border-primary/30 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 transition-colors">
+                          <Plus className="h-3.5 w-3.5" /> إضافة حساب لهذا العميل
+                        </button>
+                      )}
                     </div>
                     <div className="divide-y divide-border">
                       {cg.banks.map((group) => (
