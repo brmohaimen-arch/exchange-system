@@ -86,7 +86,9 @@ export default function DashboardPage() {
 
   // Every bank account holds a single currency — convert each to its LYD
   // equivalent at the office's buy rate before summing into one company-wide total.
-  const totalBankBalanceLYD = bankAccounts.reduce((sum, a) => {
+  // Customer-owned accounts (linked via customerId) are excluded — this KPI is
+  // the company's own money, not funds sitting in a customer's external bank.
+  const totalBankBalanceLYD = bankAccounts.filter((a) => !a.customerId).reduce((sum, a) => {
     if (a.currency === 'LYD') return sum + a.balance
     const rate = rates.find((r) => r.fromCurrency === a.currency && r.toCurrency === 'LYD')
     return sum + (rate ? a.balance * rate.buyRate : 0)

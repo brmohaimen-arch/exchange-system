@@ -346,6 +346,7 @@ export interface BankAccount {
   isActive: boolean
   notes: string | null
   lastMovement: string | null
+  customerId: string | null
 }
 
 export interface BankDeposit {

@@ -76,6 +76,7 @@ class CustomerCreate(BaseModel):
     notes: str | None = None
     bank_name: str | None = None
     bank_account_number: str | None = None
+    bank_currency: str | None = None  # only used to fund/link the auto-created customer bank account below — not stored on Customer itself
     passport_number: str | None = None
     is_active: bool = True
 
@@ -167,7 +168,8 @@ def bank_account_to_dict(ba: BankAccount):
         "balance": ba.balance,
         "isActive": ba.is_active,
         "notes": ba.notes,
-        "lastMovement": ba.last_movement
+        "lastMovement": ba.last_movement,
+        "customerId": ba.customer_id,
     }
 
 def bank_deposit_to_dict(d: BankDeposit):
@@ -459,6 +461,54 @@ def delete_bank_account(account_id: str, db: Session = Depends(get_db)):
     db.commit()
     return success_response(data={"deleted": True})
 
+def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str | None, account_number: str | None, currency: str | None, actor_name: str):
+    """Keeps the customer's own external bank account (a BankAccount row tagged
+    via customer_id, kept separate from the company's own accounts) in sync with
+    the bank_name/bank_account_number typed into their profile. An existing
+    unlinked account matching the IBAN is linked; otherwise a new Bank/Branch/
+    BankAccount is created for it. If the customer already had a different
+    account linked and the IBAN changed (or was cleared), that old account is
+    unlinked — never deleted, since it may carry real balance/movement history."""
+    previous = db.scalar(select(BankAccount).where(BankAccount.customer_id == customer.id))
+    new_number = (account_number or "").strip()
+
+    if previous and previous.account_number != new_number:
+        previous.customer_id = None
+        previous = None
+
+    if not new_number or previous:
+        return
+
+    existing = db.scalar(select(BankAccount).where(BankAccount.account_number == new_number, BankAccount.customer_id.is_(None)))
+    if existing:
+        existing.customer_id = customer.id
+        return
+
+    safe_bank_name = (bank_name or "").strip() or "بنك العميل"
+    bank = db.scalar(select(Bank).where(func.lower(Bank.name) == safe_bank_name.lower()))
+    if not bank:
+        bank = Bank(id=new_id("bank_cust"), name=safe_bank_name, code="-", country="-", city="-", phone="-",
+                    is_active=True, notes="أُنشئ تلقائياً من بيانات حساب عميل")
+        db.add(bank)
+        db.flush()
+
+    branch = db.scalar(select(BankBranch).where(BankBranch.bank_id == bank.id, BankBranch.name == "حسابات العملاء"))
+    if not branch:
+        branch = BankBranch(id=new_id("bbr_cust"), bank_id=bank.id, bank_name=bank.name, name="حسابات العملاء",
+                            city="-", address="-", phone="-", manager="-", is_active=True)
+        db.add(branch)
+        db.flush()
+
+    account = BankAccount(
+        id=new_id("ba_cust"), bank_id=bank.id, bank_name=bank.name, branch_id=branch.id, branch_name=branch.name,
+        account_name=customer.name, account_number=new_number, account_type="individual",
+        currency=(currency or "LYD"), balance=0.0, is_active=True,
+        notes="حساب بنكي خاص بالعميل — أُنشئ تلقائياً", customer_id=customer.id,
+    )
+    db.add(account)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="BankAccount", entity_id=account.id,
+                     description=f"تم إنشاء حساب بنكي تلقائياً للعميل {customer.name} في {bank.name}", username=actor_name)
+
 # ----------------- CUSTOMERS -----------------
 @router.get("/customers")
 def list_customers(db: Session = Depends(get_db)):
@@ -481,8 +531,10 @@ def next_customer_code(db: Session = Depends(get_db)):
 def create_customer(data: CustomerCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
     if db.get(Customer, data.id):
         raise APIError(code="CUSTOMER_EXISTS", message_ar="رمز العميل موجود بالفعل", message_en="Customer ID already exists", status_code=400)
-    c = Customer(**data.model_dump())
+    c = Customer(**data.model_dump(exclude={"bank_currency"}))
     db.add(c)
+    db.flush()
+    _sync_customer_bank_account(db, c, data.bank_name, data.bank_account_number, data.bank_currency, actor.name)
     create_audit_log(db, action=AuditAction.CREATE, entity_type="Customer", entity_id=c.id, description=f"تمت إضافة عميل جديد: {c.name}", username=actor.username)
     db.commit()
     return success_response(data=customer_to_dict(c))
@@ -506,6 +558,7 @@ def update_customer(customer_id: str, data: CustomerCreate, actor: User = Depend
     c.passport_number = data.passport_number
     was_active = c.is_active
     c.is_active = data.is_active
+    _sync_customer_bank_account(db, c, data.bank_name, data.bank_account_number, data.bank_currency, actor.name)
     action_desc = f"تم تعديل بيانات العميل: {c.name}"
     if was_active and not data.is_active:
         action_desc = f"تم إيقاف العميل: {c.name}"
@@ -520,6 +573,8 @@ def delete_customer(customer_id: str, actor: User = Depends(require_permission("
     customer = db.get(Customer, customer_id)
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
+    for linked_account in db.scalars(select(BankAccount).where(BankAccount.customer_id == customer_id)).all():
+        linked_account.customer_id = None
     db.delete(customer)
     create_audit_log(db, action=AuditAction.DELETE, entity_type="Customer", entity_id=customer_id, description=f"تم حذف العميل: {customer.name}", username=actor.username)
     db.commit()

@@ -24,7 +24,7 @@ const advanceStatusLabel: Record<string, string> = { active: 'قائمة', paid:
 interface BalanceRow { currency: string; amount: string }
 
 function emptyForm() {
-  return { code: '', name: '', type: 'individual', phone: '', idNumber: '', address: '', debtLimit: '0', profitPct: '0', notes: '', isActive: true, bankName: '', bankAccountNumber: '', passportNumber: '' }
+  return { code: '', name: '', type: 'individual', phone: '', idNumber: '', address: '', debtLimit: '0', profitPct: '0', notes: '', isActive: true, bankName: '', bankAccountNumber: '', bankCurrency: 'LYD', passportNumber: '' }
 }
 
 function emptyDebtForm() {
@@ -213,10 +213,12 @@ function CustomersPageInner() {
 
   const openEdit = (c: Customer) => {
     setEditingCustomer(c)
+    const linkedAccount = bankAccounts.find((a) => a.customerId === c.id)
     setForm({
       code: c.id, name: c.name, type: c.type, phone: c.phone, idNumber: c.idNumber, address: c.address,
       debtLimit: String(c.debtLimit), profitPct: String(c.profitPct), notes: c.notes || '', isActive: c.isActive,
-      bankName: c.bankName || '', bankAccountNumber: c.bankAccountNumber || '', passportNumber: c.passportNumber || '',
+      bankName: c.bankName || '', bankAccountNumber: c.bankAccountNumber || '', bankCurrency: linkedAccount?.currency || 'LYD',
+      passportNumber: c.passportNumber || '',
     })
     setBalanceRows(Object.entries(c.balances).map(([currency, amount]) => ({ currency, amount: String(amount) })))
     setFormError('')
@@ -260,6 +262,7 @@ function CustomersPageInner() {
           is_active: form.isActive,
           bank_name: form.bankName.trim() || null,
           bank_account_number: form.bankAccountNumber.trim() || null,
+          bank_currency: form.bankCurrency,
           passport_number: form.passportNumber.trim() || null,
         })
       } else {
@@ -276,6 +279,7 @@ function CustomersPageInner() {
           notes: form.notes.trim() || null,
           bank_name: form.bankName.trim() || null,
           bank_account_number: form.bankAccountNumber.trim() || null,
+          bank_currency: form.bankCurrency,
           passport_number: form.passportNumber.trim() || null,
         })
       }
@@ -1608,7 +1612,7 @@ function CustomersPageInner() {
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">اسم بنك العميل</label>
                   <input
@@ -1626,7 +1630,22 @@ function CustomersPageInner() {
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">عملة الحساب</label>
+                  <select
+                    value={form.bankCurrency}
+                    onChange={(e) => setForm({ ...form, bankCurrency: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                </div>
               </div>
+              {form.bankAccountNumber.trim() && (
+                <p className="text-xs text-muted-foreground -mt-2">
+                  سيتم إنشاء أو ربط حساب بنكي بهذا الرقم تلقائياً ضمن صفحة البنوك والفروع — تبويب "حسابات العملاء".
+                </p>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">رقم جواز السفر</label>

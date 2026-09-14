@@ -41,8 +41,10 @@ const tabs = [
   { key: 'vaults', label: 'الخزنات', icon: Landmark },
   { key: 'movements', label: 'حركة اليوم', icon: ArrowRightLeft },
   { key: 'branches', label: 'الفروع', icon: MapPin },
-  { key: 'banks', label: 'البنوك', icon: Building2 },
-  { key: 'bank_movements', label: 'حركة الحسابات البنكية', icon: ArrowRightLeft },
+  { key: 'banks', label: 'حسابات الشركة', icon: Building2 },
+  { key: 'bank_movements', label: 'حركة حسابات الشركة', icon: ArrowRightLeft },
+  { key: 'customer_bank_accounts', label: 'حسابات العملاء', icon: Wallet },
+  { key: 'customer_bank_movements', label: 'حركة حسابات العملاء', icon: ArrowRightLeft },
   { key: 'shifts', label: 'الورديات', icon: Clock },
   { key: 'inventory', label: 'الجرد', icon: ClipboardList },
   { key: 'expenses', label: 'المصاريف اليومية', icon: Receipt },
@@ -127,6 +129,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [movementsLoading, setMovementsLoading] = useState(false)
   const [bankMovementsDate, setBankMovementsDate] = useState(new Date().toISOString().slice(0, 10))
   const [bankMovementsAccountId, setBankMovementsAccountId] = useState('')
+  const [customerBankMovementsDate, setCustomerBankMovementsDate] = useState(new Date().toISOString().slice(0, 10))
+  const [customerBankMovementsAccountId, setCustomerBankMovementsAccountId] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -216,6 +220,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [manualEntryError, setManualEntryError] = useState('')
   const [savingManualEntry, setSavingManualEntry] = useState(false)
   const [bankAccountsPage, setBankAccountsPage] = useState(1)
+  const [customerBankAccountsPage, setCustomerBankAccountsPage] = useState(1)
+  const [customerBankMovementsPage, setCustomerBankMovementsPage] = useState(1)
   const [shiftsPage, setShiftsPage] = useState(1)
   const [inventoryPage, setInventoryPage] = useState(1)
   const [expensesPage, setExpensesPage] = useState(1)
@@ -480,23 +486,58 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const sortedTransfers = useMemo(() => [...transfers].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [transfers])
   const pagedTransfers = paginate(sortedTransfers, transfersPage)
 
+  // Bank accounts are split into the company's own accounts and accounts that
+  // belong to a customer (linked via customerId, auto-created from their
+  // profile's bank fields) — kept as two entirely separate lists/tabs/movement
+  // logs so the two never blend together on screen.
+  const companyBankAccounts = useMemo(() => bankAccounts.filter((a) => !a.customerId), [bankAccounts])
+  const customerBankAccountsList = useMemo(() => bankAccounts.filter((a) => a.customerId), [bankAccounts])
+  const companyBankAccountIds = useMemo(() => new Set(companyBankAccounts.map((a) => a.id)), [companyBankAccounts])
+  const customerBankAccountIds = useMemo(() => new Set(customerBankAccountsList.map((a) => a.id)), [customerBankAccountsList])
+  const customerNameFor = (customerId: string | null) => (customerId ? customers.find((c) => c.id === customerId)?.name || customerId : '')
+
   // Same transfer requests, filtered to the ones touching at least one bank
   // account — the "daily movement" log for bank accounts, mirroring the vault
   // movements tab but keyed off Transfer (sender+receiver in one row) rather
-  // than Movement (one row per side).
+  // than Movement (one row per side). Split the same way as the accounts
+  // themselves, by whichever side (source or dest) is a bank account.
   const bankTransfers = useMemo(
     () => sortedTransfers.filter((t) => t.sourceType === 'bank_account' || t.destType === 'bank_account'),
     [sortedTransfers]
   )
+  const companyBankTransfers = useMemo(
+    () => bankTransfers.filter((t) =>
+      (t.sourceType === 'bank_account' && companyBankAccountIds.has(t.sourceId)) ||
+      (t.destType === 'bank_account' && companyBankAccountIds.has(t.destId))
+    ),
+    [bankTransfers, companyBankAccountIds]
+  )
+  const customerBankTransfers = useMemo(
+    () => bankTransfers.filter((t) =>
+      (t.sourceType === 'bank_account' && customerBankAccountIds.has(t.sourceId)) ||
+      (t.destType === 'bank_account' && customerBankAccountIds.has(t.destId))
+    ),
+    [bankTransfers, customerBankAccountIds]
+  )
   const filteredBankMovements = useMemo(
-    () => bankTransfers.filter((t) => {
+    () => companyBankTransfers.filter((t) => {
       if (!t.timestamp.startsWith(bankMovementsDate)) return false
       if (bankMovementsAccountId) return t.sourceId === bankMovementsAccountId || t.destId === bankMovementsAccountId
       return true
     }),
-    [bankTransfers, bankMovementsDate, bankMovementsAccountId]
+    [companyBankTransfers, bankMovementsDate, bankMovementsAccountId]
   )
   const pagedBankMovements = paginate(filteredBankMovements, bankMovementsPage)
+
+  const filteredCustomerBankMovements = useMemo(
+    () => customerBankTransfers.filter((t) => {
+      if (!t.timestamp.startsWith(customerBankMovementsDate)) return false
+      if (customerBankMovementsAccountId) return t.sourceId === customerBankMovementsAccountId || t.destId === customerBankMovementsAccountId
+      return true
+    }),
+    [customerBankTransfers, customerBankMovementsDate, customerBankMovementsAccountId]
+  )
+  const pagedCustomerBankMovements = paginate(filteredCustomerBankMovements, customerBankMovementsPage)
 
   const bankMovementsTotals = useMemo(() => {
     const totals: Record<string, { in: number; out: number }> = {}
@@ -508,10 +549,22 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     return totals
   }, [filteredBankMovements])
 
+  const customerBankMovementsTotals = useMemo(() => {
+    const totals: Record<string, { in: number; out: number }> = {}
+    for (const t of filteredCustomerBankMovements) {
+      if (!totals[t.currency]) totals[t.currency] = { in: 0, out: 0 }
+      if (t.destType === 'bank_account') totals[t.currency].in += t.amount
+      if (t.sourceType === 'bank_account') totals[t.currency].out += t.amount
+    }
+    return totals
+  }, [filteredCustomerBankMovements])
+
   const bankAccountNumber = (type: string, id: string) => (type === 'bank_account' ? bankAccounts.find((a) => a.id === id)?.accountNumber : undefined)
 
-  const sortedBankAccounts = useMemo(() => [...bankAccounts].reverse(), [bankAccounts])
+  const sortedBankAccounts = useMemo(() => [...companyBankAccounts].reverse(), [companyBankAccounts])
   const pagedBankAccounts = paginate(sortedBankAccounts, bankAccountsPage)
+  const sortedCustomerBankAccounts = useMemo(() => [...customerBankAccountsList].reverse(), [customerBankAccountsList])
+  const pagedCustomerBankAccounts = paginate(sortedCustomerBankAccounts, customerBankAccountsPage)
 
   const sortedShifts = useMemo(() => [...shifts].sort((a, b) => ((a.requestedAt || a.startTime || '') < (b.requestedAt || b.startTime || '') ? 1 : -1)), [shifts])
   const pagedShifts = paginate(sortedShifts, shiftsPage)
@@ -1204,6 +1257,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               )}
             </>
           )}
+          {tab === 'customer_bank_accounts' && canTransfer && (
+            <button onClick={openTransfer} className="flex items-center gap-2 rounded-md border border-info/30 px-4 py-2 text-sm font-medium text-info hover:bg-info/10 transition-colors">
+              <ArrowRightLeft className="h-4 w-4" /> تحويل أموال
+            </button>
+          )}
           {tab === 'shifts' && canOpenShift && (
             <button onClick={openShift} disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
               <Plus className="h-4 w-4" /> طلب فتح وردية جديدة
@@ -1458,7 +1516,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
               >
                 <option value="">كل الحسابات</option>
-                {bankAccounts.map((a) => <option key={a.id} value={a.id}>{a.bankName} - {a.accountName}</option>)}
+                {companyBankAccounts.map((a) => <option key={a.id} value={a.id}>{a.bankName} - {a.accountName}</option>)}
               </select>
             </div>
           </div>
@@ -1479,7 +1537,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="border-b border-border px-6 py-4 bg-secondary/30">
-              <h3 className="text-lg font-semibold text-foreground">حركة الحسابات البنكية — دخول وخروج</h3>
+              <h3 className="text-lg font-semibold text-foreground">حركة حسابات الشركة البنكية — دخول وخروج</h3>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-right">
@@ -1605,7 +1663,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="border-b border-border px-6 py-4 bg-secondary/30">
-              <h3 className="text-lg font-semibold text-foreground">الحسابات البنكية</h3>
+              <h3 className="text-lg font-semibold text-foreground">حسابات الشركة البنكية</h3>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-right">
@@ -1623,7 +1681,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {bankAccounts.length === 0 ? (
+                  {sortedBankAccounts.length === 0 ? (
                     <tr><td colSpan={9} className="px-6 py-8 text-center text-muted-foreground">لا توجد حسابات بنكية</td></tr>
                   ) : pagedBankAccounts.map((ba) => (
                     <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
@@ -1676,6 +1734,169 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               </table>
             </div>
             <TablePagination page={bankAccountsPage} totalItems={sortedBankAccounts.length} onPageChange={setBankAccountsPage} />
+          </div>
+        </div>
+      )}
+
+      {tab === 'customer_bank_accounts' && (
+        <div className="space-y-6">
+          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+            <div className="border-b border-border px-6 py-4 bg-secondary/30">
+              <h3 className="text-lg font-semibold text-foreground">حسابات العملاء البنكية</h3>
+              <p className="text-xs text-muted-foreground mt-1">حسابات خاصة بالعملاء أنفسهم — يتم إنشاؤها أو ربطها تلقائياً من بيانات البنك في ملف العميل، منفصلة تماماً عن حسابات الشركة.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-right">
+                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                  <tr>
+                    <th className="px-6 py-4 font-medium">العميل</th>
+                    <th className="px-6 py-4 font-medium">البنك</th>
+                    <th className="px-6 py-4 font-medium">اسم الحساب</th>
+                    <th className="px-6 py-4 font-medium">رقم الحساب</th>
+                    <th className="px-6 py-4 font-medium">العملة</th>
+                    <th className="px-6 py-4 font-medium">الرصيد</th>
+                    <th className="px-6 py-4 font-medium">الحالة</th>
+                    {canManageBanks && <th className="px-6 py-4 font-medium">إجراءات</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {sortedCustomerBankAccounts.length === 0 ? (
+                    <tr><td colSpan={8} className="px-6 py-8 text-center text-muted-foreground">لا توجد حسابات بنكية للعملاء بعد</td></tr>
+                  ) : pagedCustomerBankAccounts.map((ba) => (
+                    <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
+                      <td className="px-6 py-4 font-medium text-foreground">{customerNameFor(ba.customerId)}</td>
+                      <td className="px-6 py-4 text-muted-foreground">{ba.bankName}</td>
+                      <td className="px-6 py-4">{ba.accountName}</td>
+                      <td className="px-6 py-4" dir="ltr">{ba.accountNumber}</td>
+                      <td className="px-6 py-4">{ba.currency}</td>
+                      <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                          ${ba.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
+                          {ba.isActive ? 'نشط' : 'غير نشط'}
+                        </span>
+                      </td>
+                      {canManageBanks && (
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                              <FileText className="h-3.5 w-3.5" /> كشف الحساب
+                            </button>
+                            <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
+                              <Plus className="h-3.5 w-3.5" /> قيد يدوي
+                            </button>
+                            <button onClick={() => openBankOp(ba, 'deposit')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors">
+                              <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
+                            </button>
+                            <button onClick={() => openBankOp(ba, 'withdraw')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-warning transition-colors">
+                              <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
+                            </button>
+                            {ba.currency !== 'LYD' && (
+                              <button onClick={() => openInterestModal(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                <Percent className="h-3.5 w-3.5" /> الفائدة
+                              </button>
+                            )}
+                            <button onClick={() => deleteBankAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" /> حذف
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TablePagination page={customerBankAccountsPage} totalItems={sortedCustomerBankAccounts.length} onPageChange={setCustomerBankAccountsPage} />
+          </div>
+        </div>
+      )}
+
+      {tab === 'customer_bank_movements' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
+              <input
+                type="date"
+                value={customerBankMovementsDate}
+                onChange={(e) => setCustomerBankMovementsDate(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">حساب العميل البنكي</label>
+              <select
+                value={customerBankMovementsAccountId}
+                onChange={(e) => setCustomerBankMovementsAccountId(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="">كل حسابات العملاء</option>
+                {customerBankAccountsList.map((a) => <option key={a.id} value={a.id}>{customerNameFor(a.customerId)} — {a.bankName}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {Object.keys(customerBankMovementsTotals).length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {Object.entries(customerBankMovementsTotals).map(([ccy, t]) => (
+                <div key={ccy} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">{ccy}</p>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-1 font-bold text-success"><ArrowDownCircle className="h-4 w-4" /> +{t.in.toLocaleString()}</span>
+                    <span className="flex items-center gap-1 font-bold text-danger"><ArrowUpCircle className="h-4 w-4" /> -{t.out.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+            <div className="border-b border-border px-6 py-4 bg-secondary/30">
+              <h3 className="text-lg font-semibold text-foreground">حركة حسابات العملاء البنكية — دخول وخروج</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-right">
+                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                  <tr>
+                    <th className="px-6 py-4 font-medium">الوقت</th>
+                    <th className="px-6 py-4 font-medium">من</th>
+                    <th className="px-6 py-4 font-medium">رقم حساب المرسل</th>
+                    <th className="px-6 py-4 font-medium">إلى</th>
+                    <th className="px-6 py-4 font-medium">رقم حساب المستلم</th>
+                    <th className="px-6 py-4 font-medium">العملة</th>
+                    <th className="px-6 py-4 font-medium">المبلغ</th>
+                    <th className="px-6 py-4 font-medium">ملاحظات</th>
+                    <th className="px-6 py-4 font-medium">الحالة</th>
+                    <th className="px-6 py-4 font-medium">بواسطة</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {filteredCustomerBankMovements.length === 0 ? (
+                    <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
+                  ) : pagedCustomerBankMovements.map((t) => {
+                    const st = statusLabels[t.status] || statusLabels.pending
+                    return (
+                      <tr key={t.id} className="hover:bg-muted/50 transition-colors">
+                        <td className="px-6 py-4 text-muted-foreground">{t.timestamp}</td>
+                        <td className="px-6 py-4 font-medium text-foreground">{t.sourceName}</td>
+                        <td className="px-6 py-4 text-muted-foreground" dir="ltr">{bankAccountNumber(t.sourceType, t.sourceId) || '—'}</td>
+                        <td className="px-6 py-4">{t.destName}</td>
+                        <td className="px-6 py-4 text-muted-foreground" dir="ltr">{bankAccountNumber(t.destType, t.destId) || '—'}</td>
+                        <td className="px-6 py-4">{t.currency}</td>
+                        <td className="px-6 py-4 font-bold">{t.amount.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{t.notes || '—'}</td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${st.className}`}>{st.label}</span>
+                        </td>
+                        <td className="px-6 py-4 text-muted-foreground">{t.requestedBy}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <TablePagination page={customerBankMovementsPage} totalItems={filteredCustomerBankMovements.length} onPageChange={setCustomerBankMovementsPage} />
           </div>
         </div>
       )}

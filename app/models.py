@@ -238,6 +238,10 @@ class BankAccount(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_movement: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Set when this account is a customer's own external bank account (auto-linked
+    # from their Customer.bank_name/bank_account_number) rather than one of the
+    # company's own accounts. NULL means a company account.
+    customer_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("customers.id"), nullable=True)
 
 class BankDeposit(Base):
     """A single fixed/term deposit placed into a foreign-currency bank account. Each
