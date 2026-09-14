@@ -570,9 +570,37 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const bankAccountNumber = (type: string, id: string) => (type === 'bank_account' ? bankAccounts.find((a) => a.id === id)?.accountNumber : undefined)
 
   const sortedBankAccounts = useMemo(() => [...companyBankAccounts].reverse(), [companyBankAccounts])
-  const pagedBankAccounts = paginate(sortedBankAccounts, bankAccountsPage)
   const sortedCustomerBankAccounts = useMemo(() => [...customerBankAccountsList].reverse(), [customerBankAccountsList])
-  const pagedCustomerBankAccounts = paginate(sortedCustomerBankAccounts, customerBankAccountsPage)
+
+  // Accounts are grouped so someone holding several accounts at the same bank
+  // (one per currency, say) sees them together as one block instead of as
+  // disconnected rows scattered across the table.
+  interface BankGroup { bankId: string; bankName: string; accounts: BankAccount[] }
+  const groupByBank = (list: BankAccount[]): BankGroup[] => {
+    const order: string[] = []
+    const map = new Map<string, BankGroup>()
+    for (const a of list) {
+      if (!map.has(a.bankId)) { map.set(a.bankId, { bankId: a.bankId, bankName: a.bankName, accounts: [] }); order.push(a.bankId) }
+      map.get(a.bankId)!.accounts.push(a)
+    }
+    return order.map((id) => map.get(id)!)
+  }
+
+  const companyAccountGroups = useMemo(() => groupByBank(sortedBankAccounts), [sortedBankAccounts])
+  const pagedCompanyAccountGroups = paginate(companyAccountGroups, bankAccountsPage)
+
+  interface CustomerAccountGroup { customerId: string; customerName: string; banks: BankGroup[] }
+  const customerAccountGroups = useMemo((): CustomerAccountGroup[] => {
+    const order: string[] = []
+    const byCustomer = new Map<string, BankAccount[]>()
+    for (const a of sortedCustomerBankAccounts) {
+      const cid = a.customerId as string
+      if (!byCustomer.has(cid)) { byCustomer.set(cid, []); order.push(cid) }
+      byCustomer.get(cid)!.push(a)
+    }
+    return order.map((cid) => ({ customerId: cid, customerName: customerNameFor(cid), banks: groupByBank(byCustomer.get(cid)!) }))
+  }, [sortedCustomerBankAccounts, customers])
+  const pagedCustomerAccountGroups = paginate(customerAccountGroups, customerBankAccountsPage)
 
   const sortedShifts = useMemo(() => [...shifts].sort((a, b) => ((a.requestedAt || a.startTime || '') < (b.requestedAt || b.startTime || '') ? 1 : -1)), [shifts])
   const pagedShifts = paginate(sortedShifts, shiftsPage)
@@ -1688,160 +1716,194 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
             ))}
           </div>
 
-          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-            <div className="border-b border-border px-6 py-4 bg-secondary/30">
-              <h3 className="text-lg font-semibold text-foreground">حسابات الشركة البنكية</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm text-right">
-                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
-                  <tr>
-                    <th className="px-6 py-4 font-medium">البنك</th>
-                    <th className="px-6 py-4 font-medium">الفرع</th>
-                    <th className="px-6 py-4 font-medium">اسم الحساب</th>
-                    <th className="px-6 py-4 font-medium">رقم الحساب</th>
-                    <th className="px-6 py-4 font-medium">نوع الحساب</th>
-                    <th className="px-6 py-4 font-medium">العملة</th>
-                    <th className="px-6 py-4 font-medium">الرصيد</th>
-                    <th className="px-6 py-4 font-medium">الحالة</th>
-                    {canManageBanks && <th className="px-6 py-4 font-medium">إجراءات</th>}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {sortedBankAccounts.length === 0 ? (
-                    <tr><td colSpan={9} className="px-6 py-8 text-center text-muted-foreground">لا توجد حسابات بنكية</td></tr>
-                  ) : pagedBankAccounts.map((ba) => (
-                    <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">{ba.bankName}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{ba.branchName}</td>
-                      <td className="px-6 py-4">{ba.accountName}</td>
-                      <td className="px-6 py-4" dir="ltr">{ba.accountNumber}</td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${ba.accountType === 'corporate' ? 'bg-info/10 text-info' : 'bg-secondary text-muted-foreground'}`}>
-                          {ba.accountType === 'corporate' ? 'شركة' : 'فرد'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4">{ba.currency}</td>
-                      <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
-                          ${ba.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
-                          {ba.isActive ? 'نشط' : 'غير نشط'}
-                        </span>
-                      </td>
-                      {canManageBanks && (
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
-                              <FileText className="h-3.5 w-3.5" /> كشف الحساب
-                            </button>
-                            <button onClick={() => openEditAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
-                              <Pencil className="h-3.5 w-3.5" /> تعديل
-                            </button>
-                            <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
-                              <Plus className="h-3.5 w-3.5" /> قيد يدوي
-                            </button>
-                            <button onClick={() => openBankOp(ba, 'deposit')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors">
-                              <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
-                            </button>
-                            <button onClick={() => openBankOp(ba, 'withdraw')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-warning transition-colors">
-                              <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
-                            </button>
-                            {ba.currency !== 'LYD' && (
-                              <button onClick={() => openInterestModal(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
-                                <Percent className="h-3.5 w-3.5" /> الفائدة
-                              </button>
-                            )}
-                            <button onClick={() => deleteBankAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
-                              <Trash2 className="h-3.5 w-3.5" /> حذف
-                            </button>
-                          </div>
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <TablePagination page={bankAccountsPage} totalItems={sortedBankAccounts.length} onPageChange={setBankAccountsPage} />
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-foreground">حسابات الشركة البنكية</h3>
+            {companyAccountGroups.length === 0 ? (
+              <p className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد حسابات بنكية</p>
+            ) : (
+              <>
+                {pagedCompanyAccountGroups.map((group) => (
+                  <div key={group.bankId} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+                    <div className="border-b border-border px-6 py-4 bg-secondary/30 flex items-center gap-2">
+                      <Building2 className="h-4 w-4 text-primary" />
+                      <h4 className="text-sm font-semibold text-foreground">{group.bankName}</h4>
+                      <span className="text-xs text-muted-foreground">— {group.accounts.length} {group.accounts.length === 1 ? 'حساب' : 'حسابات'}</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-right">
+                        <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                          <tr>
+                            <th className="px-6 py-4 font-medium">الفرع</th>
+                            <th className="px-6 py-4 font-medium">اسم الحساب</th>
+                            <th className="px-6 py-4 font-medium">رقم الحساب</th>
+                            <th className="px-6 py-4 font-medium">نوع الحساب</th>
+                            <th className="px-6 py-4 font-medium">العملة</th>
+                            <th className="px-6 py-4 font-medium">الرصيد</th>
+                            <th className="px-6 py-4 font-medium">الحالة</th>
+                            {canManageBanks && <th className="px-6 py-4 font-medium">إجراءات</th>}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {group.accounts.map((ba) => (
+                            <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
+                              <td className="px-6 py-4 text-muted-foreground">{ba.branchName}</td>
+                              <td className="px-6 py-4">{ba.accountName}</td>
+                              <td className="px-6 py-4" dir="ltr">{ba.accountNumber}</td>
+                              <td className="px-6 py-4">
+                                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${ba.accountType === 'corporate' ? 'bg-info/10 text-info' : 'bg-secondary text-muted-foreground'}`}>
+                                  {ba.accountType === 'corporate' ? 'شركة' : 'فرد'}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4">
+                                <span className="inline-flex items-center gap-1"><CurrencyFlag code={ba.currency} flag={currencies.find((c) => c.code === ba.currency)?.flag} className="h-3.5 w-5" /> {ba.currency}</span>
+                              </td>
+                              <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
+                              <td className="px-6 py-4">
+                                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                  ${ba.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
+                                  {ba.isActive ? 'نشط' : 'غير نشط'}
+                                </span>
+                              </td>
+                              {canManageBanks && (
+                                <td className="px-6 py-4">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                      <FileText className="h-3.5 w-3.5" /> كشف الحساب
+                                    </button>
+                                    <button onClick={() => openEditAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                      <Pencil className="h-3.5 w-3.5" /> تعديل
+                                    </button>
+                                    <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
+                                      <Plus className="h-3.5 w-3.5" /> قيد يدوي
+                                    </button>
+                                    <button onClick={() => openBankOp(ba, 'deposit')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors">
+                                      <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
+                                    </button>
+                                    <button onClick={() => openBankOp(ba, 'withdraw')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-warning transition-colors">
+                                      <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
+                                    </button>
+                                    {ba.currency !== 'LYD' && (
+                                      <button onClick={() => openInterestModal(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                        <Percent className="h-3.5 w-3.5" /> الفائدة
+                                      </button>
+                                    )}
+                                    <button onClick={() => deleteBankAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                                      <Trash2 className="h-3.5 w-3.5" /> حذف
+                                    </button>
+                                  </div>
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+                <TablePagination page={bankAccountsPage} totalItems={companyAccountGroups.length} onPageChange={setBankAccountsPage} />
+              </>
+            )}
           </div>
         </div>
       )}
 
       {tab === 'customer_bank_accounts' && (
         <div className="space-y-6">
-          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-            <div className="border-b border-border px-6 py-4 bg-secondary/30">
-              <h3 className="text-lg font-semibold text-foreground">حسابات العملاء البنكية</h3>
-              <p className="text-xs text-muted-foreground mt-1">حسابات خاصة بالعملاء أنفسهم — يتم إنشاؤها أو ربطها تلقائياً من بيانات البنك في ملف العميل، منفصلة تماماً عن حسابات الشركة.</p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm text-right">
-                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
-                  <tr>
-                    <th className="px-6 py-4 font-medium">العميل</th>
-                    <th className="px-6 py-4 font-medium">البنك</th>
-                    <th className="px-6 py-4 font-medium">اسم الحساب</th>
-                    <th className="px-6 py-4 font-medium">رقم الحساب</th>
-                    <th className="px-6 py-4 font-medium">العملة</th>
-                    <th className="px-6 py-4 font-medium">الرصيد</th>
-                    <th className="px-6 py-4 font-medium">الحالة</th>
-                    {canManageBanks && <th className="px-6 py-4 font-medium">إجراءات</th>}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {sortedCustomerBankAccounts.length === 0 ? (
-                    <tr><td colSpan={8} className="px-6 py-8 text-center text-muted-foreground">لا توجد حسابات بنكية للعملاء بعد</td></tr>
-                  ) : pagedCustomerBankAccounts.map((ba) => (
-                    <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">{customerNameFor(ba.customerId)}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{ba.bankName}</td>
-                      <td className="px-6 py-4">{ba.accountName}</td>
-                      <td className="px-6 py-4" dir="ltr">{ba.accountNumber}</td>
-                      <td className="px-6 py-4">{ba.currency}</td>
-                      <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
-                          ${ba.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
-                          {ba.isActive ? 'نشط' : 'غير نشط'}
-                        </span>
-                      </td>
-                      {canManageBanks && (
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
-                              <FileText className="h-3.5 w-3.5" /> كشف الحساب
-                            </button>
-                            <button onClick={() => openEditAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
-                              <Pencil className="h-3.5 w-3.5" /> تعديل
-                            </button>
-                            <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
-                              <Plus className="h-3.5 w-3.5" /> قيد يدوي
-                            </button>
-                            <button onClick={() => openBankOp(ba, 'deposit')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors">
-                              <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
-                            </button>
-                            <button onClick={() => openBankOp(ba, 'withdraw')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-warning transition-colors">
-                              <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
-                            </button>
-                            {ba.currency !== 'LYD' && (
-                              <button onClick={() => openInterestModal(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
-                                <Percent className="h-3.5 w-3.5" /> الفائدة
-                              </button>
-                            )}
-                            <button onClick={() => deleteBankAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
-                              <Trash2 className="h-3.5 w-3.5" /> حذف
-                            </button>
-                          </div>
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <TablePagination page={customerBankAccountsPage} totalItems={sortedCustomerBankAccounts.length} onPageChange={setCustomerBankAccountsPage} />
+          <div>
+            <h3 className="text-lg font-semibold text-foreground">حسابات العملاء البنكية</h3>
+            <p className="text-xs text-muted-foreground mt-1">حسابات خاصة بالعملاء أنفسهم — يتم إنشاؤها أو ربطها تلقائياً من بيانات البنك في ملف العميل، منفصلة تماماً عن حسابات الشركة. كل عميل مجمّعة حساباته معاً، ومقسّمة داخلياً حسب البنك.</p>
           </div>
+          {customerAccountGroups.length === 0 ? (
+            <p className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد حسابات بنكية للعملاء بعد</p>
+          ) : (
+            <>
+              <div className="space-y-6">
+                {pagedCustomerAccountGroups.map((cg) => (
+                  <div key={cg.customerId} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+                    <div className="border-b border-border px-6 py-4 bg-secondary/30 flex items-center gap-2">
+                      <Wallet className="h-4 w-4 text-primary" />
+                      <h4 className="text-sm font-semibold text-foreground">{cg.customerName}</h4>
+                      <span className="text-xs text-muted-foreground">
+                        — {cg.banks.reduce((n, b) => n + b.accounts.length, 0)} {cg.banks.reduce((n, b) => n + b.accounts.length, 0) === 1 ? 'حساب' : 'حسابات'} في {cg.banks.length} {cg.banks.length === 1 ? 'بنك' : 'بنوك'}
+                      </span>
+                    </div>
+                    <div className="divide-y divide-border">
+                      {cg.banks.map((group) => (
+                        <div key={group.bankId}>
+                          <div className="px-6 py-2 bg-muted/30 flex items-center gap-2">
+                            <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="text-xs font-semibold text-foreground">{group.bankName}</span>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-right">
+                              <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                                <tr>
+                                  <th className="px-6 py-3 font-medium">اسم الحساب</th>
+                                  <th className="px-6 py-3 font-medium">رقم الحساب</th>
+                                  <th className="px-6 py-3 font-medium">العملة</th>
+                                  <th className="px-6 py-3 font-medium">الرصيد</th>
+                                  <th className="px-6 py-3 font-medium">الحالة</th>
+                                  {canManageBanks && <th className="px-6 py-3 font-medium">إجراءات</th>}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-border">
+                                {group.accounts.map((ba) => (
+                                  <tr key={ba.id} className="hover:bg-muted/50 transition-colors">
+                                    <td className="px-6 py-4">{ba.accountName}</td>
+                                    <td className="px-6 py-4" dir="ltr">{ba.accountNumber}</td>
+                                    <td className="px-6 py-4">
+                                      <span className="inline-flex items-center gap-1"><CurrencyFlag code={ba.currency} flag={currencies.find((c) => c.code === ba.currency)?.flag} className="h-3.5 w-5" /> {ba.currency}</span>
+                                    </td>
+                                    <td className="px-6 py-4 font-bold">{ba.balance.toLocaleString()}</td>
+                                    <td className="px-6 py-4">
+                                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                        ${ba.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
+                                        {ba.isActive ? 'نشط' : 'غير نشط'}
+                                      </span>
+                                    </td>
+                                    {canManageBanks && (
+                                      <td className="px-6 py-4">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <button onClick={() => openStatement('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                            <FileText className="h-3.5 w-3.5" /> كشف الحساب
+                                          </button>
+                                          <button onClick={() => openEditAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                            <Pencil className="h-3.5 w-3.5" /> تعديل
+                                          </button>
+                                          <button onClick={() => openManualEntry('bank_account', ba.id, `${ba.bankName} - ${ba.accountName}`, ba.currency)} className="flex items-center gap-1 rounded-md border border-info/30 px-2 py-1 text-xs font-medium text-info hover:bg-info/10 transition-colors">
+                                            <Plus className="h-3.5 w-3.5" /> قيد يدوي
+                                          </button>
+                                          <button onClick={() => openBankOp(ba, 'deposit')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-success transition-colors">
+                                            <ArrowDownCircle className="h-3.5 w-3.5" /> إيداع
+                                          </button>
+                                          <button onClick={() => openBankOp(ba, 'withdraw')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-warning transition-colors">
+                                            <ArrowUpCircle className="h-3.5 w-3.5" /> سحب
+                                          </button>
+                                          {ba.currency !== 'LYD' && (
+                                            <button onClick={() => openInterestModal(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-primary transition-colors">
+                                              <Percent className="h-3.5 w-3.5" /> الفائدة
+                                            </button>
+                                          )}
+                                          <button onClick={() => deleteBankAccount(ba)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-danger transition-colors">
+                                            <Trash2 className="h-3.5 w-3.5" /> حذف
+                                          </button>
+                                        </div>
+                                      </td>
+                                    )}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <TablePagination page={customerBankAccountsPage} totalItems={customerAccountGroups.length} onPageChange={setCustomerBankAccountsPage} />
+            </>
+          )}
         </div>
       )}
 
