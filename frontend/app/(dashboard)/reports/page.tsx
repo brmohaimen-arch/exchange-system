@@ -135,19 +135,19 @@ function ReportsPageInner() {
   const [closingsPage, setClosingsPage] = useState(1)
   const [closingLedgerDownloading, setClosingLedgerDownloading] = useState<string | null>(null)
 
-  const downloadClosingVaultLedger = async (vaultId: string, currency: string, date: string, format: 'pdf' | 'xlsx') => {
-    const key = `${vaultId}-${currency}-${format}`
+  const downloadClosingFullLedger = async (closingId: string, format: 'pdf' | 'xlsx') => {
+    const key = `${closingId}-${format}`
     setClosingLedgerDownloading(key)
     setError('')
     try {
-      const path = `/vaults/${vaultId}/daily_ledger/export?format=${format}&date_from=${date}&date_to=${date}&currency=${currency}`
+      const path = `/daily_closings/${closingId}/full_ledger/export?format=${format}`
       if (format === 'pdf') {
         await openFile(path)
       } else {
-        await downloadFile(path, `daily_ledger_${vaultId}_${date}.xlsx`)
+        await downloadFile(path, `closing_ledger_${closingId}.xlsx`)
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحركة اليومية')
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحركة الشامل')
     } finally {
       setClosingLedgerDownloading(null)
     }
@@ -748,13 +748,29 @@ function ReportsPageInner() {
                   </button>
                   {expandedClosing === c.id && (
                     <div className="bg-secondary/20 px-6 py-4 space-y-3">
-                      <div>
-                        <p className="text-xs font-semibold text-foreground mb-1">الإجماليات</p>
-                        <div className="flex flex-wrap gap-2">
-                          {Object.entries(c.totals).map(([ccy, amt]) => (
-                            <span key={ccy} className="rounded-md bg-card border border-border px-2.5 py-1 text-xs font-medium">{amt.toLocaleString()} {ccy}</span>
-                          ))}
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-foreground">الإجماليات</p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => downloadClosingFullLedger(c.id, 'pdf')}
+                            disabled={closingLedgerDownloading === `${c.id}-pdf`}
+                            className="flex items-center gap-1.5 rounded-md border border-primary/30 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                          >
+                            {closingLedgerDownloading === `${c.id}-pdf` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />} كشف حركة شامل PDF
+                          </button>
+                          <button
+                            onClick={() => downloadClosingFullLedger(c.id, 'xlsx')}
+                            disabled={closingLedgerDownloading === `${c.id}-xlsx`}
+                            className="flex items-center gap-1.5 rounded-md border border-primary/30 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                          >
+                            {closingLedgerDownloading === `${c.id}-xlsx` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />} Excel
+                          </button>
                         </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(c.totals).map(([ccy, amt]) => (
+                          <span key={ccy} className="rounded-md bg-card border border-border px-2.5 py-1 text-xs font-medium">{amt.toLocaleString()} {ccy}</span>
+                        ))}
                       </div>
                       <div>
                         <p className="text-xs font-semibold text-foreground mb-1">تفاصيل الخزنات</p>
@@ -764,7 +780,6 @@ function ReportsPageInner() {
                               <tr>
                                 <th className="px-3 py-1.5 font-medium">الخزنة</th>
                                 <th className="px-3 py-1.5 font-medium">الأرصدة</th>
-                                <th className="px-3 py-1.5 font-medium">كشف حركة اليوم</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-border">
@@ -772,32 +787,6 @@ function ReportsPageInner() {
                                 <tr key={vaultId}>
                                   <td className="px-3 py-1.5 font-medium">{v.name}</td>
                                   <td className="px-3 py-1.5">{Object.entries(v.balances).map(([ccy, amt]) => `${amt.toLocaleString()} ${ccy}`).join(' / ') || '—'}</td>
-                                  <td className="px-3 py-1.5">
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {Object.keys(v.balances).length === 0 && <span className="text-muted-foreground">—</span>}
-                                      {Object.keys(v.balances).map((ccy) => (
-                                        <div key={ccy} className="flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5">
-                                          <span className="text-[10px] text-muted-foreground">{ccy}</span>
-                                          <button
-                                            onClick={() => downloadClosingVaultLedger(vaultId, ccy, c.date, 'pdf')}
-                                            disabled={closingLedgerDownloading === `${vaultId}-${ccy}-pdf`}
-                                            title="فتح كشف الحركة PDF"
-                                            className="text-primary hover:underline disabled:opacity-50"
-                                          >
-                                            {closingLedgerDownloading === `${vaultId}-${ccy}-pdf` ? <Loader2 className="h-3 w-3 animate-spin" /> : 'PDF'}
-                                          </button>
-                                          <button
-                                            onClick={() => downloadClosingVaultLedger(vaultId, ccy, c.date, 'xlsx')}
-                                            disabled={closingLedgerDownloading === `${vaultId}-${ccy}-xlsx`}
-                                            title="تحميل كشف الحركة Excel"
-                                            className="text-primary hover:underline disabled:opacity-50"
-                                          >
-                                            {closingLedgerDownloading === `${vaultId}-${ccy}-xlsx` ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Excel'}
-                                          </button>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </td>
                                 </tr>
                               ))}
                             </tbody>

@@ -8,7 +8,7 @@ from ..database import get_db
 from ..models import (
     Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, DebtPaymentRecord, Advance, AdvancePaymentRecord, Transaction, Movement, JournalEntry,
     Vault, AuditAction, Shift, ExchangeRate, User, ComplianceFlag, SystemSetting, Role, ApprovalRequest, CustomerDocument, CommissionRule,
-    CustomerAccountEntry, Transfer
+    CustomerAccountEntry, Transfer, DailyClosing
 )
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
@@ -2266,6 +2266,59 @@ def send_all_customer_bank_accounts_daily_ledger_whatsapp(date_from: str = "", d
     create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="DailyLedger", entity_id="customer_accounts", description=f"تم إرسال كشف الحركة اليومية الشامل لحسابات العملاء عبر واتساب إلى {manager_phone}", username=actor.username)
     db.commit()
     return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحركة عبر واتساب بنجاح")
+
+# One combined statement for a single daily closing — every vault that closing
+# covers, every currency, stacked together chronologically into one file,
+# instead of a separate export per vault/currency. Specific to the closing
+# page: the per-vault-per-currency exports above stay as-is for the treasury
+# and customer-bank-account pages.
+def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str):
+    headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "العملة", "نوع العملية", "البيان", "مدين (صرف)", "دائن (قبض)", "الرصيد بعد", "ملاحظات", "بواسطة"]
+    if not vault_ids:
+        return headers, []
+    query = select(Movement).where(
+        Movement.entity_type == "vault", Movement.entity_id.in_(vault_ids),
+        Movement.timestamp >= date, Movement.timestamp <= date + " 23:59:59"
+    ).order_by(Movement.timestamp.asc())
+    movements = db.scalars(query).all()
+    rows = []
+    for m in movements:
+        date_part = m.timestamp[:10]
+        rows.append([
+            m.id[-8:], date_part, _arabic_weekday(date_part), m.entity_name, m.currency,
+            "قبض" if m.amount_in > 0 else "صرف", m.type,
+            f"{m.amount_out:,.2f}" if m.amount_out else "",
+            f"{m.amount_in:,.2f}" if m.amount_in else "",
+            f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
+        ])
+    return headers, rows
+
+def _closing_full_ledger_export(db: Session, closing: DailyClosing, format: str):
+    vault_ids = list(closing.balances_snapshot.keys())
+    headers, rows = _closing_full_ledger_rows(db, vault_ids, closing.date)
+    title = f"كشف حركة شامل — {closing.target_name} — {closing.date}"
+    if closing.notes:
+        title += f" (ملاحظات الإقفال: {closing.notes})"
+    if format == "xlsx":
+        buf = build_excel(title, headers, rows)
+        return buf.read(), "xlsx"
+    try:
+        buf = build_pdf(title, headers, rows)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحركة: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return buf.read(), "pdf"
+
+@router.get("/daily_closings/{closing_id}/full_ledger/export")
+def export_closing_full_ledger(closing_id: str, format: str = "pdf", actor: User = Depends(require_permission("رؤية التقارير")), db: Session = Depends(get_db)):
+    closing = db.get(DailyClosing, closing_id)
+    if not closing:
+        raise APIError(code="CLOSING_NOT_FOUND", message_ar="الإقفال المحدد غير موجود", message_en="Closing not found", status_code=400)
+    content, ext = _closing_full_ledger_export(db, closing, format)
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
+    disposition = "attachment" if ext == "xlsx" else "inline"
+    # closing_id embeds the branch/company name (often Arabic), which an HTTP
+    # header can't carry (latin-1 only) — the filename must stay ASCII-safe.
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="closing_ledger_{closing.date}.{ext}"'})
 
 @router.get("/vaults/{vault_id}/daily_ledger/export")
 def export_vault_daily_ledger(vault_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "LYD", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
