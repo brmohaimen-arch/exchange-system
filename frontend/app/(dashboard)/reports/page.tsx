@@ -133,6 +133,25 @@ function ReportsPageInner() {
   const [savingClose, setSavingClose] = useState(false)
   const [expandedClosing, setExpandedClosing] = useState<string | null>(null)
   const [closingsPage, setClosingsPage] = useState(1)
+  const [closingLedgerDownloading, setClosingLedgerDownloading] = useState<string | null>(null)
+
+  const downloadClosingVaultLedger = async (vaultId: string, currency: string, date: string, format: 'pdf' | 'xlsx') => {
+    const key = `${vaultId}-${currency}-${format}`
+    setClosingLedgerDownloading(key)
+    setError('')
+    try {
+      const path = `/vaults/${vaultId}/daily_ledger/export?format=${format}&date_from=${date}&date_to=${date}&currency=${currency}`
+      if (format === 'pdf') {
+        await openFile(path)
+      } else {
+        await downloadFile(path, `daily_ledger_${vaultId}_${date}.xlsx`)
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحركة اليومية')
+    } finally {
+      setClosingLedgerDownloading(null)
+    }
+  }
 
   const todaysClosings = closings.filter((c) => c.date === today())
   const closedBranchIds = new Set(todaysClosings.filter((c) => c.level === 'branch').map((c) => c.targetId))
@@ -745,6 +764,7 @@ function ReportsPageInner() {
                               <tr>
                                 <th className="px-3 py-1.5 font-medium">الخزنة</th>
                                 <th className="px-3 py-1.5 font-medium">الأرصدة</th>
+                                <th className="px-3 py-1.5 font-medium">كشف حركة اليوم</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-border">
@@ -752,11 +772,46 @@ function ReportsPageInner() {
                                 <tr key={vaultId}>
                                   <td className="px-3 py-1.5 font-medium">{v.name}</td>
                                   <td className="px-3 py-1.5">{Object.entries(v.balances).map(([ccy, amt]) => `${amt.toLocaleString()} ${ccy}`).join(' / ') || '—'}</td>
+                                  <td className="px-3 py-1.5">
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {Object.keys(v.balances).length === 0 && <span className="text-muted-foreground">—</span>}
+                                      {Object.keys(v.balances).map((ccy) => (
+                                        <div key={ccy} className="flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5">
+                                          <span className="text-[10px] text-muted-foreground">{ccy}</span>
+                                          <button
+                                            onClick={() => downloadClosingVaultLedger(vaultId, ccy, c.date, 'pdf')}
+                                            disabled={closingLedgerDownloading === `${vaultId}-${ccy}-pdf`}
+                                            title="فتح كشف الحركة PDF"
+                                            className="text-primary hover:underline disabled:opacity-50"
+                                          >
+                                            {closingLedgerDownloading === `${vaultId}-${ccy}-pdf` ? <Loader2 className="h-3 w-3 animate-spin" /> : 'PDF'}
+                                          </button>
+                                          <button
+                                            onClick={() => downloadClosingVaultLedger(vaultId, ccy, c.date, 'xlsx')}
+                                            disabled={closingLedgerDownloading === `${vaultId}-${ccy}-xlsx`}
+                                            title="تحميل كشف الحركة Excel"
+                                            className="text-primary hover:underline disabled:opacity-50"
+                                          >
+                                            {closingLedgerDownloading === `${vaultId}-${ccy}-xlsx` ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Excel'}
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
                         </div>
+                      </div>
+                      <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
+                        <span className="text-xs text-muted-foreground">لعرض كشف حركة حسابات العملاء البنكية لهذا اليوم، توجه إلى صفحة الخزينة واختر الحساب المطلوب</span>
+                        <button
+                          onClick={() => router.push('/banks?tab=customer_bank_movements')}
+                          className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium hover:bg-muted transition-colors shrink-0"
+                        >
+                          <FileText className="h-3.5 w-3.5" /> حركة حسابات العملاء
+                        </button>
                       </div>
                       {c.notes && <p className="text-xs text-muted-foreground">ملاحظات: {c.notes}</p>}
                     </div>

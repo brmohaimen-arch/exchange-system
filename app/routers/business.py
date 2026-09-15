@@ -2131,6 +2131,189 @@ def send_bank_account_statement_whatsapp(account_id: str, date_from: str = "", d
     _send_entity_statement_whatsapp(db, "bank_account", account_id, f"{account.bank_name} - {account.account_name}", date_from, date_to, currency, actor)
     return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحساب عبر واتساب بنجاح")
 
+# ----------------- DAILY LEDGER (chronological, running-balance statement) -----------------
+# A different shape from the categorized statement above: one flat table in
+# date order with a running balance, matching the classic cash-book ledger
+# format (رقم المعاملة / التاريخ / اليوم / نوع العملية / البيان / مدين / دائن /
+# الرصيد) rather than grouped by kind — every operation that ever touched
+# this vault/bank account, in the order it happened, carrying the balance
+# forward from an opening line.
+_ARABIC_WEEKDAYS = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+
+def _arabic_weekday(date_str: str) -> str:
+    try:
+        return _ARABIC_WEEKDAYS[datetime.strptime(date_str[:10], "%Y-%m-%d").weekday()]
+    except ValueError:
+        return ""
+
+# A Movement row never carries its own free-text note — whoever performed the
+# operation typed it on the record that actually caused the movement (a
+# transfer, a customer deposit/withdraw, a trade, an advance/debt payment, or
+# — for manual journal entries and reversals — the journal entry itself).
+# reference_id links back to exactly one of those, so this tries each table
+# by primary key (cheap indexed lookups) and returns the first note found.
+def _movement_source_notes(db: Session, reference_id: str) -> str:
+    for model in (CustomerAccountEntry, Transfer, Transaction, Advance, AdvancePaymentRecord, Debt, DebtPaymentRecord):
+        record = db.get(model, reference_id)
+        if record is not None:
+            return record.notes or ""
+    jv = db.scalar(select(JournalEntry).where(JournalEntry.reference == reference_id))
+    if jv is not None:
+        return jv.description or ""
+    return ""
+
+def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, date_from: str, date_to: str, currency: str):
+    query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id, Movement.currency == currency)
+    opening_query = query
+    if date_from:
+        opening_before = db.scalars(opening_query.where(Movement.timestamp < date_from).order_by(Movement.timestamp.desc()))
+        opening_row = opening_before.first()
+        opening_balance = opening_row.balance_after if opening_row else 0.0
+        query = query.where(Movement.timestamp >= date_from)
+    else:
+        opening_balance = 0.0
+    if date_to:
+        query = query.where(Movement.timestamp <= date_to + " 23:59:59")
+    movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
+
+    headers = ["المرجع", "التاريخ", "اليوم", "نوع العملية", "البيان", "مدين (صرف)", "دائن (قبض)", "الرصيد بعد", "ملاحظات", "بواسطة"]
+    rows = [["-", date_from or (movements[0].timestamp[:10] if movements else ""), "", "رصيد سابق", "رصيد افتتاحي", "", "", f"{opening_balance:,.2f}", "", "-"]]
+    for m in movements:
+        date_part = m.timestamp[:10]
+        rows.append([
+            m.id[-8:], date_part, _arabic_weekday(date_part),
+            "قبض" if m.amount_in > 0 else "صرف", m.type,
+            f"{m.amount_out:,.2f}" if m.amount_out else "",
+            f"{m.amount_in:,.2f}" if m.amount_in else "",
+            f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
+        ])
+    return headers, rows
+
+def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, entity_name: str, format: str, date_from: str, date_to: str, currency: str):
+    headers, rows = _entity_daily_ledger_rows(db, entity_kind, entity_id, date_from, date_to, currency)
+    title = f"كشف الحركة اليومية — {entity_name} ({currency})"
+    if format == "xlsx":
+        buf = build_excel(title, headers, rows)
+        return buf.read(), "xlsx"
+    try:
+        buf = build_pdf(title, headers, rows)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحركة: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return buf.read(), "pdf"
+
+# Combined statement across every customer-owned bank account at once (not one
+# account at a time) — unlike the per-entity ledger above, these accounts don't
+# share a single balance, so each row carries its own account label and that
+# account's own balance-after instead of one running total.
+def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to: str, currency: str):
+    accounts = db.scalars(select(BankAccount).where(BankAccount.customer_id.isnot(None))).all()
+    accounts_by_id = {a.id: a for a in accounts}
+    if not accounts_by_id:
+        return ["المرجع", "التاريخ", "اليوم", "الحساب", "العملة", "نوع العملية", "البيان", "مدين (صرف)", "دائن (قبض)", "الرصيد بعد", "ملاحظات", "بواسطة"], []
+
+    query = select(Movement).where(Movement.entity_type == "bank_account", Movement.entity_id.in_(accounts_by_id.keys()))
+    if currency:
+        query = query.where(Movement.currency == currency)
+    if date_from:
+        query = query.where(Movement.timestamp >= date_from)
+    if date_to:
+        query = query.where(Movement.timestamp <= date_to + " 23:59:59")
+    movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
+
+    headers = ["المرجع", "التاريخ", "اليوم", "الحساب", "العملة", "نوع العملية", "البيان", "مدين (صرف)", "دائن (قبض)", "الرصيد بعد", "ملاحظات", "بواسطة"]
+    rows = []
+    for m in movements:
+        account = accounts_by_id.get(m.entity_id)
+        account_label = f"{account.bank_name} - {account.account_name}" if account else m.entity_name
+        date_part = m.timestamp[:10]
+        rows.append([
+            m.id[-8:], date_part, _arabic_weekday(date_part), account_label, m.currency,
+            "قبض" if m.amount_in > 0 else "صرف", m.type,
+            f"{m.amount_out:,.2f}" if m.amount_out else "",
+            f"{m.amount_in:,.2f}" if m.amount_in else "",
+            f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
+        ])
+    return headers, rows
+
+def _all_customer_bank_accounts_ledger_export(db: Session, format: str, date_from: str, date_to: str, currency: str):
+    headers, rows = _all_customer_bank_accounts_ledger_rows(db, date_from, date_to, currency)
+    title = "كشف الحركة اليومية الشامل — جميع حسابات العملاء البنكية"
+    if format == "xlsx":
+        buf = build_excel(title, headers, rows)
+        return buf.read(), "xlsx"
+    try:
+        buf = build_pdf(title, headers, rows)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحركة: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return buf.read(), "pdf"
+
+@router.get("/bank_accounts/customer_accounts/daily_ledger/export")
+def export_all_customer_bank_accounts_daily_ledger(format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    content, ext = _all_customer_bank_accounts_ledger_export(db, format, date_from, date_to, currency)
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
+    disposition = "attachment" if ext == "xlsx" else "inline"
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="daily_ledger_customer_accounts.{ext}"'})
+
+@router.post("/bank_accounts/customer_accounts/send_daily_ledger_whatsapp")
+def send_all_customer_bank_accounts_daily_ledger_whatsapp(date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    manager_phone = get_whatsapp_setting(db, "whatsappManagerPhone", "")
+    if not manager_phone:
+        raise APIError(code="NO_PHONE", message_ar="لم يتم تحديد رقم هاتف المدير في الإعدادات لاستقبال التقارير", message_en="No manager phone configured in settings to receive reports", status_code=400)
+    content, _ = _all_customer_bank_accounts_ledger_export(db, "pdf", date_from, date_to, currency)
+    result = send_whatsapp_document(db, manager_phone, content, "daily_ledger_customer_accounts.pdf", caption="كشف الحركة اليومية الشامل — جميع حسابات العملاء البنكية")
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال كشف الحركة عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="DailyLedger", entity_id="customer_accounts", description=f"تم إرسال كشف الحركة اليومية الشامل لحسابات العملاء عبر واتساب إلى {manager_phone}", username=actor.username)
+    db.commit()
+    return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحركة عبر واتساب بنجاح")
+
+@router.get("/vaults/{vault_id}/daily_ledger/export")
+def export_vault_daily_ledger(vault_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "LYD", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    content, ext = _entity_daily_ledger_export(db, "vault", vault_id, vault.name, format, date_from, date_to, currency)
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
+    disposition = "attachment" if ext == "xlsx" else "inline"
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="daily_ledger_{vault_id}.{ext}"'})
+
+@router.get("/bank_accounts/{account_id}/daily_ledger/export")
+def export_bank_account_daily_ledger(account_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+    content, ext = _entity_daily_ledger_export(db, "bank_account", account_id, f"{account.bank_name} - {account.account_name}", format, date_from, date_to, currency or account.currency)
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
+    disposition = "attachment" if ext == "xlsx" else "inline"
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="daily_ledger_{account_id}.{ext}"'})
+
+def _send_entity_daily_ledger_whatsapp(db: Session, entity_kind: str, entity_id: str, entity_name: str, date_from: str, date_to: str, currency: str, actor: User):
+    manager_phone = get_whatsapp_setting(db, "whatsappManagerPhone", "")
+    if not manager_phone:
+        raise APIError(code="NO_PHONE", message_ar="لم يتم تحديد رقم هاتف المدير في الإعدادات لاستقبال التقارير", message_en="No manager phone configured in settings to receive reports", status_code=400)
+    content, _ = _entity_daily_ledger_export(db, entity_kind, entity_id, entity_name, "pdf", date_from, date_to, currency)
+    result = send_whatsapp_document(db, manager_phone, content, f"daily_ledger_{entity_id}.pdf", caption=f"كشف الحركة اليومية — {entity_name}")
+    if not result.get("sent"):
+        raise APIError(code="WHATSAPP_SEND_FAILED", message_ar="تعذر إرسال كشف الحركة عبر واتساب — تأكد من إعداد بوابة واتساب من الإعدادات", message_en=f"WhatsApp send failed: {result.get('reason')}", status_code=502)
+    create_audit_log(db, action=AuditAction.SYSTEM_ALERT, entity_type="DailyLedger", entity_id=entity_id, description=f"تم إرسال كشف الحركة اليومية لـ {entity_name} عبر واتساب إلى {manager_phone}", username=actor.username)
+    db.commit()
+
+@router.post("/vaults/{vault_id}/send_daily_ledger_whatsapp")
+def send_vault_daily_ledger_whatsapp(vault_id: str, date_from: str = "", date_to: str = "", currency: str = "LYD", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    _send_entity_daily_ledger_whatsapp(db, "vault", vault_id, vault.name, date_from, date_to, currency, actor)
+    return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحركة عبر واتساب بنجاح")
+
+@router.post("/bank_accounts/{account_id}/send_daily_ledger_whatsapp")
+def send_bank_account_daily_ledger_whatsapp(account_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+    _send_entity_daily_ledger_whatsapp(db, "bank_account", account_id, f"{account.bank_name} - {account.account_name}", date_from, date_to, currency or account.currency, actor)
+    return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحركة عبر واتساب بنجاح")
+
 @router.post("/exchange/pos")
 def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Determine flow

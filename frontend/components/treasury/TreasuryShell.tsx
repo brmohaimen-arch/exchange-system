@@ -210,6 +210,16 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [statementCcy, setStatementCcy] = useState('')
   const [statementDownloading, setStatementDownloading] = useState<string | null>(null)
   const [statementSending, setStatementSending] = useState(false)
+  const [ledgerDownloading, setLedgerDownloading] = useState<string | null>(null)
+  const [ledgerSending, setLedgerSending] = useState(false)
+
+  // ---------------- Combined ledger — all customer bank accounts at once ----------------
+  const [allAccountsLedgerOpen, setAllAccountsLedgerOpen] = useState(false)
+  const [allAccountsLedgerDateFrom, setAllAccountsLedgerDateFrom] = useState('')
+  const [allAccountsLedgerDateTo, setAllAccountsLedgerDateTo] = useState('')
+  const [allAccountsLedgerCcy, setAllAccountsLedgerCcy] = useState('')
+  const [allAccountsLedgerDownloading, setAllAccountsLedgerDownloading] = useState<string | null>(null)
+  const [allAccountsLedgerSending, setAllAccountsLedgerSending] = useState(false)
 
   // ---------------- Manual Entry / Quick Operation ----------------
   type QuickOpType = 'deposit' | 'withdraw' | 'advance' | 'debt' | 'other'
@@ -341,6 +351,76 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       setError(err instanceof ApiError ? err.message : 'تعذر إرسال كشف الحساب عبر واتساب')
     } finally {
       setStatementSending(false)
+    }
+  }
+
+  const downloadLedger = async (format: 'pdf' | 'xlsx') => {
+    if (!statementTarget) return
+    const key = `dl-${format}`
+    setLedgerDownloading(key)
+    setError('')
+    try {
+      const path = `${statementBasePath()}/daily_ledger/export?format=${format}&${statementQuery()}`
+      if (format === 'pdf') {
+        await openFile(path)
+      } else {
+        await downloadFile(path, `daily_ledger_${statementTarget.id}.xlsx`)
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحركة اليومية')
+    } finally {
+      setLedgerDownloading(null)
+    }
+  }
+
+  const sendLedgerWhatsapp = async () => {
+    if (!statementTarget) return
+    setLedgerSending(true)
+    setError('')
+    try {
+      await api.post(`${statementBasePath()}/send_daily_ledger_whatsapp?${statementQuery()}`, {})
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إرسال كشف الحركة اليومية عبر واتساب')
+    } finally {
+      setLedgerSending(false)
+    }
+  }
+
+  const allAccountsLedgerQuery = () => {
+    const params = new URLSearchParams()
+    if (allAccountsLedgerDateFrom) params.set('date_from', allAccountsLedgerDateFrom)
+    if (allAccountsLedgerDateTo) params.set('date_to', allAccountsLedgerDateTo)
+    if (allAccountsLedgerCcy) params.set('currency', allAccountsLedgerCcy)
+    return params.toString()
+  }
+
+  const downloadAllAccountsLedger = async (format: 'pdf' | 'xlsx') => {
+    const key = `dl-${format}`
+    setAllAccountsLedgerDownloading(key)
+    setError('')
+    try {
+      const path = `/bank_accounts/customer_accounts/daily_ledger/export?format=${format}&${allAccountsLedgerQuery()}`
+      if (format === 'pdf') {
+        await openFile(path)
+      } else {
+        await downloadFile(path, 'daily_ledger_customer_accounts.xlsx')
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحركة اليومية')
+    } finally {
+      setAllAccountsLedgerDownloading(null)
+    }
+  }
+
+  const sendAllAccountsLedgerWhatsapp = async () => {
+    setAllAccountsLedgerSending(true)
+    setError('')
+    try {
+      await api.post(`/bank_accounts/customer_accounts/send_daily_ledger_whatsapp?${allAccountsLedgerQuery()}`, {})
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إرسال كشف الحركة اليومية عبر واتساب')
+    } finally {
+      setAllAccountsLedgerSending(false)
     }
   }
 
@@ -1828,9 +1908,14 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
       {tab === 'customer_bank_accounts' && (
         <div className="space-y-6">
-          <div>
-            <h3 className="text-lg font-semibold text-foreground">حسابات العملاء البنكية</h3>
-            <p className="text-xs text-muted-foreground mt-1">حسابات خاصة بالعملاء أنفسهم — يتم إنشاؤها أو ربطها تلقائياً من بيانات البنك في ملف العميل، منفصلة تماماً عن حسابات الشركة. كل عميل مجمّعة حساباته معاً، ومقسّمة داخلياً حسب البنك.</p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-foreground">حسابات العملاء البنكية</h3>
+              <p className="text-xs text-muted-foreground mt-1">حسابات خاصة بالعملاء أنفسهم — يتم إنشاؤها أو ربطها تلقائياً من بيانات البنك في ملف العميل، منفصلة تماماً عن حسابات الشركة. كل عميل مجمّعة حساباته معاً، ومقسّمة داخلياً حسب البنك.</p>
+            </div>
+            <button onClick={() => setAllAccountsLedgerOpen(true)} className="flex items-center gap-1.5 rounded-md border border-primary/30 px-3 py-2 text-sm font-medium text-primary hover:bg-primary/10 transition-colors shrink-0">
+              <FileText className="h-4 w-4" /> كشف حركة شامل لجميع الحسابات
+            </button>
           </div>
           {customerAccountGroups.length === 0 ? (
             <p className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد حسابات بنكية للعملاء بعد</p>
@@ -3165,6 +3250,31 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </div>
               </div>
 
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border p-3">
+                <span className="text-xs font-medium text-muted-foreground">كشف الحركة اليومية الشامل (جميع العمليات بترتيب زمني ورصيد متحرك):</span>
+                <button
+                  onClick={() => downloadLedger('pdf')}
+                  disabled={ledgerDownloading === 'dl-pdf'}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  {ledgerDownloading === 'dl-pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />} فتح PDF
+                </button>
+                <button
+                  onClick={() => downloadLedger('xlsx')}
+                  disabled={ledgerDownloading === 'dl-xlsx'}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  {ledgerDownloading === 'dl-xlsx' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />} تحميل Excel
+                </button>
+                <button
+                  onClick={sendLedgerWhatsapp}
+                  disabled={ledgerSending}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted hover:text-success transition-colors disabled:opacity-50"
+                >
+                  {ledgerSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightLeft className="h-4 w-4" />} إرسال واتساب
+                </button>
+              </div>
+
               {Object.keys(statementTotals).length > 0 && (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   {Object.entries(statementTotals).map(([ccy, t]) => (
@@ -3274,6 +3384,62 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   )}
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {allAccountsLedgerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">كشف حركة شامل — جميع حسابات العملاء البنكية</h3>
+              <button onClick={() => setAllAccountsLedgerOpen(false)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-muted-foreground">يشمل جميع العمليات على جميع حسابات العملاء البنكية مجتمعة، مرتبة زمنياً، مع رصيد كل حساب بعد كل عملية.</p>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">من تاريخ</label>
+                  <input type="date" value={allAccountsLedgerDateFrom} onChange={(e) => setAllAccountsLedgerDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">إلى تاريخ</label>
+                  <input type="date" value={allAccountsLedgerDateTo} onChange={(e) => setAllAccountsLedgerDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">العملة</label>
+                  <select value={allAccountsLedgerCcy} onChange={(e) => setAllAccountsLedgerCcy(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                    <option value="">كل العملات</option>
+                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => downloadAllAccountsLedger('pdf')}
+                  disabled={allAccountsLedgerDownloading === 'dl-pdf'}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  {allAccountsLedgerDownloading === 'dl-pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />} فتح PDF
+                </button>
+                <button
+                  onClick={() => downloadAllAccountsLedger('xlsx')}
+                  disabled={allAccountsLedgerDownloading === 'dl-xlsx'}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  {allAccountsLedgerDownloading === 'dl-xlsx' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />} تحميل Excel
+                </button>
+                <button
+                  onClick={sendAllAccountsLedgerWhatsapp}
+                  disabled={allAccountsLedgerSending}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted hover:text-success transition-colors disabled:opacity-50"
+                >
+                  {allAccountsLedgerSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightLeft className="h-4 w-4" />} إرسال واتساب
+                </button>
+              </div>
             </div>
           </div>
         </div>
