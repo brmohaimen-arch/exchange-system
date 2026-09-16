@@ -914,6 +914,12 @@ function CustomersPageInner() {
           >
             <FileText className="h-3.5 w-3.5" /> كشف حساب مفصّل
           </Link>
+          <Link
+            href="/customers/statement/all"
+            className="flex items-center gap-1.5 rounded-md border border-primary/30 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
+          >
+            <FileText className="h-3.5 w-3.5" /> كشف حساب شامل لجميع العملاء
+          </Link>
         </div>
         {tab === 'customers' && canManage && (
           <div className="flex items-center gap-2">

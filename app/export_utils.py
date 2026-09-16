@@ -144,6 +144,25 @@ def shape_arabic(text, max_width_pts: float | None = None, font_name: str = _FON
     return "<br/>".join(get_display(arabic_reshaper.reshape(line)) for line in lines)
 
 
+# Free-text columns (notes, descriptions) need far more room than a serial
+# number or a currency code — splitting the page evenly across all columns
+# was squeezing "ملاحظات"/"البيان"/"التفاصيل" text into a handful of cramped,
+# heavily-wrapped lines. These get extra weight; everything else stays equal.
+_WIDE_COLUMN_KEYWORDS = ("ملاحظات", "البيان", "التفاصيل", "الوصف")
+_WIDE_COLUMN_FACTOR = 3.0
+
+def _column_weights(headers: list[str]) -> list[float]:
+    return [_WIDE_COLUMN_FACTOR if any(k in h for k in _WIDE_COLUMN_KEYWORDS) else 1.0 for h in headers]
+
+def _weighted_col_widths(headers: list[str], content_width: float) -> list[float]:
+    weights = _column_weights(headers)
+    total = sum(weights) or 1.0
+    return [content_width * w / total for w in weights]
+
+def _excel_col_widths(headers: list[str]) -> list[float]:
+    return [45 if w > 1.0 else 18 for w in _column_weights(headers)]
+
+
 def build_excel(sheet_title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
     wb = Workbook()
     ws = wb.active
@@ -156,12 +175,15 @@ def build_excel(sheet_title: str, headers: list[str], rows: list[list]) -> io.By
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
 
+    wide_cols = {i for i, w in enumerate(_column_weights(headers), start=1) if w > 1.0}
     for row_idx, row in enumerate(rows, start=2):
         for col_idx, value in enumerate(row, start=1):
-            ws.cell(row=row_idx, column=col_idx, value=value)
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            if col_idx in wide_cols:
+                cell.alignment = Alignment(horizontal="right", wrap_text=True)
 
-    for col_idx in range(1, len(headers) + 1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 18
+    for col_idx, width in enumerate(_excel_col_widths(headers), start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -185,18 +207,20 @@ def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
     # interprets — a plain string would show that markup as literal text.
     header_style = ParagraphStyle("PdfHeader", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white, wordWrap="CJK")
     cell_style = ParagraphStyle("PdfCell", fontName=font_name, fontSize=9, alignment=1, wordWrap="CJK")
-    # No explicit colWidths below (columns auto-size to content), so this is an
-    # approximation of what each column will actually get — good enough to
-    # decide whether shape_arabic() needs to pre-wrap a given cell's text.
-    approx_col_width = content_width / max(len(headers), 1) - 6
+    # Explicit per-column widths — a free-text column (notes/details) gets
+    # several times the width of a narrow one (serial number, currency code)
+    # instead of splitting the page evenly, both for the actual table layout
+    # and for how much text shape_arabic() pre-wraps into each cell.
+    col_widths = _weighted_col_widths(headers, content_width)
+    rev_widths = list(reversed(col_widths))
 
     # Arabic reads right-to-left, so the header/row columns are reversed for display
     # while keeping the shaped text itself correctly ordered per-cell.
-    display_headers = [Paragraph(shape_arabic(h, approx_col_width, font_name, 9), header_style) for h in reversed(headers)]
-    display_rows = [[Paragraph(shape_arabic(cell, approx_col_width, font_name, 9), cell_style) for cell in reversed(row)] for row in rows]
+    display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, 9), header_style) for i, h in enumerate(reversed(headers))]
+    display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, 9), cell_style) for i, cell in enumerate(reversed(row))] for row in rows]
 
     table_data = [display_headers] + display_rows
-    table = Table(table_data, repeatRows=1)
+    table = Table(table_data, repeatRows=1, colWidths=rev_widths)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -290,11 +314,14 @@ def build_sectioned_excel(sections: list[tuple[str, list[str], list[list]]]) -> 
             cell = ws.cell(row=1, column=col_idx, value=header)
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center")
+        wide_cols = {i for i, w in enumerate(_column_weights(headers), start=1) if w > 1.0}
         for row_idx, row in enumerate(rows, start=2):
             for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
-        for col_idx in range(1, len(headers) + 1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = 18
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                if col_idx in wide_cols:
+                    cell.alignment = Alignment(horizontal="right", wrap_text=True)
+        for col_idx, width in enumerate(_excel_col_widths(headers), start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -362,11 +389,12 @@ def build_sectioned_pdf(
             elements.append(Paragraph(shape_arabic("لا توجد بيانات"), empty_style))
             elements.append(Spacer(1, 0.4 * cm))
         else:
-            approx_col_width = content_width / max(len(headers), 1) - 6
-            display_headers = [Paragraph(shape_arabic(h, approx_col_width, font_name, 9), header_style) for h in reversed(headers)]
-            display_rows = [[Paragraph(shape_arabic(cell, approx_col_width, font_name, 9), cell_style) for cell in reversed(row)] for row in rows]
+            col_widths = _weighted_col_widths(headers, content_width)
+            rev_widths = list(reversed(col_widths))
+            display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, 9), header_style) for i, h in enumerate(reversed(headers))]
+            display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, 9), cell_style) for i, cell in enumerate(reversed(row))] for row in rows]
             table_data = [display_headers] + display_rows
-            table = Table(table_data, repeatRows=1)
+            table = Table(table_data, repeatRows=1, colWidths=rev_widths)
             table.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),

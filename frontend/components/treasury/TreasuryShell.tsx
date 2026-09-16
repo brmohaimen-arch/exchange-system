@@ -1114,16 +1114,17 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const submitAccount = async (e: FormEvent) => {
     e.preventDefault()
     setAccountFormError('')
-    const bank = banks.find((b) => b.id === accountForm.bankId)
+    const isOtherBank = accountForm.bankId === '__other__'
+    const bank = isOtherBank ? { id: '__other__', name: 'أخرى' } : banks.find((b) => b.id === accountForm.bankId)
     if (!bank || !accountForm.accountName.trim() || !accountForm.accountNumber.trim()) {
       setAccountFormError('البنك واسم الحساب ورقم الحساب حقول مطلوبة')
       return
     }
-    if (!accountForm.newBranch && !accountForm.branchId) {
+    if (!isOtherBank && !accountForm.newBranch && !accountForm.branchId) {
       setAccountFormError('اختر فرع البنك أو أضف فرعاً جديداً')
       return
     }
-    if (accountForm.newBranch && !accountForm.newBranchName.trim()) {
+    if (!isOtherBank && accountForm.newBranch && !accountForm.newBranchName.trim()) {
       setAccountFormError('اسم الفرع الجديد مطلوب')
       return
     }
@@ -1131,7 +1132,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     try {
       let branchId = accountForm.branchId
       let branchName = bankBranches.find((bb) => bb.id === accountForm.branchId)?.name || ''
-      if (accountForm.newBranch) {
+      if (!isOtherBank && accountForm.newBranch) {
         const newBranchId = newId('bbr')
         await api.post('/bank_branches', {
           id: newBranchId,
@@ -1151,8 +1152,10 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         id: editingAccount?.id || newId('ba'),
         bank_id: bank.id,
         bank_name: bank.name,
-        branch_id: branchId,
-        branch_name: branchName,
+        // The backend resolves bank_id "__other__" to a real sentinel bank/branch
+        // it creates on first use, so a placeholder here is fine either way.
+        branch_id: isOtherBank ? '__other__' : branchId,
+        branch_name: isOtherBank ? 'غير محدد' : branchName,
         account_name: accountForm.accountName.trim(),
         account_number: accountForm.accountNumber.trim(),
         account_type: accountForm.accountType,
@@ -2778,10 +2781,14 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 <select value={accountForm.bankId} onChange={(e) => setAccountForm({ ...accountForm, bankId: e.target.value, branchId: '' })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                   <option value="">اختر بنكاً</option>
                   {banks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  {accountForm.customerId && <option value="__other__">أخرى (سيتم تحديد البنك لاحقاً)</option>}
                 </select>
+                {accountForm.bankId === '__other__' && (
+                  <p className="mt-1 text-xs text-muted-foreground">سيُسجَّل الحساب مؤقتاً تحت بنك "غير محدد" — يمكن تحديد البنك الحقيقي لاحقاً بتعديل الحساب.</p>
+                )}
               </div>
 
-              {!accountForm.newBranch ? (
+              {accountForm.bankId !== '__other__' && (!accountForm.newBranch ? (
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الفرع</label>
                   <div className="flex items-center gap-2">
@@ -2808,7 +2815,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   <input placeholder="العنوان" value={accountForm.newBranchAddress} onChange={(e) => setAccountForm({ ...accountForm, newBranchAddress: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                   <input placeholder="الهاتف" dir="ltr" value={accountForm.newBranchPhone} onChange={(e) => setAccountForm({ ...accountForm, newBranchPhone: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
-              )}
+              ))}
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
