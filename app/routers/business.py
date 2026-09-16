@@ -1031,13 +1031,27 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         amt = f"{amount:,.2f}"
         return (amt, "") if is_in else ("", amt)
 
-    # 1. معاملات الصرافة — buy/sell/exchange only.
+    # A vault's own name often already reads as "خزنة X" / "الخزنة الرئيسية"
+    # ("Vault X" / "The Main Vault"), so blindly prefixing "خزنة" again would
+    # print "خزنة الخزنة الرئيسية" — say it once, whichever way the name has it.
+    def cash_source_label(vault_name: str | None = None, bank_account_name: str | None = None, other_source: str | None = None) -> str:
+        if vault_name:
+            return vault_name if "خزنة" in vault_name else f"خزنة {vault_name}"
+        if bank_account_name:
+            return bank_account_name if "حساب" in bank_account_name else f"الحساب البنكي {bank_account_name}"
+        if other_source:
+            return other_source
+        return "غير محدد"
+
+    # 1. معاملات الصرافة — buy/sell/exchange only. Names the vault the trade
+    # actually ran through, same as السلف already does for its own source —
+    # "entry/exit" isn't complete without saying where the money moved.
     trade_rows_with_ts = []
     for t in txs:
         tx_currency = t.to_currency if t.type == "sell" else t.from_currency
         if currency and tx_currency != currency:
             continue
-        detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — {t.id}"
+        detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — عبر {cash_source_label(vault_name=t.vault_name)}"
         entry, exit_ = entry_exit(t.amount, t.type == "sell")
         row = prefixed([t.timestamp, detail, entry, exit_, tx_currency, t.user], t.customer_id)
         trade_rows_with_ts.append((t.timestamp, row))
@@ -1045,12 +1059,13 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
 
     # 2. الإيداع والسحب — deposits, withdrawals, and customer-to-customer transfers.
+    # Names the vault/bank account/other source the cash actually moved
+    # through — "إيداع في الحساب" on its own never said where it came from.
     dw_rows_with_ts = []
     for e in entries:
-        if e.type == "deposit":
-            detail = "إيداع في الحساب"
-        elif e.type == "withdraw":
-            detail = "سحب من الحساب"
+        if e.type in ("deposit", "withdraw"):
+            source_label = cash_source_label(e.vault_name, e.bank_account_name, e.other_source)
+            detail = f"إيداع نقدي — من {source_label}" if e.type == "deposit" else f"سحب نقدي — إلى {source_label}"
         else:
             # transfer_in / transfer_out — other_source already reads like
             # "تحويل من/إلى العميل X (id)", so it doubles as the detail text.
@@ -1062,30 +1077,31 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     dw_rows_with_ts.sort(key=lambda r: r[0])
     dw_rows = [[str(i)] + row for i, (_, row) in enumerate(dw_rows_with_ts, start=1)]
 
-    # 3. الديون — grouped into one table per currency.
+    # 3. الديون — grouped into one table per currency. A debt is a pure paper
+    # record (registering or paying one never touches a vault/bank balance —
+    # unlike deposits, trades and سلفة, there's no cash source to name here),
+    # so the detail says so plainly instead of guessing a location.
     debt_items = []
     for d in debts:
-        detail = f"تسجيل دين جديد — استحقاق {d.due_date}"
+        detail = f"تسجيل دين جديد — استحقاق {d.due_date} (سجل دفتري، دون حركة نقدية)"
         entry, exit_ = entry_exit(d.amount, False)
         row = prefixed([d.start_date, detail, entry, exit_, d.currency, d.created_by or "—"], d.customer_id)
         debt_items.append((d.start_date, d.currency, row))
     for p in debt_payments:
         entry, exit_ = entry_exit(p.amount, True)
-        row = prefixed([p.timestamp, "تسديد دفعة دين", entry, exit_, p.currency, p.user], p.customer_id)
+        row = prefixed([p.timestamp, "تسديد دفعة دين (سجل دفتري، دون حركة نقدية)", entry, exit_, p.currency, p.user], p.customer_id)
         debt_items.append((p.timestamp, p.currency, row))
     debt_sections = _group_rows_by_currency("الديون", flow_headers, debt_items)
 
     # 4. السلف — grouped into one table per currency.
     advance_items = []
     for a in advances:
-        source_label = a.vault_name or a.bank_account_name
-        detail = f"صرف سلفة — من {source_label}"
+        detail = f"صرف سلفة — من {cash_source_label(a.vault_name, a.bank_account_name)}"
         entry, exit_ = entry_exit(a.amount, False)
         row = prefixed([a.timestamp, detail, entry, exit_, a.currency, a.created_by], a.customer_id)
         advance_items.append((a.timestamp, a.currency, row))
     for p in advance_payments:
-        source_label = p.vault_name or p.bank_account_name
-        detail = f"تسديد دفعة سلفة — إلى {source_label}"
+        detail = f"تسديد دفعة سلفة — إلى {cash_source_label(p.vault_name, p.bank_account_name)}"
         entry, exit_ = entry_exit(p.amount, True)
         row = prefixed([p.timestamp, detail, entry, exit_, p.currency, p.user], p.customer_id)
         advance_items.append((p.timestamp, p.currency, row))
