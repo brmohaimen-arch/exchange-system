@@ -21,14 +21,14 @@ import re
 import arabic_reshaper
 from bidi.algorithm import get_display
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import ParagraphStyle
 
 _LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
@@ -292,36 +292,55 @@ def build_statement_pdf(customer_name: str, customer_phone: str, customer_id_num
 def build_sectioned_excel(sections: list[tuple[str, list[str], list[list]]]) -> io.BytesIO:
     """Like build_excel, but for a statement that must stay separated by kind
     (e.g. trades / deposits-withdrawals / debts / advances) instead of one
-    merged chronological table — each (name, headers, rows) becomes its own
-    sheet, in order, so the categories never bleed into each other."""
+    merged chronological table. All sections land on ONE sheet, stacked top to
+    bottom under their own bold title row and blank separator, rather than one
+    sheet per section — reading the whole statement means scrolling one sheet,
+    not clicking through tabs."""
     wb = Workbook()
-    wb.remove(wb.active)
-    used_names: set[str] = set()
-    for name, headers, rows in sections:
-        # Excel sheet names forbid / \ ? * [ ] : and are capped at 31 chars.
-        safe_name = re.sub(r'[\\/?*\[\]:]', '-', name)
-        sheet_name = safe_name[:31]
-        suffix = 2
-        while sheet_name in used_names:
-            sheet_name = f"{safe_name[:28]}({suffix})"
-            suffix += 1
-        used_names.add(sheet_name)
+    ws = wb.active
+    ws.title = "كشف الحساب"
+    ws.sheet_view.rightToLeft = True
 
-        ws = wb.create_sheet(title=sheet_name)
-        ws.sheet_view.rightToLeft = True
-        header_font = Font(bold=True)
+    max_cols = max((len(headers) for _, headers, _ in sections), default=1)
+    title_font = Font(bold=True, size=12, color="FFFFFF")
+    title_fill = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
+    header_font = Font(bold=True)
+    row_idx = 1
+    for name, headers, rows in sections:
+        title_cell = ws.cell(row=row_idx, column=1, value=name)
+        title_cell.font = title_font
+        title_cell.fill = title_fill
+        title_cell.alignment = Alignment(horizontal="center")
+        ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=max(len(headers), 1))
+        for col_idx in range(2, len(headers) + 1):
+            ws.cell(row=row_idx, column=col_idx).fill = title_fill
+        row_idx += 1
+
         for col_idx, header in enumerate(headers, start=1):
-            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell = ws.cell(row=row_idx, column=col_idx, value=header)
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center")
+        row_idx += 1
+
         wide_cols = {i for i, w in enumerate(_column_weights(headers), start=1) if w > 1.0}
-        for row_idx, row in enumerate(rows, start=2):
-            for col_idx, value in enumerate(row, start=1):
-                cell = ws.cell(row=row_idx, column=col_idx, value=value)
-                if col_idx in wide_cols:
-                    cell.alignment = Alignment(horizontal="right", wrap_text=True)
-        for col_idx, width in enumerate(_excel_col_widths(headers), start=1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = width
+        if not rows:
+            ws.cell(row=row_idx, column=1, value="لا توجد بيانات").alignment = Alignment(horizontal="center")
+            if len(headers) > 1:
+                ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=len(headers))
+            row_idx += 1
+        else:
+            for row in rows:
+                for col_idx, value in enumerate(row, start=1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    if col_idx in wide_cols:
+                        cell.alignment = Alignment(horizontal="right", wrap_text=True)
+                row_idx += 1
+
+        row_idx += 1  # blank separator row before the next section
+
+    widest_headers = max((headers for _, headers, _ in sections), key=len, default=[])
+    for col_idx, width in enumerate(_excel_col_widths(widest_headers), start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -334,47 +353,51 @@ def build_sectioned_pdf(
     subtitle_lines: list[str] | None = None,
 ) -> io.BytesIO:
     """Like build_statement_pdf, but for a statement kept separated by kind —
-    each (name, headers, rows) renders as its own titled table, stacked top to
-    bottom in one document, instead of a single merged chronological table."""
+    each (name, headers, rows) renders as its own titled table, one under the
+    other in a single continuous flow (not one per page) — reportlab paginates
+    automatically wherever a table happens to run long, same as any other
+    multi-page document, rather than forcing every category onto its own page.
+    The logo, company name and a page number are drawn directly on every page
+    (not just the first) via the onPage callback below, since a page break can
+    land anywhere once sections are no longer pinned one-per-page."""
     font_name = _ensure_font_registered()
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=1 * cm, bottomMargin=1 * cm)
-    content_width = landscape(A4)[0] - 3 * cm
+    page_width, page_height = landscape(A4)
+    # Extra top/bottom margin reserves room for the letterhead and page number
+    # drawn on the canvas itself (outside the normal flowable area) below.
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=2.8 * cm, bottomMargin=1.3 * cm)
+    content_width = page_width - 3 * cm
 
-    company_style = ParagraphStyle("SectionedCompany", fontName=font_name, fontSize=15, leading=19, alignment=1, textColor=BRAND_COLOR, spaceAfter=2)
-    contact_style = ParagraphStyle("SectionedContact", fontName=font_name, fontSize=8, leading=11, alignment=1, textColor=colors.grey)
     info_style = ParagraphStyle("SectionedInfo", fontName=font_name, fontSize=10, leading=14, alignment=1, spaceAfter=2)
     section_title_style = ParagraphStyle("SectionedSectionTitle", fontName=font_name, fontSize=12, leading=16, alignment=1, textColor=colors.white, spaceAfter=0)
     empty_style = ParagraphStyle("SectionedEmpty", fontName=font_name, fontSize=9, leading=12, alignment=1, textColor=colors.grey)
     closing_style = ParagraphStyle("SectionedClosing", fontName=font_name, fontSize=11, leading=15, alignment=1, spaceBefore=10)
 
-    # Each section lands on its own page (see the PageBreak below) so a printed
-    # page is a self-contained document — the letterhead and statement info are
-    # re-emitted at the top of every page, not just the first, instead of being
-    # written once before the loop.
-    def add_letterhead():
+    def draw_page_furniture(canvas, _doc):
+        canvas.saveState()
         if os.path.exists(_LOGO_PATH):
-            logo = Image(_LOGO_PATH, width=1.5 * cm, height=1.5 * cm)
-            logo.hAlign = "CENTER"
-            elements.append(logo)
-            elements.append(Spacer(1, 0.1 * cm))
-        elements.append(Paragraph(shape_arabic("شركة واكب للخدمات المالية"), company_style))
-        elements.append(Paragraph(" | ".join(COMPANY_PHONES), contact_style))
-        elements.append(Spacer(1, 0.3 * cm))
-        elements.append(Paragraph(shape_arabic(title), info_style))
-        for line in (subtitle_lines or []):
-            elements.append(Paragraph(shape_arabic(line), info_style))
-        elements.append(Spacer(1, 0.4 * cm))
+            logo_size = 1.2 * cm
+            canvas.drawImage(_LOGO_PATH, (page_width - logo_size) / 2, page_height - 0.3 * cm - logo_size,
+                              width=logo_size, height=logo_size, mask="auto", preserveAspectRatio=True)
+        canvas.setFont(font_name, 13)
+        canvas.setFillColor(BRAND_COLOR)
+        canvas.drawCentredString(page_width / 2, page_height - 1.85 * cm, get_display(arabic_reshaper.reshape("شركة واكب للخدمات المالية")))
+        canvas.setFont(font_name, 8)
+        canvas.setFillColor(colors.grey)
+        canvas.drawCentredString(page_width / 2, page_height - 2.25 * cm, " | ".join(COMPANY_PHONES))
+        canvas.drawCentredString(page_width / 2, 0.7 * cm, get_display(arabic_reshaper.reshape(f"صفحة {canvas.getPageNumber()}")))
+        canvas.restoreState()
 
     elements = []
+    elements.append(Paragraph(shape_arabic(title), info_style))
+    for line in (subtitle_lines or []):
+        elements.append(Paragraph(shape_arabic(line), info_style))
+    elements.append(Spacer(1, 0.4 * cm))
 
     header_style = ParagraphStyle("SectionedHeader", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white, wordWrap="CJK")
     cell_style = ParagraphStyle("SectionedCell", fontName=font_name, fontSize=9, alignment=1, wordWrap="CJK")
 
-    for idx, (name, headers, rows) in enumerate(sections):
-        if idx > 0:
-            elements.append(PageBreak())
-        add_letterhead()
+    for name, headers, rows in sections:
         title_table = Table([[Paragraph(shape_arabic(name), section_title_style)]], colWidths=[content_width])
         title_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), BRAND_COLOR),
@@ -405,12 +428,10 @@ def build_sectioned_pdf(
             elements.append(table)
             elements.append(Spacer(1, 0.4 * cm))
 
-        # Repeated on every page (not just the last) so a page printed on its
-        # own still carries the same closing summary as every other page.
-        if closing_line:
-            elements.append(Paragraph(shape_arabic(closing_line), closing_style))
+    if closing_line:
+        elements.append(Paragraph(shape_arabic(closing_line), closing_style))
 
-    doc.build(elements)
+    doc.build(elements, onFirstPage=draw_page_furniture, onLaterPages=draw_page_furniture)
     buf.seek(0)
     return buf
 

@@ -1014,13 +1014,13 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     advances = db.scalars(advances_query).all()
     advance_payments = db.scalars(advance_payments_query).all()
 
-    # Trades are always two-sided (currency in exchange for currency), so
-    # unlike every other row here they don't have one obvious "this is an
-    # entry / this is an exit" answer — they keep a single amount column.
-    # Everything else (deposits/withdrawals, debts, سلف) has a definite
-    # direction, known directly from the record type — not guessed from text.
-    trade_headers = (["م", "العميل", "التاريخ", "التفاصيل", "المبلغ", "العملة", "بواسطة"] if show_customer_col
-                      else ["م", "التاريخ", "التفاصيل", "المبلغ", "العملة", "بواسطة"])
+    # Every row here has a definite entry/exit direction — even a trade, which
+    # only looks two-sided at first glance: the amount/currency shown is
+    # whichever leg _run_pos_operation already picked to display (to_currency
+    # on a sell, from_currency on a buy/exchange — see tx_currency below), and
+    # that leg's direction is fixed by which side of the counter it's on: a
+    # sell hands the customer to_currency (an entry), a buy/exchange takes
+    # from_currency off them (an exit). Nothing here is guessed from text.
     flow_headers = (["م", "العميل", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"] if show_customer_col
                      else ["م", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"])
 
@@ -1038,7 +1038,8 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         if currency and tx_currency != currency:
             continue
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — {t.id}"
-        row = prefixed([t.timestamp, detail, f"{t.amount:,.2f}", tx_currency, t.user], t.customer_id)
+        entry, exit_ = entry_exit(t.amount, t.type == "sell")
+        row = prefixed([t.timestamp, detail, entry, exit_, tx_currency, t.user], t.customer_id)
         trade_rows_with_ts.append((t.timestamp, row))
     trade_rows_with_ts.sort(key=lambda r: r[0])
     trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
@@ -1091,7 +1092,7 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     advance_sections = _group_rows_by_currency("السلف", flow_headers, advance_items)
 
     sections = [
-        ("معاملات الصرافة", trade_headers, trade_rows),
+        ("معاملات الصرافة", flow_headers, trade_rows),
         ("الإيداع والسحب", flow_headers, dw_rows),
         *debt_sections,
         *advance_sections,
@@ -2148,14 +2149,15 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     for m in movements:
         groups[_categorize_movement_type(m.type)].append(m)
 
-    mv_headers = ["م", "الوقت", "النوع", "المبلغ", "الرصيد بعد", "بواسطة"]
+    mv_headers = ["م", "الوقت", "النوع", "دخول", "خروج", "العملة", "الرصيد بعد", "بواسطة"]
 
     def mv_rows(items: list[Movement]) -> list[list]:
         rows = []
         for i, m in enumerate(items, start=1):
             is_in = m.amount_in > 0
-            amount_str = f"{'+' if is_in else '-'}{(m.amount_in if is_in else m.amount_out):,.2f} {m.currency}"
-            rows.append([str(i), m.timestamp, m.type, amount_str, f"{m.balance_after:,.2f}", m.user])
+            entry = f"{m.amount_in:,.2f}" if is_in else ""
+            exit_ = f"{m.amount_out:,.2f}" if not is_in else ""
+            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, f"{m.balance_after:,.2f}", m.user])
         return rows
 
     sections = [
@@ -2179,12 +2181,12 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     if date_to:
         transfers = [t for t in transfers if t.timestamp[:10] <= date_to]
 
-    tr_headers = ["م", "الوقت", "من", "إلى", "المبلغ", "بواسطة"]
+    tr_headers = ["م", "الوقت", "من", "إلى", "دخول", "خروج", "العملة", "بواسطة"]
     tr_rows = []
     for i, t in enumerate(transfers, start=1):
         is_in = t.dest_id == entity_id
-        amount_str = f"{'+' if is_in else '-'}{t.amount:,.2f} {t.currency}"
-        tr_rows.append([str(i), t.timestamp, t.source_name, t.dest_name, amount_str, t.requested_by])
+        entry, exit_ = (f"{t.amount:,.2f}", "") if is_in else ("", f"{t.amount:,.2f}")
+        tr_rows.append([str(i), t.timestamp, t.source_name, t.dest_name, entry, exit_, t.currency, t.requested_by])
     sections.append(("التحويلات بين الحسابات", tr_headers, tr_rows))
 
     totals: dict[str, dict[str, float]] = {}
