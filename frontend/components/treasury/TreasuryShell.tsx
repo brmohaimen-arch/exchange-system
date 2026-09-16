@@ -2781,7 +2781,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 <select value={accountForm.bankId} onChange={(e) => setAccountForm({ ...accountForm, bankId: e.target.value, branchId: '' })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                   <option value="">اختر بنكاً</option>
                   {banks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                  {accountForm.customerId && <option value="__other__">أخرى (سيتم تحديد البنك لاحقاً)</option>}
+                  <option value="__other__">أخرى (سيتم تحديد البنك لاحقاً)</option>
                 </select>
                 {accountForm.bankId === '__other__' && (
                   <p className="mt-1 text-xs text-muted-foreground">سيُسجَّل الحساب مؤقتاً تحت بنك "غير محدد" — يمكن تحديد البنك الحقيقي لاحقاً بتعديل الحساب.</p>
