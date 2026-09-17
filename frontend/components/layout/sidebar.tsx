@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Users, Settings, ArrowRightLeft, Landmark, FileText, Coins, Package, Clock, ClipboardList, Building2 } from 'lucide-react'
+import { LayoutDashboard, Users, Settings, ArrowRightLeft, Landmark, FileText, Coins, Package, Clock, ClipboardList, Building2, CreditCard, LineChart, Truck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth-provider'
 import { useSidebarState } from '@/lib/sidebar-context'
@@ -24,8 +24,11 @@ const navigation: NavItem[] = [
   { name: 'الجرد والمصاريف', href: '/inventory', icon: ClipboardList },
   { name: 'البنوك والفروع', href: '/banks', icon: Building2 },
   { name: 'العملات وأسعار الصرف', href: '/currencies', icon: Coins, permission: 'إدارة العملات' },
+  { name: 'سجل أسعار العملات', href: '/currency-history', icon: LineChart, permission: 'إدارة سجل أسعار العملات' },
   { name: 'العملاء', href: '/customers', icon: Users, permission: 'إدارة العملاء' },
+  { name: 'بطاقات الدولار', href: '/dollar-cards', icon: CreditCard, permission: 'إدارة بطاقات الدولار' },
   { name: 'الأصول الثابتة', href: '/assets', icon: Package, permission: 'إدارة الأصول' },
+  { name: 'شركة بيان', href: '/fleet', icon: Truck, permission: 'إدارة شركة بيان' },
   { name: 'التقارير والإقفال اليومي', href: '/reports', icon: FileText, permission: 'رؤية التقارير' },
   { name: 'الإعدادات', href: '/settings', icon: Settings },
 ]

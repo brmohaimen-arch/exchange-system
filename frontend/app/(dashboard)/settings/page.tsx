@@ -231,7 +231,7 @@ export default function SettingsPage() {
   }
 
   const deleteUser = async (u: UserDTO) => {
-    if (!(await confirmDialog(`هل تريد حذف المستخدم ${u.name}؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف المستخدم ${u.name}؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/auth/users/${u.id}`)
       await load()
@@ -272,7 +272,7 @@ export default function SettingsPage() {
   }
 
   const deleteRole = async (name: string) => {
-    if (!(await confirmDialog(`هل تريد حذف الدور "${name}"؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف الدور "${name}"؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/auth/roles/${encodeURIComponent(name)}`)
       await load()
@@ -714,17 +714,22 @@ export default function SettingsPage() {
                   )}
                 </div>
               ))}
-              <div className="flex items-center gap-1 pt-2 border-t border-border mt-2">
+              <form onSubmit={(e) => { e.preventDefault(); addRole() }} className="flex items-center gap-1 pt-2 border-t border-border mt-2">
                 <input
                   value={newRoleName}
                   onChange={(e) => setNewRoleName(e.target.value)}
                   placeholder="دور جديد"
-                  className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/50"
                 />
-                <button onClick={addRole} className="rounded-md bg-primary/10 p-1.5 text-primary hover:bg-primary/20 transition-colors">
-                  <Plus className="h-3.5 w-3.5" />
+                <button
+                  type="submit"
+                  disabled={!newRoleName.trim()}
+                  title="إضافة دور"
+                  className="flex items-center justify-center rounded-md bg-primary/10 p-2.5 text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Plus className="h-4 w-4" />
                 </button>
-              </div>
+              </form>
             </div>
 
             <div className="p-6">

@@ -16,9 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .scheduler import start_scheduler, stop_scheduler
 from .database import engine, Base, SessionLocal
 from .seed import seed_database
-from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings, seed_trial_start_date
+from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings, seed_trial_start_date, grant_new_permissions_to_admin
 from .request_context import set_request_meta, extract_client_ip
-from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp, telegram
+from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp, telegram, dollar_cards, currency_price_log, fleet
 
 # Create any brand-new tables, then patch any new columns onto pre-existing tables
 Base.metadata.create_all(bind=engine)
@@ -33,6 +33,7 @@ try:
     migrate_plaintext_passwords(_startup_db)
     seed_missing_system_settings(_startup_db)
     seed_trial_start_date(_startup_db)
+    grant_new_permissions_to_admin(_startup_db)
 finally:
     _startup_db.close()
 
@@ -77,6 +78,9 @@ app.include_router(setup.router, prefix="/api")
 app.include_router(compliance.router, prefix="/api")
 app.include_router(whatsapp.router, prefix="/api")
 app.include_router(telegram.router, prefix="/api")
+app.include_router(dollar_cards.router, prefix="/api")
+app.include_router(currency_price_log.router, prefix="/api")
+app.include_router(fleet.router, prefix="/api")
 
 @app.get("/")
 def read_root():

@@ -17,7 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .auth_deps import hash_password, is_hashed
-from .models import User, SystemSetting
+from .models import User, SystemSetting, Role
 
 # Mirrors seed.py's defaults. seed_database() only ever runs against a brand-new,
 # empty database — a real deployment's existing DB never gets those rows when a
@@ -93,6 +93,9 @@ NEW_COLUMNS = [
     ("debts", "created_by", "VARCHAR(100)"),
     ("bank_accounts", "account_type", "VARCHAR(20) DEFAULT 'individual'"),
     ("bank_accounts", "customer_id", "VARCHAR(50) REFERENCES customers(id)"),
+    ("fleet_transactions", "account_id", "VARCHAR(50) REFERENCES fleet_accounts(id)"),
+    ("fleet_transactions", "balance_after", "REAL"),
+    ("fleet_transactions", "counterparty", "VARCHAR(200)"),
 ]
 
 
@@ -312,6 +315,28 @@ def seed_missing_system_settings(db: Session) -> None:
     if added:
         db.commit()
         print(f"[migrations] Seeded {added} missing system setting(s)")
+
+
+
+# Permission strings introduced after this project's initial seed — a brand-new
+# permission added to seed.py's ALL_PERMISSIONS never reaches an existing,
+# already-seeded database (seed_roles() only runs once, against an empty Role
+# table), which would silently lock every role — including the system admin —
+# out of the new pages they gate. Grants each one to the system admin role only;
+# any other role that should get it is a deliberate call an admin makes from
+# Settings, not something a migration should decide for them.
+NEW_PERMISSIONS_FOR_ADMIN = ['إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان']
+
+def grant_new_permissions_to_admin(db: Session) -> None:
+    role = db.get(Role, 'مدير النظام')
+    if not role:
+        return
+    current = set(role.permissions or [])
+    missing = [p for p in NEW_PERMISSIONS_FOR_ADMIN if p not in current]
+    if missing:
+        role.permissions = [*role.permissions, *missing]
+        db.commit()
+        print(f"[migrations] Granted {len(missing)} new permission(s) to مدير النظام: {missing}")
 
 
 def seed_trial_start_date(db: Session) -> None:

@@ -1254,13 +1254,13 @@ def send_all_customers_statement_whatsapp(date_from: str = "", date_to: str = ""
     return success_response(data={"sent": True}, message_ar="تم إرسال كشف الحساب عبر واتساب بنجاح")
 
 def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp, actor: User, db: Session):
-    """Moves cash between a vault's drawer and a bank account — a deposit takes
-    cash out of the vault and into the bank, a withdrawal does the reverse.
-    Mirrors _run_customer_account_op's before/after + Movement-logging shape."""
+    """A bank account's deposit/withdraw can either move real cash to/from a
+    vault's drawer (vault_id given), or record a purely external bank movement
+    with no vault involved at all — a wire, a payment/collection to or from
+    someone who isn't holding cash in front of you. Mirrors
+    _run_customer_account_op's before/after + Movement-logging shape."""
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
-    if not data.vault_id:
-        raise APIError(code="VAULT_REQUIRED", message_ar="يجب تحديد الخزنة التي ستتم منها العملية", message_en="A vault is required for this operation", status_code=400)
 
     account = db.get(BankAccount, account_id)
     if not account:
@@ -1268,29 +1268,37 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
     if not account.is_active:
         raise APIError(code="ACCOUNT_INACTIVE", message_ar="لا يمكن تنفيذ عملية على حساب بنكي غير نشط", message_en="Cannot operate on an inactive bank account", status_code=400)
 
-    vault = db.get(Vault, data.vault_id)
-    if not vault:
-        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    vault = None
+    if data.vault_id:
+        vault = db.get(Vault, data.vault_id)
+        if not vault:
+            raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
 
     is_deposit = op_type == "deposit"
     account_before = account.balance
-    vault_before = vault.balances.get(account.currency, 0.0)
+    vault_before = vault.balances.get(account.currency, 0.0) if vault else None
+    vault_after = None
 
     if is_deposit:
-        if vault_before < data.amount:
+        if vault is not None and vault_before < data.amount:
             raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الخزنة غير كافٍ ({vault_before} {account.currency})", message_en="Insufficient vault balance", status_code=400)
         account_after = account_before + data.amount
-        vault_after = vault_before - data.amount  # cash leaves the drawer, goes to the bank
+        if vault is not None:
+            vault_after = vault_before - data.amount  # cash leaves the drawer, goes to the bank
     else:
-        # A customer's own bank account is allowed to go negative — the company
-        # paying out more than the account holds is effectively an advance
-        # (سلفة) against that specific account, the same trust relationship
-        # already allowed on a customer's wallet balance. A company-owned
-        # account has no such allowance — it can never go negative.
-        if not account.customer_id and account_before < data.amount:
+        # A vault-backed withdrawal from a company-owned account must stay
+        # non-negative — that balance is real cash whose sufficiency the vault
+        # side can't make up for. A withdrawal with no vault at all is, by
+        # definition, not cash-backed — its entire purpose is to let the
+        # balance go negative to record "money is owed back" (the same
+        # سلفة-style trust relationship already allowed on a customer's own
+        # bank account), so it's allowed to go negative regardless of who
+        # owns the account.
+        if vault is not None and not account.customer_id and account_before < data.amount:
             raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الحساب البنكي غير كافٍ ({account_before} {account.currency})", message_en="Insufficient bank account balance", status_code=400)
         account_after = account_before - data.amount
-        vault_after = vault_before + data.amount  # cash comes out of the bank, into the drawer
+        if vault is not None:
+            vault_after = vault_before + data.amount  # cash comes out of the bank, into the drawer
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     entry_id = data.id or new_id(f"bae_{op_type}")
@@ -1298,29 +1306,35 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
     account.balance = account_after
     account.last_movement = timestamp
 
-    v_bals = vault.balances.copy()
-    v_bals[account.currency] = vault_after
-    vault.balances = v_bals
-    vault.last_movement = timestamp
+    if vault is not None:
+        v_bals = vault.balances.copy()
+        v_bals[account.currency] = vault_after
+        vault.balances = v_bals
+        vault.last_movement = timestamp
 
+    bank_movement_type = (
+        ("إيداع في حساب بنكي" if is_deposit else "سحب من حساب بنكي") if vault is not None
+        else ("إيداع خارجي في حساب بنكي (بدون خزنة)" if is_deposit else "سحب خارجي من حساب بنكي (بدون خزنة)")
+    )
     db.add(Movement(
         id=new_id(f"m_bank_{entry_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=account.id,
-        entity_name=account.account_name, currency=account.currency,
-        type="إيداع في حساب بنكي" if is_deposit else "سحب من حساب بنكي",
+        entity_name=account.account_name, currency=account.currency, type=bank_movement_type,
         amount_in=data.amount if is_deposit else 0.0, amount_out=0.0 if is_deposit else data.amount,
         balance_before=account_before, balance_after=account_after, reference_id=entry_id, user=actor.name
     ))
-    db.add(Movement(
-        id=new_id(f"m_vault_{entry_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
-        entity_name=vault.name, currency=account.currency,
-        type="تحويل نقدي إلى بنك" if is_deposit else "سحب نقدي من بنك",
-        amount_in=0.0 if is_deposit else data.amount, amount_out=data.amount if is_deposit else 0.0,
-        balance_before=vault_before, balance_after=vault_after, reference_id=entry_id, user=actor.name
-    ))
+    if vault is not None:
+        db.add(Movement(
+            id=new_id(f"m_vault_{entry_id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id,
+            entity_name=vault.name, currency=account.currency,
+            type="تحويل نقدي إلى بنك" if is_deposit else "سحب نقدي من بنك",
+            amount_in=0.0 if is_deposit else data.amount, amount_out=data.amount if is_deposit else 0.0,
+            balance_before=vault_before, balance_after=vault_after, reference_id=entry_id, user=actor.name
+        ))
 
+    source_desc = f"عبر خزنة {vault.name}" if vault is not None else "كتحويل خارجي بدون خزنة"
     create_audit_log(
         db, action=AuditAction.CREATE, entity_type="BankAccountMovement", entity_id=entry_id,
-        description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {account.currency} {'في' if is_deposit else 'من'} حساب {account.account_name} عبر خزنة {vault.name}",
+        description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {account.currency} {'في' if is_deposit else 'من'} حساب {account.account_name} {source_desc}",
         username=actor.username
     )
     db.commit()

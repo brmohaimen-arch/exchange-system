@@ -565,6 +565,8 @@ def list_transfers(db: Session = Depends(get_db)):
 def create_transfer(data: TransferCreate, actor: User = Depends(require_permission("تحويل بين الخزنات")), db: Session = Depends(get_db)):
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون مبلغ التحويل أكبر من صفر", message_en="Transfer amount must be positive", status_code=400)
+    if data.source_type == data.dest_type and data.source_id == data.dest_id:
+        raise APIError(code="SAME_ACCOUNT", message_ar="لا يمكن التحويل من الحساب إلى نفسه", message_en="Cannot transfer an account to itself", status_code=400)
 
     transfer = Transfer(
         id=data.id,
@@ -640,23 +642,64 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
         if approval.type == "transfer":
             transfer = db.get(Transfer, approval.reference_id)
             if transfer:
-                # Look up the source and verify it actually has enough before moving
-                # anything — previously this executed unconditionally and could push
-                # a vault, bank account, or customer balance negative.
-                if transfer.source_type == "vault":
-                    src = db.get(Vault, transfer.source_id)
-                    src_balance = src.balances.get(transfer.currency, 0.0) if src else None
-                elif transfer.source_type == "bank_account":
-                    src = db.get(BankAccount, transfer.source_id)
-                    src_balance = src.balance if src else None
-                elif transfer.source_type == "customer":
-                    src = db.get(Customer, transfer.source_id)
-                    src_balance = src.balances.get(transfer.currency, 0.0) if src else None
-                else:
-                    src, src_balance = None, None
+                # A transfer request can sit in the queue for a while — re-check
+                # everything fresh at approval time rather than trusting whatever
+                # was true when it was created, and validate BOTH sides fully
+                # before mutating anything. Also refuses outright if this request
+                # was already approved/rejected once — without this, a double
+                # click, a retried request, or two managers approving the same
+                # item within moments of each other would move the money twice.
+                if transfer.status != "pending":
+                    raise APIError(
+                        code="ALREADY_PROCESSED",
+                        message_ar=f"تمت معالجة طلب التحويل هذا بالفعل (الحالة الحالية: {transfer.status})",
+                        message_en=f"This transfer request was already processed (current status: {transfer.status})",
+                        status_code=400
+                    )
 
+                def _resolve_transfer_party(entity_type: str, entity_id: str):
+                    if entity_type == "vault":
+                        return db.get(Vault, entity_id)
+                    if entity_type == "bank_account":
+                        return db.get(BankAccount, entity_id)
+                    if entity_type == "customer":
+                        return db.get(Customer, entity_id)
+                    return None
+
+                def _party_balance(entity_type: str, entity_obj) -> float:
+                    if entity_type == "bank_account":
+                        return entity_obj.balance
+                    return entity_obj.balances.get(transfer.currency, 0.0)
+
+                src = _resolve_transfer_party(transfer.source_type, transfer.source_id)
                 if src is None:
                     raise APIError(code="NOT_FOUND", message_ar=f"مصدر التحويل ({transfer.source_name}) غير موجود", message_en="Transfer source not found", status_code=404)
+                if transfer.source_type == "bank_account" and src.currency != transfer.currency:
+                    raise APIError(
+                        code="CURRENCY_MISMATCH",
+                        message_ar=f"عملة حساب المصدر ({src.currency}) لا تطابق عملة التحويل ({transfer.currency})",
+                        message_en="Source bank account currency does not match the transfer currency",
+                        status_code=400
+                    )
+
+                # The destination is validated to exist BEFORE the source is
+                # touched — previously this was only checked for the source,
+                # so a transfer whose destination was deleted (or never valid)
+                # would silently debit the source and credit nothing: the
+                # money simply vanished with a 200 OK and a journal entry that
+                # falsely claimed it arrived.
+                dst = _resolve_transfer_party(transfer.dest_type, transfer.dest_id)
+                if dst is None:
+                    raise APIError(code="DEST_NOT_FOUND", message_ar=f"وجهة التحويل ({transfer.dest_name}) غير موجودة", message_en="Transfer destination not found", status_code=404)
+                if transfer.dest_type == "bank_account" and dst.currency != transfer.currency:
+                    raise APIError(
+                        code="CURRENCY_MISMATCH",
+                        message_ar=f"عملة حساب الوجهة ({dst.currency}) لا تطابق عملة التحويل ({transfer.currency})",
+                        message_en="Destination bank account currency does not match the transfer currency",
+                        status_code=400
+                    )
+
+                src_balance = _party_balance(transfer.source_type, src)
                 if src_balance < transfer.amount:
                     raise APIError(
                         code="INSUFFICIENT_BALANCE",
@@ -669,15 +712,10 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                 transfer.status = "approved"
                 timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
-                if transfer.source_type == "vault":
-                    src_bal = src.balances.copy()
-                    src_after = src_bal.get(transfer.currency, 0.0) - transfer.amount
-                    src_bal[transfer.currency] = src_after
-                    src.balances = src_bal
-                elif transfer.source_type == "bank_account":
+                if transfer.source_type == "bank_account":
                     src.balance -= transfer.amount
                     src_after = src.balance
-                elif transfer.source_type == "customer":
+                else:
                     src_bal = src.balances.copy()
                     src_after = src_bal.get(transfer.currency, 0.0) - transfer.amount
                     src_bal[transfer.currency] = src_after
@@ -695,35 +733,23 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                     balance_before=src_balance, balance_after=src_after, reference_id=transfer.id, user=actor.name
                 ))
 
-                dst = None
-                if transfer.dest_type == "vault":
-                    dst = db.get(Vault, transfer.dest_id)
-                    if dst:
-                        dst_bal = dst.balances.copy()
-                        dst_before = dst_bal.get(transfer.currency, 0.0)
-                        dst_bal[transfer.currency] = dst_before + transfer.amount
-                        dst.balances = dst_bal
-                elif transfer.dest_type == "bank_account":
-                    dst = db.get(BankAccount, transfer.dest_id)
-                    if dst:
-                        dst_before = dst.balance
-                        dst.balance += transfer.amount
-                elif transfer.dest_type == "customer":
-                    dst = db.get(Customer, transfer.dest_id)
-                    if dst:
-                        dst_bal = dst.balances.copy()
-                        dst_before = dst_bal.get(transfer.currency, 0.0)
-                        dst_bal[transfer.currency] = dst_before + transfer.amount
-                        dst.balances = dst_bal
-
-                if dst is not None:
+                if transfer.dest_type == "bank_account":
+                    dst_before = dst.balance
+                    dst.balance += transfer.amount
+                    dst_after = dst.balance
+                else:
+                    dst_bal = dst.balances.copy()
+                    dst_before = dst_bal.get(transfer.currency, 0.0)
                     dst_after = dst_before + transfer.amount
-                    db.add(Movement(
-                        id=new_id(f"m_xfer_dst_{transfer.id}"), timestamp=timestamp, entity_type=transfer.dest_type,
-                        entity_id=transfer.dest_id, entity_name=transfer.dest_name, currency=transfer.currency,
-                        type=f"تحويل وارد من {transfer.source_name}", amount_in=transfer.amount, amount_out=0.0,
-                        balance_before=dst_before, balance_after=dst_after, reference_id=transfer.id, user=actor.name
-                    ))
+                    dst_bal[transfer.currency] = dst_after
+                    dst.balances = dst_bal
+
+                db.add(Movement(
+                    id=new_id(f"m_xfer_dst_{transfer.id}"), timestamp=timestamp, entity_type=transfer.dest_type,
+                    entity_id=transfer.dest_id, entity_name=transfer.dest_name, currency=transfer.currency,
+                    type=f"تحويل وارد من {transfer.source_name}", amount_in=transfer.amount, amount_out=0.0,
+                    balance_before=dst_before, balance_after=dst_after, reference_id=transfer.id, user=actor.name
+                ))
 
                 # Doc requirement: every financial transaction must produce a balanced journal entry.
                 equivalent_lyd = transfer.amount
@@ -787,9 +813,18 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
             approval.status = "approved"
 
     elif action == "reject":
-        approval.status = "rejected"
         if approval.type == "transfer":
             transfer = db.get(Transfer, approval.reference_id)
+            if transfer and transfer.status != "pending":
+                # Rejecting an already-approved transfer would flip its status
+                # to "rejected" while the money it already moved stays moved —
+                # a record that actively lies about what happened.
+                raise APIError(
+                    code="ALREADY_PROCESSED",
+                    message_ar=f"تمت معالجة طلب التحويل هذا بالفعل (الحالة الحالية: {transfer.status})",
+                    message_en=f"This transfer request was already processed (current status: {transfer.status})",
+                    status_code=400
+                )
             if transfer:
                 transfer.status = "rejected"
         elif approval.type == "shift_open":
@@ -798,6 +833,7 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                 shift.status = "rejected"
                 shift.approved_by = actor.name
                 create_audit_log(db, action=AuditAction.REJECT, entity_type="Shift", entity_id=shift.id, description=f"تم رفض طلب فتح وردية الصراف {shift.cashier} بواسطة {actor.name}", username=actor.username)
+        approval.status = "rejected"
 
     db.commit()
     return success_response(data=approval_to_dict(approval))

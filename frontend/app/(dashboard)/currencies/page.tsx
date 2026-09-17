@@ -134,7 +134,7 @@ function CurrenciesPageInner() {
   }
 
   const deleteCurrency = async (c: Currency) => {
-    if (!(await confirmDialog(`هل تريد حذف عملة ${c.nameAr}؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف عملة ${c.nameAr}؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/currencies/${c.code}`)
       await load()

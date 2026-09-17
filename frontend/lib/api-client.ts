@@ -196,6 +196,122 @@ export interface RateHistory {
   notes: string | null
 }
 
+export interface CurrencyPriceLog {
+  id: string
+  currency: string
+  date: string
+  buyRate: number
+  sellRate: number
+  notes: string | null
+  enteredBy: string
+  timestamp: string
+}
+
+export type DollarCardStatus = 'waiting' | 'in_progress' | 'handed' | 'not_handed'
+
+export interface DollarCardRecipient {
+  id: string
+  fullName: string
+  nationalId: string
+  phone: string
+  accountNumber: string | null
+  accountBank: string | null
+  passportNumber: string | null
+  status: DollarCardStatus
+  notes: string | null
+  createdBy: string
+  timestamp: string
+  updatedAt: string | null
+  documentCount: number
+}
+
+export interface DollarCardDocument {
+  id: string
+  recipientId: string
+  fileName: string
+  hasFile: boolean
+  uploadedBy: string
+  timestamp: string
+}
+
+export interface FleetVehicle {
+  id: string
+  name: string
+  type: string
+  serialNumber: string | null
+  operator: string | null
+  status: string
+  purchaseDate: string | null
+  purchasePrice: number
+  currency: string
+  notes: string | null
+  createdBy: string
+  timestamp: string
+  balances: Record<string, number>
+}
+
+export interface FleetAccount {
+  id: string
+  name: string
+  currency: string
+  balance: number
+  accountNumber: string | null
+  bankName: string | null
+  notes: string | null
+  isActive: boolean
+  createdBy: string
+  timestamp: string
+}
+
+export type FleetTransactionType = 'income' | 'expense'
+export interface FleetTransaction {
+  id: string
+  vehicleId: string
+  type: FleetTransactionType
+  category: string
+  amount: number
+  currency: string
+  date: string
+  notes: string | null
+  createdBy: string
+  timestamp: string
+  accountId: string | null
+  accountName: string | null
+  balanceAfter: number | null
+  counterparty: string | null
+}
+
+export interface FleetDamageRecord {
+  id: string
+  vehicleId: string
+  date: string
+  description: string
+  cost: number
+  currency: string
+  reportedBy: string | null
+  status: string
+  notes: string | null
+  createdBy: string
+  timestamp: string
+  vehicleName?: string
+}
+
+export interface FleetTransactionWithVehicle extends FleetTransaction {
+  vehicleName: string
+}
+
+export interface FleetSummary {
+  vehicleCount: number
+  statusCounts: Record<string, number>
+  totalIncomeLyd: number
+  totalExpenseLyd: number
+  totalDamageCostLyd: number
+  totalCostsLyd: number
+  netProfitLyd: number
+  incomeByCategoryLyd: Record<string, number>
+  expenseByCategoryLyd: Record<string, number>
+}
+
 export interface Customer {
   id: string
   name: string
@@ -295,7 +411,8 @@ export const ALL_PERMISSIONS = [
   'إلغاء عملية', 'إنشاء عملية عكسية', 'إدارة العملاء', 'إدارة الديون', 'إدارة الخزنات',
   'فتح وردية', 'إغلاق وردية', 'اعتماد الإقفالات', 'إدارة العملات', 'تعديل أسعار الصرف',
   'إدارة البنوك', 'رؤية التقارير', 'رؤية سجل العمليات', 'رؤية الأرباح', 'إدارة الأصول',
-  'إدارة المستخدمين', 'إدارة الفروع', 'إدارة الإعدادات'
+  'إدارة المستخدمين', 'إدارة الفروع', 'إدارة الإعدادات',
+  'إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان'
 ] as const
 
 export interface Branch {

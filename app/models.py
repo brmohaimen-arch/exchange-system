@@ -646,3 +646,128 @@ class CustomerAccountEntry(Base):
     user: Mapped[str] = mapped_column(String(100), nullable=False)
     shift_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("shifts.id"), nullable=True)
     timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+
+class DollarCardRecipient(Base):
+    """A pure paperwork record for the Libyan government's $2000-per-person
+    disbursement program — this table tracks who's owed the money and whether
+    it's been handed over yet. Deliberately NOT wired into any vault/bank
+    balance or Movement: the $2000 itself is handled outside this system
+    entirely, so this is a beneficiary registry with a status, not a real
+    money-movement record."""
+    __tablename__ = "dollar_card_recipients"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    national_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    phone: Mapped[str] = mapped_column(String(50), nullable=False)
+    account_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    account_bank: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    passport_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="waiting")  # waiting, in_progress, handed, not_handed
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+    updated_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+class DollarCardDocument(Base):
+    """One or more supporting documents (ID scan, passport scan, etc.) for a
+    DollarCardRecipient — same one-row-per-file shape as CustomerDocument."""
+    __tablename__ = "dollar_card_documents"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    recipient_id: Mapped[str] = mapped_column(String(50), ForeignKey("dollar_card_recipients.id"))
+    file_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    stored_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    uploaded_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+
+class CurrencyPriceLog(Base):
+    """A manually-entered daily price snapshot for one currency — distinct
+    from RateHistory (which only records an edit-diff whenever the *current*
+    ExchangeRate changes). One row per (currency, date): re-logging the same
+    day updates that day's row instead of creating a duplicate, so a whole
+    year of entries is a clean one-point-per-day series a chart can plot."""
+    __tablename__ = "currency_price_log"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    date: Mapped[str] = mapped_column(String(20), nullable=False)  # YYYY-MM-DD
+    buy_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    sell_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entered_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+
+# ----------------- FLEET (cars & heavy equipment sub-company) -----------------
+# Kept entirely separate from FixedAsset/Vehicle (the exchange company's own
+# depreciation-tracked assets) — this models a different business: a fleet the
+# company runs for its own account, with income/expense and damage records of
+# its own. Never touches a vault, bank account, or the journal.
+class FleetVehicle(Base):
+    __tablename__ = "fleet_vehicles"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    type: Mapped[str] = mapped_column(String(100), nullable=False)  # سيارة, جرافة, إسعاف, إلخ — حر
+    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)  # رقم لوحة أو شاصي أو رقم تسلسلي للمعدة
+    operator: Mapped[str | None] = mapped_column(String(100), nullable=True)  # السائق/المشغّل
+    status: Mapped[str] = mapped_column(String(50), default="نشط")  # نشط, صيانة, متوقف, تم البيع
+    purchase_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    purchase_price: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+
+class FleetAccount(Base):
+    """A real money-holding account for شركة بيان — its own cash/bank account per
+    currency (LYD, USD, EUR, ...), entirely separate from the exchange
+    company's own vaults/bank accounts. A FleetTransaction that names one of
+    these actually moves money through it, the same way a vault/bank account
+    Movement does elsewhere in the app."""
+    __tablename__ = "fleet_accounts"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    balance: Mapped[float] = mapped_column(Float, default=0.0)
+    account_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+
+class FleetTransaction(Base):
+    """A manually-entered income/expense line against one fleet vehicle — the
+    running total of these (minus damage costs) is that vehicle's balance.
+    Optionally names the real FleetAccount the money actually moved through —
+    balance_after is that account's balance right after this entry, for its
+    own statement (like a Movement's balance_after elsewhere in the app)."""
+    __tablename__ = "fleet_transactions"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    vehicle_id: Mapped[str] = mapped_column(String(50), ForeignKey("fleet_vehicles.id"))
+    type: Mapped[str] = mapped_column(String(20), nullable=False)  # income, expense
+    category: Mapped[str] = mapped_column(String(100), nullable=False)  # إيجار, وقود, صيانة, رواتب, إلخ
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    date: Mapped[str] = mapped_column(String(50), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+    account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("fleet_accounts.id"), nullable=True)
+    balance_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The OTHER side of the movement, typed freely by the employee — who an
+    # income actually came from, or who/where an expense actually went to.
+    # The account above is only ever one side of the movement; without this
+    # the statement shows money appearing/disappearing with no counterparty.
+    counterparty: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+class FleetDamageRecord(Base):
+    __tablename__ = "fleet_damage_records"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    vehicle_id: Mapped[str] = mapped_column(String(50), ForeignKey("fleet_vehicles.id"))
+    date: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    cost: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
+    reported_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="مُبلغ عنه")  # مُبلغ عنه, قيد الإصلاح, تم الإصلاح
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)

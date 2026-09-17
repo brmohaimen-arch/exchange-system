@@ -600,7 +600,7 @@ function AssetsPageInner() {
   }
 
   const deleteAsset = async (a: FixedAsset) => {
-    if (!(await confirmDialog(`هل تريد حذف الأصل "${a.name}"؟ سيتم حذف كل ما يتبعه من مركبات وعقارات وسجلات صيانة ومستندات.`))) return
+    if (!(await confirmDialog(`هل تريد حذف الأصل "${a.name}"؟ سيتم حذف كل ما يتبعه من مركبات وعقارات وسجلات صيانة ومستندات.`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/assets/${a.id}`)
       await load()

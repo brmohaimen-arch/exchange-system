@@ -777,7 +777,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   }
 
   const deleteVault = async (vault: Vault) => {
-    if (!(await confirmDialog(`هل تريد حذف الخزنة "${vault.name}"؟ يجب أن تكون كل أرصدتها صفراً ولا توجد وردية مفتوحة عليها.`))) return
+    if (!(await confirmDialog(`هل تريد حذف الخزنة "${vault.name}"؟ يجب أن تكون كل أرصدتها صفراً ولا توجد وردية مفتوحة عليها.`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/vaults/${vault.id}`)
       await load()
@@ -883,7 +883,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   }
 
   const deleteBranch = async (b: Branch) => {
-    if (!(await confirmDialog(`هل تريد حذف فرع "${b.name}"؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف فرع "${b.name}"؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/branches/${b.id}`)
       await load()
@@ -961,7 +961,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   }
 
   const deleteBank = async (b: Bank) => {
-    if (!(await confirmDialog(`هل تريد حذف بنك "${b.name}"؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف بنك "${b.name}"؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/banks/${b.id}`)
       await load()
@@ -971,7 +971,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   }
 
   const deleteBankAccount = async (a: BankAccount) => {
-    if (!(await confirmDialog(`هل تريد حذف الحساب "${a.accountName}"؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف الحساب "${a.accountName}"؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/bank_accounts/${a.id}`)
       await load()
@@ -991,14 +991,15 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     e.preventDefault()
     if (!bankOpAccount) return
     setBankOpError('')
-    if (!bankOpForm.vaultId || !bankOpForm.amount || parseFloat(bankOpForm.amount) <= 0) {
-      setBankOpError('الخزنة والمبلغ حقول مطلوبة')
+    if (!bankOpForm.amount || parseFloat(bankOpForm.amount) <= 0) {
+      setBankOpError('المبلغ حقل مطلوب')
       return
     }
     setSavingBankOp(true)
     try {
       await api.post(`/bank_accounts/${bankOpAccount.id}/${bankOpType}`, {
-        vault_id: bankOpForm.vaultId,
+        vault_id: bankOpForm.vaultId || null,
+        currency: bankOpAccount.currency,
         amount: parseFloat(bankOpForm.amount),
         interest_rate: bankOpType === 'deposit' ? (parseFloat(bankOpForm.interestRate) || 0) : undefined,
         notes: bankOpForm.notes.trim() || null,
@@ -2514,20 +2515,23 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
             </div>
             <form onSubmit={submitBankOp} className="space-y-4 p-6 text-right">
               <p className="text-xs text-muted-foreground">
-                {bankOpType === 'deposit'
-                  ? `ستنتقل النقدية من الخزنة المحددة إلى الحساب البنكي (${bankOpAccount.currency})`
-                  : `ستنتقل النقدية من الحساب البنكي إلى الخزنة المحددة (${bankOpAccount.currency})`}
+                {bankOpForm.vaultId
+                  ? (bankOpType === 'deposit'
+                      ? `ستنتقل النقدية من الخزنة المحددة إلى الحساب البنكي (${bankOpAccount.currency})`
+                      : `ستنتقل النقدية من الحساب البنكي إلى الخزنة المحددة (${bankOpAccount.currency})`)
+                  : `عملية خارجية مباشرة على الحساب البنكي بدون خزنة — لا نقدية فعلية متحركة (مثل حوالة أو دفعة/تحصيل خارجي)`}
               </p>
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">الخزنة *</label>
+                <label className="block text-sm font-medium text-foreground mb-1">الخزنة (اختياري)</label>
                 <select
                   value={bankOpForm.vaultId}
                   onChange={(e) => setBankOpForm({ ...bankOpForm, vaultId: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">اختر الخزنة</option>
+                  <option value="">بدون خزنة — تحويل خارجي</option>
                   {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
+                <p className="text-xs text-muted-foreground mt-1">اختر خزنة فقط إذا كانت العملية نقلاً فعلياً للنقد بين الخزنة والحساب البنكي.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ ({bankOpAccount.currency}) *</label>

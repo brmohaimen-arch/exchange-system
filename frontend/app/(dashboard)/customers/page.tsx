@@ -301,7 +301,7 @@ function CustomersPageInner() {
   }
 
   const deleteCustomer = async (c: Customer) => {
-    if (!(await confirmDialog(`هل تريد حذف العميل ${c.name}؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف العميل ${c.name}؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/customers/${c.id}`)
       await load()
@@ -585,7 +585,7 @@ function CustomersPageInner() {
   }
 
   const deleteDebt = async (d: Debt) => {
-    if (!(await confirmDialog(`هل تريد حذف دين العميل ${d.customerName} بمبلغ ${d.amount.toLocaleString()} ${d.currency}؟`))) return
+    if (!(await confirmDialog(`هل تريد حذف دين العميل ${d.customerName} بمبلغ ${d.amount.toLocaleString()} ${d.currency}؟`, { requireTypedWord: true }))) return
     try {
       await api.delete(`/debts/${d.id}`)
       await load()
@@ -598,7 +598,7 @@ function CustomersPageInner() {
     const msg = a.remainingAmount > 0
       ? `هل تريد حذف سلفة العميل ${a.customerName}؟ سيتم إعادة المبلغ المتبقي (${a.remainingAmount.toLocaleString()} ${a.currency}) إلى مصدرها.`
       : `هل تريد حذف سلفة العميل ${a.customerName}؟`
-    if (!(await confirmDialog(msg))) return
+    if (!(await confirmDialog(msg, { requireTypedWord: true }))) return
     try {
       await api.delete(`/advances/${a.id}`)
       await load()
