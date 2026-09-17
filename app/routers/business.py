@@ -1023,6 +1023,12 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     # from_currency off them (an exit). Nothing here is guessed from text.
     flow_headers = (["م", "العميل", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"] if show_customer_col
                      else ["م", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"])
+    # A trade moves two different currencies at once, so it needs its own
+    # currency column per side instead of the one shared "العملة" every other
+    # section uses — دخول/خروج stay in the same row (one transaction, one
+    # line), just each paired with the currency it's actually in.
+    trade_headers = (["م", "العميل", "التاريخ", "التفاصيل", "دخول", "عملة الدخول", "خروج", "عملة الخروج", "بواسطة"] if show_customer_col
+                      else ["م", "التاريخ", "التفاصيل", "دخول", "عملة الدخول", "خروج", "عملة الخروج", "بواسطة"])
 
     def prefixed(row: list, customer_id: str) -> list:
         return ([customer_name_by_id.get(customer_id, customer_id)] + row) if show_customer_col else row
@@ -1044,27 +1050,26 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         return "غير محدد"
 
     # 1. معاملات الصرافة — buy/sell/exchange only. Names the vault the trade
-    # ran through, same as السلف already does for its own source. A trade is
-    # also genuinely two legs at once (one currency in, a different one out),
-    # so both legs are emitted as their own row sharing the same
-    # timestamp/detail/vault, each with its own currency and direction —
-    # showing only one used to silently drop the other side. amount is always
-    # in from_currency (buy/exchange) or to_currency (sell); total_amount
-    # always carries the other leg's value in the other currency (see
-    # execute_pos_operation, where both are derived together).
+    # ran through, same as السلف already does for its own source. A trade
+    # moves two different currencies in the same transaction — one in, one
+    # out — so both legs sit in the ONE row (not split across two rows),
+    # دخول paired with عملة الدخول and خروج paired with عملة الخروج. amount
+    # is always in from_currency (buy/exchange) or to_currency (sell);
+    # total_amount always carries the other leg's value in the other
+    # currency (see execute_pos_operation, where both are derived together).
     trade_rows_with_ts = []
     for t in txs:
         if t.type == "sell":
-            legs = [(t.to_currency, t.amount, True), (t.from_currency, t.total_amount, False)]
+            in_currency, in_amount = t.to_currency, t.amount
+            out_currency, out_amount = t.from_currency, t.total_amount
         else:
-            legs = [(t.from_currency, t.amount, False), (t.to_currency, t.total_amount, True)]
+            in_currency, in_amount = t.to_currency, t.total_amount
+            out_currency, out_amount = t.from_currency, t.amount
+        if currency and currency not in (in_currency, out_currency):
+            continue
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — عبر {cash_source_label(vault_name=t.vault_name)}"
-        for leg_currency, leg_amount, leg_is_in in legs:
-            if currency and leg_currency != currency:
-                continue
-            entry, exit_ = entry_exit(leg_amount, leg_is_in)
-            row = prefixed([t.timestamp, detail, entry, exit_, leg_currency, t.user], t.customer_id)
-            trade_rows_with_ts.append((t.timestamp, row))
+        row = prefixed([t.timestamp, detail, f"{in_amount:,.2f}", in_currency, f"{out_amount:,.2f}", out_currency, t.user], t.customer_id)
+        trade_rows_with_ts.append((t.timestamp, row))
     trade_rows_with_ts.sort(key=lambda r: r[0])
     trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
 
@@ -1118,7 +1123,7 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     advance_sections = _group_rows_by_currency("السلف", flow_headers, advance_items)
 
     sections = [
-        ("معاملات الصرافة", flow_headers, trade_rows),
+        ("معاملات الصرافة", trade_headers, trade_rows),
         ("الإيداع والسحب", flow_headers, dw_rows),
         *debt_sections,
         *advance_sections,
@@ -2186,8 +2191,37 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
             rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, f"{m.balance_after:,.2f}", m.user])
         return rows
 
+    # معاملات الصرافة gets its own header shape: a trade paid in cash lands as
+    # TWO Movement rows on this same vault (one per currency leg — see
+    # execute_pos_operation) which belong in ONE row, not two, same as the
+    # customer-facing statement. Grouped by reference_id (the transaction id
+    # every leg of one operation shares); a leg that never touched this
+    # entity (e.g. paid via a bank account instead of cash) just leaves its
+    # side blank instead of forcing a fake pair.
+    trade_headers = ["م", "الوقت", "التفاصيل", "دخول", "عملة الدخول", "رصيد بعد الدخول", "خروج", "عملة الخروج", "رصيد بعد الخروج", "بواسطة"]
+
+    def trade_rows_grouped(items: list[Movement]) -> list[list]:
+        by_ref: dict[str, list[Movement]] = {}
+        for m in items:
+            by_ref.setdefault(m.reference_id, []).append(m)
+        rows = []
+        for ref_id, ms in sorted(by_ref.items(), key=lambda kv: min(x.timestamp for x in kv[1])):
+            in_m = next((x for x in ms if x.amount_in > 0), None)
+            out_m = next((x for x in ms if x.amount_out > 0), None)
+            representative = in_m or out_m
+            tx = db.get(Transaction, ref_id)
+            detail = _RECEIPT_TYPE_LABELS.get(tx.type, tx.type) if tx else representative.type
+            rows.append([
+                min(x.timestamp for x in ms), detail,
+                f"{in_m.amount_in:,.2f}" if in_m else "", in_m.currency if in_m else "", f"{in_m.balance_after:,.2f}" if in_m else "",
+                f"{out_m.amount_out:,.2f}" if out_m else "", out_m.currency if out_m else "", f"{out_m.balance_after:,.2f}" if out_m else "",
+                representative.user,
+            ])
+        rows.sort(key=lambda r: r[0])
+        return [[str(i)] + row for i, row in enumerate(rows, start=1)]
+
     sections = [
-        ("معاملات الصرافة", mv_headers, mv_rows(groups["trade"])),
+        ("معاملات الصرافة", trade_headers, trade_rows_grouped(groups["trade"])),
         ("إيداع وسحب العملاء", mv_headers, mv_rows(groups["customer"])),
         ("السلف", mv_headers, mv_rows(groups["advance"])),
         ("فوائد بنكية", mv_headers, mv_rows(groups["interest"])),
