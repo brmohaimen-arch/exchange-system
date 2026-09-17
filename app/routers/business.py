@@ -1044,17 +1044,27 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         return "غير محدد"
 
     # 1. معاملات الصرافة — buy/sell/exchange only. Names the vault the trade
-    # actually ran through, same as السلف already does for its own source —
-    # "entry/exit" isn't complete without saying where the money moved.
+    # ran through, same as السلف already does for its own source. A trade is
+    # also genuinely two legs at once (one currency in, a different one out),
+    # so both legs are emitted as their own row sharing the same
+    # timestamp/detail/vault, each with its own currency and direction —
+    # showing only one used to silently drop the other side. amount is always
+    # in from_currency (buy/exchange) or to_currency (sell); total_amount
+    # always carries the other leg's value in the other currency (see
+    # execute_pos_operation, where both are derived together).
     trade_rows_with_ts = []
     for t in txs:
-        tx_currency = t.to_currency if t.type == "sell" else t.from_currency
-        if currency and tx_currency != currency:
-            continue
+        if t.type == "sell":
+            legs = [(t.to_currency, t.amount, True), (t.from_currency, t.total_amount, False)]
+        else:
+            legs = [(t.from_currency, t.amount, False), (t.to_currency, t.total_amount, True)]
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — عبر {cash_source_label(vault_name=t.vault_name)}"
-        entry, exit_ = entry_exit(t.amount, t.type == "sell")
-        row = prefixed([t.timestamp, detail, entry, exit_, tx_currency, t.user], t.customer_id)
-        trade_rows_with_ts.append((t.timestamp, row))
+        for leg_currency, leg_amount, leg_is_in in legs:
+            if currency and leg_currency != currency:
+                continue
+            entry, exit_ = entry_exit(leg_amount, leg_is_in)
+            row = prefixed([t.timestamp, detail, entry, exit_, leg_currency, t.user], t.customer_id)
+            trade_rows_with_ts.append((t.timestamp, row))
     trade_rows_with_ts.sort(key=lambda r: r[0])
     trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
 
