@@ -703,13 +703,33 @@ class CurrencyPriceLog(Base):
 class FleetVehicle(Base):
     __tablename__ = "fleet_vehicles"
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    auto_number: Mapped[int] = mapped_column(Integer, unique=True)  # ترقيم تسلسلي تلقائي (001, 002, ...) — لا يتغيّر أبداً
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     type: Mapped[str] = mapped_column(String(100), nullable=False)  # سيارة, جرافة, إسعاف, إلخ — حر
-    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)  # رقم لوحة أو شاصي أو رقم تسلسلي للمعدة
+    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)  # رقم اللوحة
+    chassis_number: Mapped[str | None] = mapped_column(String(100), nullable=True)  # رقم الهيكل
+    color: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    manufacture_date: Mapped[str | None] = mapped_column(String(50), nullable=True)  # تاريخ الصنع
     operator: Mapped[str | None] = mapped_column(String(100), nullable=True)  # السائق/المشغّل
     status: Mapped[str] = mapped_column(String(50), default="نشط")  # نشط, صيانة, متوقف, تم البيع
     purchase_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
     purchase_price: Mapped[float] = mapped_column(Float, default=0.0)
+    # How the purchase was actually paid for — only meaningful the moment the
+    # vehicle is created: if "bank" and an account is given, buying it records
+    # a real expense against that FleetAccount (like a damage record's cost).
+    purchase_payment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # cash, bank
+    purchase_account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("fleet_accounts.id"), nullable=True)
+    # Sale side — set only once, via the dedicated "sell" action, never by a
+    # plain edit, since selling also books a real income transaction.
+    sale_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    buyer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    sale_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sale_payment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # cash, bank
+    sale_account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("fleet_accounts.id"), nullable=True)
+    # Free-text bank detail the employee types by hand (e.g. an external bank/
+    # account the buyer actually wired to) — purely descriptive, alongside the
+    # real sale_account_id above which is what actually moves the money.
+    sale_bank_details: Mapped[str | None] = mapped_column(String(300), nullable=True)
     currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -728,6 +748,12 @@ class FleetAccount(Base):
     balance: Mapped[float] = mapped_column(Float, default=0.0)
     account_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     bank_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    # company = بيان's own money, used to pay for purchases. client = tracks a
+    # specific buyer/client's balance with بيان (e.g. what a vehicle buyer
+    # paid into) — selling INTO a company account would mean paying ourselves,
+    # so a sale only ever posts to a client account, and a purchase only ever
+    # posts to a company account.
+    account_type: Mapped[str] = mapped_column(String(20), default="company")  # company, client
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)

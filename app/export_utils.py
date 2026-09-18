@@ -151,8 +151,39 @@ def shape_arabic(text, max_width_pts: float | None = None, font_name: str = _FON
 _WIDE_COLUMN_KEYWORDS = ("ملاحظات", "البيان", "التفاصيل", "الوصف")
 _WIDE_COLUMN_FACTOR = 3.0
 
+# Name-ish columns (who did it, which account/vehicle/counterparty) usually
+# hold a short phrase rather than a single word or number — "مدير النظام
+# الرئيسي", "land cruiser", a customer or account name — one weight unit
+# wrapped these into a near-unreadable, multi-line sliver on statements with
+# many columns (the شركة بيان statement has 12). Not as wide as free text,
+# but noticeably more than a code/date/amount column. Substring-matched, EXCEPT
+# "من"/"إلى" which must match the whole header exactly — as a substring they'd
+# also catch "من عملة"/"إلى عملة" (a currency-code column, short content that
+# doesn't need the extra room).
+_MEDIUM_WIDE_COLUMN_KEYWORDS = ("بواسطة", "المركبة", "الحساب", "العميل", "الخزنة", "المصدر", "الوجهة")
+_MEDIUM_WIDE_COLUMN_EXACT = ("من", "إلى")
+_MEDIUM_WIDE_COLUMN_FACTOR = 1.7
+
+def _style_for(text, arabic_style: ParagraphStyle, latin_style: ParagraphStyle) -> ParagraphStyle:
+    """wordWrap="CJK" (break anywhere, no space needed) is what correctly wraps
+    Arabic inside a narrow cell, but applied to Latin content (a vehicle name,
+    an English username, an account name) it breaks mid-word instead of at
+    the actual spaces — "land cruiser" as "land cru"/"iser". Picks the style
+    without that override for cells with no Arabic in them, so Latin text
+    wraps normally."""
+    return arabic_style if _ARABIC_CHAR_RE.search(str(text) if text is not None else "") else latin_style
+
+
 def _column_weights(headers: list[str]) -> list[float]:
-    return [_WIDE_COLUMN_FACTOR if any(k in h for k in _WIDE_COLUMN_KEYWORDS) else 1.0 for h in headers]
+    weights = []
+    for h in headers:
+        if any(k in h for k in _WIDE_COLUMN_KEYWORDS):
+            weights.append(_WIDE_COLUMN_FACTOR)
+        elif h in _MEDIUM_WIDE_COLUMN_EXACT or any(k in h for k in _MEDIUM_WIDE_COLUMN_KEYWORDS):
+            weights.append(_MEDIUM_WIDE_COLUMN_FACTOR)
+        else:
+            weights.append(1.0)
+    return weights
 
 def _weighted_col_widths(headers: list[str], content_width: float) -> list[float]:
     weights = _column_weights(headers)
@@ -206,7 +237,9 @@ def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
     # (escaped "&"/"<"/">", literal "<br/>" line breaks) that only a Paragraph
     # interprets — a plain string would show that markup as literal text.
     header_style = ParagraphStyle("PdfHeader", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white, wordWrap="CJK")
+    header_style_latin = ParagraphStyle("PdfHeaderLatin", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white)
     cell_style = ParagraphStyle("PdfCell", fontName=font_name, fontSize=9, alignment=1, wordWrap="CJK")
+    cell_style_latin = ParagraphStyle("PdfCellLatin", fontName=font_name, fontSize=9, alignment=1)
     # Explicit per-column widths — a free-text column (notes/details) gets
     # several times the width of a narrow one (serial number, currency code)
     # instead of splitting the page evenly, both for the actual table layout
@@ -216,8 +249,8 @@ def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
 
     # Arabic reads right-to-left, so the header/row columns are reversed for display
     # while keeping the shaped text itself correctly ordered per-cell.
-    display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, 9), header_style) for i, h in enumerate(reversed(headers))]
-    display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, 9), cell_style) for i, cell in enumerate(reversed(row))] for row in rows]
+    display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, 9), _style_for(h, header_style, header_style_latin)) for i, h in enumerate(reversed(headers))]
+    display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, 9), _style_for(cell, cell_style, cell_style_latin)) for i, cell in enumerate(reversed(row))] for row in rows]
 
     table_data = [display_headers] + display_rows
     table = Table(table_data, repeatRows=1, colWidths=rev_widths)
@@ -395,7 +428,9 @@ def build_sectioned_pdf(
     elements.append(Spacer(1, 0.4 * cm))
 
     header_style = ParagraphStyle("SectionedHeader", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white, wordWrap="CJK")
+    header_style_latin = ParagraphStyle("SectionedHeaderLatin", fontName=font_name, fontSize=9, alignment=1, textColor=colors.white)
     cell_style = ParagraphStyle("SectionedCell", fontName=font_name, fontSize=9, alignment=1, wordWrap="CJK")
+    cell_style_latin = ParagraphStyle("SectionedCellLatin", fontName=font_name, fontSize=9, alignment=1)
 
     for name, headers, rows in sections:
         title_table = Table([[Paragraph(shape_arabic(name), section_title_style)]], colWidths=[content_width])
@@ -414,8 +449,8 @@ def build_sectioned_pdf(
         else:
             col_widths = _weighted_col_widths(headers, content_width)
             rev_widths = list(reversed(col_widths))
-            display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, 9), header_style) for i, h in enumerate(reversed(headers))]
-            display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, 9), cell_style) for i, cell in enumerate(reversed(row))] for row in rows]
+            display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, 9), _style_for(h, header_style, header_style_latin)) for i, h in enumerate(reversed(headers))]
+            display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, 9), _style_for(cell, cell_style, cell_style_latin)) for i, cell in enumerate(reversed(row))] for row in rows]
             table_data = [display_headers] + display_rows
             table = Table(table_data, repeatRows=1, colWidths=rev_widths)
             table.setStyle(TableStyle([

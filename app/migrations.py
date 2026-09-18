@@ -12,12 +12,12 @@ for a handful of columns than to get clever with introspecting every SQLAlchemy 
 
 from datetime import datetime
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import inspect, select, text, func
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .auth_deps import hash_password, is_hashed
-from .models import User, SystemSetting, Role
+from .models import User, SystemSetting, Role, FleetVehicle
 
 # Mirrors seed.py's defaults. seed_database() only ever runs against a brand-new,
 # empty database — a real deployment's existing DB never gets those rows when a
@@ -96,6 +96,19 @@ NEW_COLUMNS = [
     ("fleet_transactions", "account_id", "VARCHAR(50) REFERENCES fleet_accounts(id)"),
     ("fleet_transactions", "balance_after", "REAL"),
     ("fleet_transactions", "counterparty", "VARCHAR(200)"),
+    ("fleet_vehicles", "auto_number", "INTEGER"),
+    ("fleet_vehicles", "chassis_number", "VARCHAR(100)"),
+    ("fleet_vehicles", "color", "VARCHAR(50)"),
+    ("fleet_vehicles", "manufacture_date", "VARCHAR(50)"),
+    ("fleet_vehicles", "purchase_payment_method", "VARCHAR(20)"),
+    ("fleet_vehicles", "purchase_account_id", "VARCHAR(50) REFERENCES fleet_accounts(id)"),
+    ("fleet_vehicles", "sale_date", "VARCHAR(50)"),
+    ("fleet_vehicles", "buyer_name", "VARCHAR(150)"),
+    ("fleet_vehicles", "sale_price", "REAL"),
+    ("fleet_vehicles", "sale_payment_method", "VARCHAR(20)"),
+    ("fleet_vehicles", "sale_account_id", "VARCHAR(50) REFERENCES fleet_accounts(id)"),
+    ("fleet_vehicles", "sale_bank_details", "VARCHAR(300)"),
+    ("fleet_accounts", "account_type", "VARCHAR(20) DEFAULT 'company'"),
 ]
 
 
@@ -337,6 +350,23 @@ def grant_new_permissions_to_admin(db: Session) -> None:
         role.permissions = [*role.permissions, *missing]
         db.commit()
         print(f"[migrations] Granted {len(missing)} new permission(s) to مدير النظام: {missing}")
+
+
+def backfill_fleet_vehicle_auto_numbers(db: Session) -> None:
+    """auto_number is a brand-new NOT-NULL-by-model column added onto a table
+    that may already have rows — those rows get NULL from the plain ALTER
+    TABLE above. Assigns them sequential numbers by creation order, picking up
+    after the highest number already assigned so a partial backfill (or one
+    that races with a fresh row being created) never collides."""
+    missing = db.scalars(select(FleetVehicle).where(FleetVehicle.auto_number.is_(None)).order_by(FleetVehicle.timestamp)).all()
+    if not missing:
+        return
+    next_number = (db.scalar(select(func.max(FleetVehicle.auto_number))) or 0) + 1
+    for v in missing:
+        v.auto_number = next_number
+        next_number += 1
+    db.commit()
+    print(f"[migrations] Backfilled auto_number for {len(missing)} fleet vehicle(s)")
 
 
 def seed_trial_start_date(db: Session) -> None:

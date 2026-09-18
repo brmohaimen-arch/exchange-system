@@ -234,15 +234,31 @@ export interface DollarCardDocument {
   timestamp: string
 }
 
+export type FleetPaymentMethod = 'cash' | 'bank'
 export interface FleetVehicle {
   id: string
+  autoNumber: number
   name: string
   type: string
   serialNumber: string | null
+  chassisNumber: string | null
+  color: string | null
+  manufactureDate: string | null
   operator: string | null
   status: string
   purchaseDate: string | null
   purchasePrice: number
+  purchasePaymentMethod: FleetPaymentMethod | null
+  purchaseAccountId: string | null
+  purchaseAccountName: string | null
+  saleDate: string | null
+  buyerName: string | null
+  salePrice: number | null
+  salePaymentMethod: FleetPaymentMethod | null
+  saleAccountId: string | null
+  saleAccountName: string | null
+  saleBankDetails: string | null
+  profit: number | null
   currency: string
   notes: string | null
   createdBy: string
@@ -250,10 +266,12 @@ export interface FleetVehicle {
   balances: Record<string, number>
 }
 
+export type FleetAccountType = 'company' | 'client'
 export interface FleetAccount {
   id: string
   name: string
   currency: string
+  accountType: FleetAccountType
   balance: number
   accountNumber: string | null
   bankName: string | null

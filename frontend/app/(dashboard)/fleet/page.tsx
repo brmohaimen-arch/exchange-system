@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState, FormEvent } from 'react'
-import { Plus, X, Loader2, Trash2, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power } from 'lucide-react'
-import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, Currency } from '@/lib/api-client'
+import { Plus, X, Loader2, Trash2, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag } from 'lucide-react'
+import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, Currency } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -10,8 +10,20 @@ import { useConfirm } from '@/components/ConfirmProvider'
 const VEHICLE_STATUSES = ['نشط', 'صيانة', 'متوقف', 'تم البيع']
 const DAMAGE_STATUSES = ['مُبلغ عنه', 'قيد الإصلاح', 'تم الإصلاح']
 
+function formatAutoNumber(n: number) {
+  return String(n).padStart(3, '0')
+}
+
 function emptyVehicleForm() {
-  return { name: '', type: '', serialNumber: '', operator: '', status: 'نشط', purchaseDate: '', purchasePrice: '', currency: 'LYD', notes: '' }
+  return {
+    name: '', type: '', serialNumber: '', chassisNumber: '', color: '', manufactureDate: '', operator: '', status: 'نشط',
+    purchaseDate: '', purchasePrice: '', purchasePaymentMethod: 'cash' as FleetPaymentMethod, purchaseAccountId: '',
+    currency: 'LYD', notes: '',
+  }
+}
+
+function emptySellForm() {
+  return { buyerName: '', salePrice: '', saleDate: new Date().toISOString().slice(0, 10), salePaymentMethod: 'cash' as FleetPaymentMethod, saleAccountId: '', saleBankDetails: '', notes: '' }
 }
 
 function emptyTxForm() {
@@ -23,7 +35,7 @@ function emptyDamageForm() {
 }
 
 function emptyAccountForm() {
-  return { name: '', currency: 'LYD', accountNumber: '', bankName: '', notes: '' }
+  return { name: '', currency: 'LYD', accountType: 'company' as FleetAccountType, accountNumber: '', bankName: '', notes: '' }
 }
 
 function balanceBadge(balances: Record<string, number>) {
@@ -74,6 +86,11 @@ export default function FleetPage() {
   const [form, setForm] = useState(emptyVehicleForm())
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
+
+  const [sellingVehicle, setSellingVehicle] = useState<FleetVehicle | null>(null)
+  const [sellForm, setSellForm] = useState(emptySellForm())
+  const [sellFormError, setSellFormError] = useState('')
+  const [selling, setSelling] = useState(false)
 
   const [recordsFor, setRecordsFor] = useState<FleetVehicle | null>(null)
   const [recordsTab, setRecordsTab] = useState<'ledger' | 'damage'>('ledger')
@@ -184,8 +201,10 @@ export default function FleetPage() {
   const openEdit = (v: FleetVehicle) => {
     setEditing(v)
     setForm({
-      name: v.name, type: v.type, serialNumber: v.serialNumber || '', operator: v.operator || '',
+      name: v.name, type: v.type, serialNumber: v.serialNumber || '', chassisNumber: v.chassisNumber || '',
+      color: v.color || '', manufactureDate: v.manufactureDate || '', operator: v.operator || '',
       status: v.status, purchaseDate: v.purchaseDate || '', purchasePrice: v.purchasePrice ? String(v.purchasePrice) : '',
+      purchasePaymentMethod: v.purchasePaymentMethod || 'cash', purchaseAccountId: v.purchaseAccountId || '',
       currency: v.currency, notes: v.notes || '',
     })
     setFormError('')
@@ -199,20 +218,35 @@ export default function FleetPage() {
       setFormError('الاسم والنوع حقول مطلوبة')
       return
     }
+    const purchasePrice = parseFloat(form.purchasePrice) || 0
+    if (!editing && purchasePrice > 0 && form.purchasePaymentMethod === 'bank' && !form.purchaseAccountId) {
+      setFormError('اختر الحساب البنكي المستخدم للشراء')
+      return
+    }
     setSaving(true)
     try {
-      const payload = {
-        name: form.name.trim(), type: form.type.trim(), serial_number: form.serialNumber.trim() || null,
-        operator: form.operator.trim() || null, status: form.status, purchase_date: form.purchaseDate || null,
-        purchase_price: parseFloat(form.purchasePrice) || 0, currency: form.currency, notes: form.notes.trim() || null,
-      }
       if (editing) {
+        const payload = {
+          name: form.name.trim(), type: form.type.trim(), serial_number: form.serialNumber.trim() || null,
+          chassis_number: form.chassisNumber.trim() || null, color: form.color.trim() || null,
+          manufacture_date: form.manufactureDate || null, operator: form.operator.trim() || null,
+          status: form.status, currency: form.currency, notes: form.notes.trim() || null,
+        }
         await api.put(`/fleet/vehicles/${editing.id}`, payload)
       } else {
+        const payload = {
+          name: form.name.trim(), type: form.type.trim(), serial_number: form.serialNumber.trim() || null,
+          chassis_number: form.chassisNumber.trim() || null, color: form.color.trim() || null,
+          manufacture_date: form.manufactureDate || null, operator: form.operator.trim() || null,
+          status: form.status, purchase_date: form.purchaseDate || null, purchase_price: purchasePrice,
+          purchase_payment_method: purchasePrice > 0 ? form.purchasePaymentMethod : null,
+          purchase_account_id: purchasePrice > 0 && form.purchasePaymentMethod === 'bank' ? form.purchaseAccountId : null,
+          currency: form.currency, notes: form.notes.trim() || null,
+        }
         await api.post('/fleet/vehicles', payload)
       }
       setShowModal(false)
-      await Promise.all([load(), loadSummary()])
+      await Promise.all([load(), loadSummary(), loadAccounts()])
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'تعذر حفظ البيانات')
     } finally {
@@ -231,6 +265,43 @@ export default function FleetPage() {
     }
   }
 
+  const openSell = (v: FleetVehicle) => {
+    setSellingVehicle(v)
+    setSellForm(emptySellForm())
+    setSellFormError('')
+  }
+
+  const submitSell = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!sellingVehicle) return
+    setSellFormError('')
+    const salePrice = parseFloat(sellForm.salePrice)
+    if (!sellForm.buyerName.trim() || !salePrice || salePrice <= 0 || !sellForm.saleDate) {
+      setSellFormError('اسم المشتري وسعر البيع وتاريخ البيع حقول مطلوبة')
+      return
+    }
+    if (sellForm.salePaymentMethod === 'bank' && !sellForm.saleAccountId) {
+      setSellFormError('اختر الحساب البنكي الذي استلم قيمة البيع')
+      return
+    }
+    setSelling(true)
+    try {
+      await api.post(`/fleet/vehicles/${sellingVehicle.id}/sell`, {
+        buyer_name: sellForm.buyerName.trim(), sale_price: salePrice, sale_date: sellForm.saleDate,
+        sale_payment_method: sellForm.salePaymentMethod,
+        sale_account_id: sellForm.salePaymentMethod === 'bank' ? sellForm.saleAccountId : null,
+        sale_bank_details: sellForm.salePaymentMethod === 'bank' ? (sellForm.saleBankDetails.trim() || null) : null,
+        notes: sellForm.notes.trim() || null,
+      })
+      setSellingVehicle(null)
+      await Promise.all([load(), loadSummary(), loadAccounts()])
+    } catch (err) {
+      setSellFormError(err instanceof ApiError ? err.message : 'تعذر تسجيل عملية البيع')
+    } finally {
+      setSelling(false)
+    }
+  }
+
   const openCreateAccount = () => {
     setEditingAccount(null)
     setAccountForm(emptyAccountForm())
@@ -240,7 +311,7 @@ export default function FleetPage() {
 
   const openEditAccount = (a: FleetAccount) => {
     setEditingAccount(a)
-    setAccountForm({ name: a.name, currency: a.currency, accountNumber: a.accountNumber || '', bankName: a.bankName || '', notes: a.notes || '' })
+    setAccountForm({ name: a.name, currency: a.currency, accountType: a.accountType, accountNumber: a.accountNumber || '', bankName: a.bankName || '', notes: a.notes || '' })
     setAccountFormError('')
     setShowAccountModal(true)
   }
@@ -255,7 +326,7 @@ export default function FleetPage() {
     setSavingAccount(true)
     try {
       const payload = {
-        name: accountForm.name.trim(), currency: accountForm.currency,
+        name: accountForm.name.trim(), currency: accountForm.currency, account_type: accountForm.accountType,
         account_number: accountForm.accountNumber.trim() || null, bank_name: accountForm.bankName.trim() || null,
         notes: accountForm.notes.trim() || null,
       }
@@ -452,7 +523,7 @@ export default function FleetPage() {
           <ListTree className="h-3.5 w-3.5" /> كشف حركات الشركة
         </button>
         <button onClick={() => setView('accounts')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'accounts' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-          <Landmark className="h-3.5 w-3.5" /> حسابات الشركة
+          <Landmark className="h-3.5 w-3.5" /> الحسابات
         </button>
       </div>
 
@@ -493,6 +564,7 @@ export default function FleetPage() {
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
                     <th className="px-4 py-3 font-medium">اسم الحساب</th>
+                    <th className="px-4 py-3 font-medium">النوع</th>
                     <th className="px-4 py-3 font-medium">البنك</th>
                     <th className="px-4 py-3 font-medium">رقم الحساب</th>
                     <th className="px-4 py-3 font-medium">العملة</th>
@@ -505,10 +577,15 @@ export default function FleetPage() {
                   {accounts.map((a) => (
                     <tr key={a.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-4 py-3 font-medium">{a.name}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${a.accountType === 'company' ? 'bg-primary/10 text-primary' : 'bg-info/10 text-info'}`}>
+                          {a.accountType === 'company' ? 'حساب شركة' : 'حساب عميل'}
+                        </span>
+                      </td>
                       <td className="px-4 py-3">{a.bankName || '—'}</td>
                       <td className="px-4 py-3" dir="ltr">{a.accountNumber || '—'}</td>
                       <td className="px-4 py-3">{a.currency}</td>
-                      <td className="px-4 py-3 font-medium" dir="ltr">{a.balance.toLocaleString()} {a.currency}</td>
+                      <td className="px-4 py-3 font-medium" dir="ltr">{a.accountType === 'client' ? '—' : `${a.balance.toLocaleString()} ${a.currency}`}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${a.isActive ? 'bg-success/10 text-success' : 'bg-secondary text-muted-foreground'}`}>{a.isActive ? 'نشط' : 'معطّل'}</span>
                       </td>
@@ -558,6 +635,7 @@ export default function FleetPage() {
                     const accountLabel = t.accountName || '—'
                     const counterpartyLabel = t.counterparty || '—'
                     const [fromLabel, toLabel] = t.type === 'income' ? [counterpartyLabel, accountLabel] : [accountLabel, counterpartyLabel]
+                    const isClientLinked = accounts.find((a) => a.id === t.accountId)?.accountType === 'client'
                     return (
                       <tr key={t.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-4 py-3">{t.date}</td>
@@ -568,7 +646,7 @@ export default function FleetPage() {
                         <td className="px-4 py-3">{t.currency}</td>
                         <td className="px-4 py-3">{fromLabel}</td>
                         <td className="px-4 py-3">{toLabel}</td>
-                        <td className="px-4 py-3" dir="ltr">{t.balanceAfter !== null ? t.balanceAfter.toLocaleString() : '—'}</td>
+                        <td className="px-4 py-3" dir="ltr">{t.balanceAfter !== null && !isClientLinked ? t.balanceAfter.toLocaleString() : '—'}</td>
                         <td className="px-4 py-3 text-muted-foreground">{t.notes || '—'}</td>
                       </tr>
                     )
@@ -590,12 +668,16 @@ export default function FleetPage() {
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
+                  <th className="px-4 py-3 font-medium">الرقم</th>
                   <th className="px-4 py-3 font-medium">الاسم</th>
                   <th className="px-4 py-3 font-medium">النوع</th>
-                  <th className="px-4 py-3 font-medium">الرقم التسلسلي/اللوحة</th>
+                  <th className="px-4 py-3 font-medium">اللوحة</th>
+                  <th className="px-4 py-3 font-medium">رقم الهيكل</th>
+                  <th className="px-4 py-3 font-medium">اللون</th>
                   <th className="px-4 py-3 font-medium">السائق/المشغّل</th>
                   <th className="px-4 py-3 font-medium">الحالة</th>
                   <th className="px-4 py-3 font-medium">الرصيد</th>
+                  <th className="px-4 py-3 font-medium">الربح</th>
                   <th className="px-4 py-3 font-medium">السجلات</th>
                   {canManage && <th className="px-4 py-3 font-medium">إجراءات</th>}
                 </tr>
@@ -603,14 +685,24 @@ export default function FleetPage() {
               <tbody className="divide-y divide-border">
                 {pagedVehicles.map((v) => (
                   <tr key={v.id} className="hover:bg-muted/50 transition-colors">
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground" dir="ltr">#{formatAutoNumber(v.autoNumber)}</td>
                     <td className="px-4 py-3 font-medium">{v.name}</td>
                     <td className="px-4 py-3">{v.type}</td>
                     <td className="px-4 py-3" dir="ltr">{v.serialNumber || '—'}</td>
+                    <td className="px-4 py-3" dir="ltr">{v.chassisNumber || '—'}</td>
+                    <td className="px-4 py-3">{v.color || '—'}</td>
                     <td className="px-4 py-3">{v.operator || '—'}</td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground">{v.status}</span>
                     </td>
                     <td className="px-4 py-3">{balanceBadge(v.balances)}</td>
+                    <td className="px-4 py-3">
+                      {v.profit !== null ? (
+                        <span dir="ltr" className={`rounded-full px-2 py-0.5 text-xs font-medium ${v.profit < 0 ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'}`}>
+                          {v.profit.toLocaleString()} {v.currency}
+                        </span>
+                      ) : '—'}
+                    </td>
                     <td className="px-4 py-3">
                       <button onClick={() => openRecords(v)} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted transition-colors">
                         <Wallet className="h-3.5 w-3.5" /> السجلات
@@ -620,6 +712,9 @@ export default function FleetPage() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <button onClick={() => openEdit(v)} className="text-xs font-medium text-primary hover:underline">تعديل</button>
+                          {v.salePrice === null && (
+                            <button onClick={() => openSell(v)} className="text-xs font-medium text-success hover:underline">بيع</button>
+                          )}
                           <button onClick={() => remove(v)} className="text-xs font-medium text-danger hover:underline">حذف</button>
                         </div>
                       </td>
@@ -655,38 +750,86 @@ export default function FleetPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">الرقم التسلسلي/اللوحة</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">اللوحة</label>
                   <input value={form.serialNumber} onChange={(e) => setForm({ ...form, serialNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم الهيكل</label>
+                  <input value={form.chassisNumber} onChange={(e) => setForm({ ...form, chassisNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">اللون</label>
+                  <input value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">تاريخ الصنع</label>
+                  <input type="date" value={form.manufactureDate} onChange={(e) => setForm({ ...form, manufactureDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">السائق/المشغّل</label>
                   <input value={form.operator} onChange={(e) => setForm({ ...form, operator: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الحالة</label>
                   <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                     {VEHICLE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">عملة الحسابات</label>
-                  <select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
-                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.nameAr} ({c.code})</option>)}
-                  </select>
-                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">تاريخ الشراء</label>
-                  <input type="date" value={form.purchaseDate} onChange={(e) => setForm({ ...form, purchaseDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <label className="block text-sm font-medium text-foreground mb-1">عملة الحسابات</label>
+                  <select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} disabled={!!editing} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-60">
+                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.nameAr} ({c.code})</option>)}
+                  </select>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء</label>
-                  <input type="number" step="any" value={form.purchasePrice} onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
-                </div>
+                {!editing && (
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">تاريخ الشراء</label>
+                    <input type="date" value={form.purchaseDate} onChange={(e) => setForm({ ...form, purchaseDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                )}
               </div>
+              {editing ? (
+                <div className="rounded-md bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+                  سعر الشراء: {editing.purchasePrice.toLocaleString()} {editing.currency}
+                  {editing.purchasePaymentMethod && ` — ${editing.purchasePaymentMethod === 'cash' ? 'نقدي' : `بنك (${editing.purchaseAccountName || '—'})`}`}
+                  <br />بيانات الشراء ثابتة بعد الإضافة لأنها مرتبطة بقيد مالي فعلي.
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء</label>
+                      <input type="number" step="any" value={form.purchasePrice} onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    </div>
+                    {(parseFloat(form.purchasePrice) || 0) > 0 && (
+                      <div>
+                        <label className="block text-sm font-medium text-foreground mb-1">طريقة الدفع</label>
+                        <select value={form.purchasePaymentMethod} onChange={(e) => setForm({ ...form, purchasePaymentMethod: e.target.value as FleetPaymentMethod })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                          <option value="cash">نقدي</option>
+                          <option value="bank">بنك</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                  {(parseFloat(form.purchasePrice) || 0) > 0 && form.purchasePaymentMethod === 'bank' && (
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">الحساب البنكي المستخدم للشراء</label>
+                      <select value={form.purchaseAccountId} onChange={(e) => setForm({ ...form, purchaseAccountId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                        <option value="">اختر الحساب</option>
+                        {accounts.filter((a) => a.currency === form.currency && a.isActive && a.accountType === 'company').map((a) => (
+                          <option key={a.id} value={a.id}>{a.name} — رصيده الحالي {a.balance.toLocaleString()} {a.currency}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </>
+              )}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
@@ -744,7 +887,7 @@ export default function FleetPage() {
                         <select value={txForm.accountId} onChange={(e) => setTxForm({ ...txForm, accountId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                           <option value="">بدون حساب — قيد دفتري فقط</option>
                           {accounts.filter((a) => a.currency === txForm.currency && a.isActive).map((a) => (
-                            <option key={a.id} value={a.id}>{a.name} — رصيده الحالي {a.balance.toLocaleString()} {a.currency}</option>
+                            <option key={a.id} value={a.id}>{a.accountType === 'client' ? a.name : `${a.name} — رصيده الحالي ${a.balance.toLocaleString()} ${a.currency}`}</option>
                           ))}
                         </select>
                         <p className="text-xs text-muted-foreground mt-1">اختر حساب شركة بيان الذي تحرّكت منه/إليه هذه العملية فعلياً — يُحدَّث رصيده تلقائياً.</p>
@@ -780,7 +923,12 @@ export default function FleetPage() {
                           <div className="text-sm">
                             <span className={`font-medium ${t.type === 'income' ? 'text-success' : 'text-danger'}`}>{t.type === 'income' ? 'إيراد' : 'مصروف'}</span>
                             {' — '}{t.category} — <span dir="ltr">{t.amount.toLocaleString()} {t.currency}</span> — {t.date}
-                            {t.accountName && <span className="text-muted-foreground"> — حساب {t.accountName} (الرصيد بعد: {t.balanceAfter?.toLocaleString()})</span>}
+                            {t.accountName && (
+                              <span className="text-muted-foreground">
+                                {' '}— حساب {t.accountName}
+                                {accounts.find((a) => a.id === t.accountId)?.accountType !== 'client' && ` (الرصيد بعد: ${t.balanceAfter?.toLocaleString()})`}
+                              </span>
+                            )}
                             <span className="text-muted-foreground"> — {t.type === 'income' ? 'من' : 'إلى'}: {t.counterparty || 'غير محدد'}</span>
                             {t.notes && <span className="text-muted-foreground"> ({t.notes})</span>}
                           </div>
@@ -856,18 +1004,102 @@ export default function FleetPage() {
         </div>
       )}
 
+      {/* Sell vehicle modal */}
+      {sellingVehicle && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground flex items-center gap-2"><Tag className="h-4 w-4 text-success" /> بيع {sellingVehicle.name}</h3>
+              <button onClick={() => setSellingVehicle(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitSell} className="space-y-4 p-6 text-right">
+              <div className="rounded-md bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">سعر الشراء: {sellingVehicle.purchasePrice.toLocaleString()} {sellingVehicle.currency}</div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">اسم المشتري *</label>
+                <input value={sellForm.buyerName} onChange={(e) => setSellForm({ ...sellForm, buyerName: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">سعر البيع *</label>
+                  <input type="number" step="any" value={sellForm.salePrice} onChange={(e) => setSellForm({ ...sellForm, salePrice: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">تاريخ البيع *</label>
+                  <input type="date" value={sellForm.saleDate} onChange={(e) => setSellForm({ ...sellForm, saleDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+              {sellForm.salePrice && (
+                <p className={`text-xs font-medium ${(parseFloat(sellForm.salePrice) - sellingVehicle.purchasePrice) < 0 ? 'text-danger' : 'text-success'}`}>
+                  الربح المتوقع: {(parseFloat(sellForm.salePrice) - sellingVehicle.purchasePrice).toLocaleString()} {sellingVehicle.currency}
+                </p>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">طريقة الاستلام</label>
+                <select value={sellForm.salePaymentMethod} onChange={(e) => setSellForm({ ...sellForm, salePaymentMethod: e.target.value as FleetPaymentMethod })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                  <option value="cash">نقدي</option>
+                  <option value="bank">بنك</option>
+                </select>
+              </div>
+              {sellForm.salePaymentMethod === 'bank' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">حساب العميل المستلِم (لتحديث الرصيد فعلياً) *</label>
+                    <select value={sellForm.saleAccountId} onChange={(e) => setSellForm({ ...sellForm, saleAccountId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                      <option value="">اختر الحساب</option>
+                      {accounts.filter((a) => a.currency === sellingVehicle.currency && a.isActive && a.accountType === 'client').map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground mt-1">تظهر هنا حسابات العملاء فقط — البيع لحساب شركة بيان نفسها غير منطقي.</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">تفاصيل الحساب البنكي (يُكتب يدوياً)</label>
+                    <input
+                      value={sellForm.saleBankDetails}
+                      onChange={(e) => setSellForm({ ...sellForm, saleBankDetails: e.target.value })}
+                      placeholder="مثال: مصرف الجمهورية — رقم الحساب 123456"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">وصف حر يظهر في سجلات البيع — لا يغيّر أي رصيد بحد ذاته.</p>
+                  </div>
+                </>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea value={sellForm.notes} onChange={(e) => setSellForm({ ...sellForm, notes: e.target.value })} rows={2} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              {sellFormError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{sellFormError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setSellingVehicle(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={selling} className="flex items-center gap-2 rounded-md bg-success px-4 py-2 text-sm font-medium text-success-foreground hover:opacity-90 transition-colors disabled:opacity-60">
+                  {selling && <Loader2 className="h-4 w-4 animate-spin" />} تأكيد البيع
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Account create/edit modal */}
       {showAccountModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-xl">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
-              <h3 className="text-lg font-semibold text-foreground">{editingAccount ? 'تعديل حساب' : 'إضافة حساب لشركة بيان'}</h3>
+              <h3 className="text-lg font-semibold text-foreground">{editingAccount ? 'تعديل حساب' : 'إضافة حساب جديد'}</h3>
               <button onClick={() => setShowAccountModal(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
             </div>
             <form onSubmit={submitAccount} className="space-y-4 p-6 text-right">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">اسم الحساب *</label>
                 <input value={accountForm.name} onChange={(e) => setAccountForm({ ...accountForm, name: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">نوع الحساب *</label>
+                <select value={accountForm.accountType} onChange={(e) => setAccountForm({ ...accountForm, accountType: e.target.value as FleetAccountType })} disabled={!!editingAccount} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-60">
+                  <option value="company">حساب شركة — يُستخدم لدفع ثمن الشراء</option>
+                  <option value="client">حساب عميل — يُستخدم لاستلام قيمة البيع</option>
+                </select>
+                {editingAccount && <p className="text-xs text-muted-foreground mt-1">لا يمكن تغيير نوع حساب له قيود مسجلة بالفعل.</p>}
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">العملة *</label>
