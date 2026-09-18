@@ -109,6 +109,7 @@ NEW_COLUMNS = [
     ("fleet_vehicles", "sale_account_id", "VARCHAR(50) REFERENCES fleet_accounts(id)"),
     ("fleet_vehicles", "sale_bank_details", "VARCHAR(300)"),
     ("fleet_accounts", "account_type", "VARCHAR(20) DEFAULT 'company'"),
+    ("fleet_vehicles", "sale_client_account_id", "VARCHAR(50) REFERENCES fleet_accounts(id)"),
 ]
 
 

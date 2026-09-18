@@ -720,12 +720,20 @@ class FleetVehicle(Base):
     purchase_payment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # cash, bank
     purchase_account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("fleet_accounts.id"), nullable=True)
     # Sale side — set only once, via the dedicated "sell" action, never by a
-    # plain edit, since selling also books a real income transaction.
+    # plain edit, since selling also books a real two-sided movement: money
+    # actually lands in one of بيان's own company accounts (sale_account_id —
+    # the real cash side, whose balance is what the statement's "الرصيد بعد"
+    # shows), and — only if the buyer has one on file — is drawn down out of
+    # their own tracked client account (sale_client_account_id), the same way
+    # a customer's own balance decreases when they draw on it elsewhere in
+    # the app. Neither is required: a cash sale with no accounts at all is
+    # just buyer_name as a free-text record.
     sale_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
     buyer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     sale_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     sale_payment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # cash, bank
     sale_account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("fleet_accounts.id"), nullable=True)
+    sale_client_account_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("fleet_accounts.id"), nullable=True)
     # Free-text bank detail the employee types by hand (e.g. an external bank/
     # account the buyer actually wired to) — purely descriptive, alongside the
     # real sale_account_id above which is what actually moves the money.

@@ -257,6 +257,8 @@ export interface FleetVehicle {
   salePaymentMethod: FleetPaymentMethod | null
   saleAccountId: string | null
   saleAccountName: string | null
+  saleClientAccountId: string | null
+  saleClientAccountName: string | null
   saleBankDetails: string | null
   profit: number | null
   currency: string

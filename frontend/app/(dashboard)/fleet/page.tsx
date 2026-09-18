@@ -23,7 +23,7 @@ function emptyVehicleForm() {
 }
 
 function emptySellForm() {
-  return { buyerName: '', salePrice: '', saleDate: new Date().toISOString().slice(0, 10), salePaymentMethod: 'cash' as FleetPaymentMethod, saleAccountId: '', saleBankDetails: '', notes: '' }
+  return { buyerName: '', salePrice: '', saleDate: new Date().toISOString().slice(0, 10), salePaymentMethod: 'cash' as FleetPaymentMethod, saleAccountId: '', saleClientAccountId: '', saleBankDetails: '', notes: '' }
 }
 
 function emptyTxForm() {
@@ -281,7 +281,7 @@ export default function FleetPage() {
       return
     }
     if (sellForm.salePaymentMethod === 'bank' && !sellForm.saleAccountId) {
-      setSellFormError('اختر الحساب البنكي الذي استلم قيمة البيع')
+      setSellFormError('اختر حساب شركة بيان الذي استلم قيمة البيع')
       return
     }
     setSelling(true)
@@ -290,6 +290,7 @@ export default function FleetPage() {
         buyer_name: sellForm.buyerName.trim(), sale_price: salePrice, sale_date: sellForm.saleDate,
         sale_payment_method: sellForm.salePaymentMethod,
         sale_account_id: sellForm.salePaymentMethod === 'bank' ? sellForm.saleAccountId : null,
+        sale_client_account_id: sellForm.salePaymentMethod === 'bank' ? (sellForm.saleClientAccountId || null) : null,
         sale_bank_details: sellForm.salePaymentMethod === 'bank' ? (sellForm.saleBankDetails.trim() || null) : null,
         notes: sellForm.notes.trim() || null,
       })
@@ -1043,14 +1044,24 @@ export default function FleetPage() {
               {sellForm.salePaymentMethod === 'bank' && (
                 <>
                   <div>
-                    <label className="block text-sm font-medium text-foreground mb-1">حساب العميل المستلِم (لتحديث الرصيد فعلياً) *</label>
+                    <label className="block text-sm font-medium text-foreground mb-1">حساب شركة بيان المستلِم (دخول فعلي) *</label>
                     <select value={sellForm.saleAccountId} onChange={(e) => setSellForm({ ...sellForm, saleAccountId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                       <option value="">اختر الحساب</option>
+                      {accounts.filter((a) => a.currency === sellingVehicle.currency && a.isActive && a.accountType === 'company').map((a) => (
+                        <option key={a.id} value={a.id}>{a.name} — رصيده الحالي {a.balance.toLocaleString()} {a.currency}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground mt-1">هذا هو الحساب الذي يدخل إليه مبلغ البيع فعلياً — نفس حساب الشركة المستخدم عند الشراء.</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">حساب المشتري (خروج، اختياري)</label>
+                    <select value={sellForm.saleClientAccountId} onChange={(e) => setSellForm({ ...sellForm, saleClientAccountId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                      <option value="">بدون — المشتري ليس له حساب متتبَّع</option>
                       {accounts.filter((a) => a.currency === sellingVehicle.currency && a.isActive && a.accountType === 'client').map((a) => (
                         <option key={a.id} value={a.id}>{a.name}</option>
                       ))}
                     </select>
-                    <p className="text-xs text-muted-foreground mt-1">تظهر هنا حسابات العملاء فقط — البيع لحساب شركة بيان نفسها غير منطقي.</p>
+                    <p className="text-xs text-muted-foreground mt-1">إن كان للمشتري حساب عميل متتبَّع، يُخصم منه مبلغ البيع — وإلا يُكتفى باسم المشتري فقط.</p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-foreground mb-1">تفاصيل الحساب البنكي (يُكتب يدوياً)</label>
