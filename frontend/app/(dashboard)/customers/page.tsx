@@ -10,6 +10,7 @@ import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
+import { DateInput } from '@/components/ui/date-input'
 
 const typeLabels: Record<string, string> = { individual: 'فرد', company: 'شركة' }
 const debtStatusClass: Record<string, string> = {
@@ -1519,8 +1520,7 @@ function CustomersPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">تاريخ الانتهاء</label>
-                  <input
-                    type="date"
+                  <DateInput
                     value={docEditForm.expiryDate}
                     onChange={(e) => setDocEditForm({ ...docEditForm, expiryDate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1949,8 +1949,7 @@ function CustomersPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">تاريخ الاستحقاق *</label>
-                  <input
-                    type="date"
+                  <DateInput
                     value={debtForm.dueDate}
                     onChange={(e) => setDebtForm({ ...debtForm, dueDate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2190,8 +2189,7 @@ function CustomersPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">تاريخ الانتهاء</label>
-                  <input
-                    type="date"
+                  <DateInput
                     value={docForm.expiryDate}
                     onChange={(e) => setDocForm({ ...docForm, expiryDate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"

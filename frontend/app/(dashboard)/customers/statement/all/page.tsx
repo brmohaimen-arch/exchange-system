@@ -6,6 +6,7 @@ import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText } from '
 import { api, openFile, downloadFile, Currency } from '@/lib/api-client'
 import { ApiError } from '@/lib/auth-provider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
+import { DateInput } from '@/components/ui/date-input'
 
 interface StatementSection { name: string; headers: string[]; rows: string[][] }
 interface StatementData { sections: StatementSection[]; closingLine: string }
@@ -99,11 +100,11 @@ export default function AllCustomersStatementPage() {
         <div className="grid gap-4 md:grid-cols-3">
           <div>
             <label className="block text-sm font-medium text-foreground mb-1">من تاريخ</label>
-            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+            <DateInput value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
           </div>
           <div>
             <label className="block text-sm font-medium text-foreground mb-1">إلى تاريخ</label>
-            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+            <DateInput value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
           </div>
           <div>
             <label className="block text-sm font-medium text-foreground mb-1">العملة</label>

@@ -6,6 +6,8 @@ import { api, uploadFile, openFile, DollarCardRecipient, DollarCardDocument, Dol
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { DateInput } from '@/components/ui/date-input'
+import { formatDate } from '@/lib/format-date'
 
 const STATUS_LABELS: Record<DollarCardStatus, { label: string; className: string }> = {
   waiting: { label: 'قيد الانتظار', className: 'bg-secondary text-muted-foreground' },
@@ -15,7 +17,7 @@ const STATUS_LABELS: Record<DollarCardStatus, { label: string; className: string
 }
 
 function emptyForm() {
-  return { fullName: '', nationalId: '', phone: '', accountNumber: '', accountBank: '', passportNumber: '', status: 'waiting' as DollarCardStatus, notes: '' }
+  return { fullName: '', nationalId: '', phone: '', accountNumber: '', accountBank: '', passportNumber: '', passportExpiry: '', cardNumber: '', cvc: '', privateCode: '', cardBalance: '', cardExpiry: '', boughtBy: '', paymentAmount: '', status: 'waiting' as DollarCardStatus, notes: '' }
 }
 
 export default function DollarCardsPage() {
@@ -65,6 +67,9 @@ export default function DollarCardsPage() {
     setForm({
       fullName: r.fullName, nationalId: r.nationalId, phone: r.phone,
       accountNumber: r.accountNumber || '', accountBank: r.accountBank || '', passportNumber: r.passportNumber || '',
+      passportExpiry: r.passportExpiry || '', cardNumber: r.cardNumber || '', cvc: r.cvc || '', privateCode: r.privateCode || '',
+      cardBalance: r.cardBalance !== null ? String(r.cardBalance) : '', cardExpiry: r.cardExpiry || '', boughtBy: r.boughtBy || '',
+      paymentAmount: r.paymentAmount !== null ? String(r.paymentAmount) : '',
       status: r.status, notes: r.notes || '',
     })
     setFormError('')
@@ -83,7 +88,11 @@ export default function DollarCardsPage() {
       const payload = {
         full_name: form.fullName.trim(), national_id: form.nationalId.trim(), phone: form.phone.trim(),
         account_number: form.accountNumber.trim() || null, account_bank: form.accountBank.trim() || null,
-        passport_number: form.passportNumber.trim() || null, status: form.status, notes: form.notes.trim() || null,
+        passport_number: form.passportNumber.trim() || null, passport_expiry: form.passportExpiry || null,
+        card_number: form.cardNumber.trim() || null, cvc: form.cvc.trim() || null, private_code: form.privateCode.trim() || null,
+        card_balance: form.cardBalance !== '' ? parseFloat(form.cardBalance) : null, card_expiry: form.cardExpiry.trim() || null,
+        bought_by: form.boughtBy.trim() || null, payment_amount: form.paymentAmount !== '' ? parseFloat(form.paymentAmount) : null,
+        status: form.status, notes: form.notes.trim() || null,
       }
       if (editing) {
         await api.put(`/dollar_cards/${editing.id}`, payload)
@@ -195,6 +204,12 @@ export default function DollarCardsPage() {
                   <th className="px-4 py-3 font-medium">الهاتف</th>
                   <th className="px-4 py-3 font-medium">الحساب البنكي</th>
                   <th className="px-4 py-3 font-medium">رقم الجواز</th>
+                  <th className="px-4 py-3 font-medium">انتهاء الجواز</th>
+                  <th className="px-4 py-3 font-medium">رقم البطاقة</th>
+                  <th className="px-4 py-3 font-medium">انتهاء البطاقة</th>
+                  <th className="px-4 py-3 font-medium">رصيد البطاقة</th>
+                  <th className="px-4 py-3 font-medium">اشتراها</th>
+                  <th className="px-4 py-3 font-medium">مبلغ الدفع</th>
                   <th className="px-4 py-3 font-medium">الحالة</th>
                   <th className="px-4 py-3 font-medium">المستندات</th>
                   {canManage && <th className="px-4 py-3 font-medium">إجراءات</th>}
@@ -210,6 +225,12 @@ export default function DollarCardsPage() {
                       <td className="px-4 py-3" dir="ltr">{r.phone}</td>
                       <td className="px-4 py-3">{r.accountBank ? `${r.accountBank} — ${r.accountNumber || '—'}` : '—'}</td>
                       <td className="px-4 py-3" dir="ltr">{r.passportNumber || '—'}</td>
+                      <td className="px-4 py-3" dir="ltr">{formatDate(r.passportExpiry) || '—'}</td>
+                      <td className="px-4 py-3" dir="ltr">{r.cardNumberMasked || '—'}</td>
+                      <td className="px-4 py-3" dir="ltr">{r.cardExpiry || '—'}</td>
+                      <td className="px-4 py-3" dir="ltr">{r.cardBalance !== null ? r.cardBalance.toLocaleString('en-US') : '—'}</td>
+                      <td className="px-4 py-3">{r.boughtBy || '—'}</td>
+                      <td className="px-4 py-3" dir="ltr">{r.paymentAmount !== null ? r.paymentAmount.toLocaleString('en-US') : '—'}</td>
                       <td className="px-4 py-3">
                         {canManage ? (
                           <select
@@ -282,6 +303,45 @@ export default function DollarCardsPage() {
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">رقم جواز السفر</label>
                 <input value={form.passportNumber} onChange={(e) => setForm({ ...form, passportNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">تاريخ انتهاء الجواز</label>
+                <DateInput value={form.passportExpiry} onChange={(e) => setForm({ ...form, passportExpiry: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              <div className="rounded-lg border border-border p-4 space-y-4">
+                <h4 className="text-sm font-semibold text-foreground">بيانات البطاقة</h4>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم البطاقة الكامل</label>
+                  <input value={form.cardNumber} onChange={(e) => setForm({ ...form, cardNumber: e.target.value })} inputMode="numeric" maxLength={23} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">CVC</label>
+                    <input value={form.cvc} onChange={(e) => setForm({ ...form, cvc: e.target.value })} inputMode="numeric" maxLength={4} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">الرمز السري</label>
+                    <input value={form.privateCode} onChange={(e) => setForm({ ...form, privateCode: e.target.value })} inputMode="numeric" maxLength={12} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">انتهاء البطاقة</label>
+                    <input value={form.cardExpiry} onChange={(e) => setForm({ ...form, cardExpiry: e.target.value })} placeholder="MM/YY" maxLength={7} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">رصيد البطاقة</label>
+                    <input type="number" step="any" value={form.cardBalance} onChange={(e) => setForm({ ...form, cardBalance: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">من اشتراها</label>
+                    <input value={form.boughtBy} onChange={(e) => setForm({ ...form, boughtBy: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">مبلغ الدفع</label>
+                    <input type="number" step="any" value={form.paymentAmount} onChange={(e) => setForm({ ...form, paymentAmount: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">الحالة</label>

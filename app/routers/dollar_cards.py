@@ -8,7 +8,7 @@ from sqlalchemy import select
 from pydantic import BaseModel
 
 from ..database import get_db
-from ..models import DollarCardRecipient, DollarCardDocument, AuditAction, User
+from ..models import DollarCardRecipient, DollarCardDocument, AuditAction, User, Role
 from ..tracking import create_audit_log
 from ..core.responses import success_response
 from ..core.errors import APIError
@@ -28,6 +28,14 @@ class DollarCardCreate(BaseModel):
     account_number: str | None = None
     account_bank: str | None = None
     passport_number: str | None = None
+    passport_expiry: str | None = None
+    card_number: str | None = None
+    cvc: str | None = None
+    private_code: str | None = None
+    card_balance: float | None = None
+    card_expiry: str | None = None
+    bought_by: str | None = None
+    payment_amount: float | None = None
     status: str = "waiting"
     notes: str | None = None
 
@@ -42,8 +50,25 @@ def _validate_status(status: str):
         )
 
 
-def recipient_to_dict(r: DollarCardRecipient, doc_count: int = 0):
+def _mask_card(number: str | None) -> str | None:
+    if not number:
+        return None
+    return "•••• " + number[-4:] if len(number) > 4 else "••••"
+
+
+def recipient_to_dict(r: DollarCardRecipient, doc_count: int = 0, reveal_secrets: bool = True):
     return {
+        "passportExpiry": r.passport_expiry,
+        # Full number / CVC / private code only go to users who manage cards;
+        # everyone else gets just a masked number.
+        "cardNumber": r.card_number if reveal_secrets else None,
+        "cardNumberMasked": _mask_card(r.card_number),
+        "cvc": r.cvc if reveal_secrets else None,
+        "privateCode": r.private_code if reveal_secrets else None,
+        "cardBalance": r.card_balance,
+        "cardExpiry": r.card_expiry,
+        "boughtBy": r.bought_by,
+        "paymentAmount": r.payment_amount,
         "id": r.id,
         "fullName": r.full_name,
         "nationalId": r.national_id,
@@ -72,12 +97,14 @@ def document_to_dict(d: DollarCardDocument):
 
 
 @router.get("/dollar_cards")
-def list_dollar_cards(db: Session = Depends(get_db)):
+def list_dollar_cards(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    role = db.get(Role, actor.role)
+    can_see_secrets = bool(role and "إدارة بطاقات الدولار" in role.permissions)
     recipients = db.scalars(select(DollarCardRecipient)).all()
     doc_counts: dict[str, int] = {}
     for doc in db.scalars(select(DollarCardDocument)).all():
         doc_counts[doc.recipient_id] = doc_counts.get(doc.recipient_id, 0) + 1
-    return success_response(data=[recipient_to_dict(r, doc_counts.get(r.id, 0)) for r in recipients])
+    return success_response(data=[recipient_to_dict(r, doc_counts.get(r.id, 0), can_see_secrets) for r in recipients])
 
 
 @router.post("/dollar_cards")
@@ -92,6 +119,14 @@ def create_dollar_card(data: DollarCardCreate, actor: User = Depends(require_per
         account_number=(data.account_number or "").strip() or None,
         account_bank=(data.account_bank or "").strip() or None,
         passport_number=(data.passport_number or "").strip() or None,
+        passport_expiry=data.passport_expiry or None,
+        card_number=(data.card_number or "").replace(" ", "").strip() or None,
+        cvc=(data.cvc or "").strip() or None,
+        private_code=(data.private_code or "").strip() or None,
+        card_balance=data.card_balance,
+        card_expiry=(data.card_expiry or "").strip() or None,
+        bought_by=(data.bought_by or "").strip() or None,
+        payment_amount=data.payment_amount,
         status=data.status,
         notes=data.notes,
         created_by=actor.name,
@@ -116,6 +151,14 @@ def update_dollar_card(recipient_id: str, data: DollarCardCreate, actor: User = 
     recipient.account_number = (data.account_number or "").strip() or None
     recipient.account_bank = (data.account_bank or "").strip() or None
     recipient.passport_number = (data.passport_number or "").strip() or None
+    recipient.passport_expiry = data.passport_expiry or None
+    recipient.card_number = (data.card_number or "").replace(" ", "").strip() or None
+    recipient.cvc = (data.cvc or "").strip() or None
+    recipient.private_code = (data.private_code or "").strip() or None
+    recipient.card_balance = data.card_balance
+    recipient.card_expiry = (data.card_expiry or "").strip() or None
+    recipient.bought_by = (data.bought_by or "").strip() or None
+    recipient.payment_amount = data.payment_amount
     recipient.status = data.status
     recipient.notes = data.notes
     recipient.updated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M")

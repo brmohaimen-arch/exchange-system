@@ -217,6 +217,15 @@ export interface DollarCardRecipient {
   accountNumber: string | null
   accountBank: string | null
   passportNumber: string | null
+  passportExpiry: string | null
+  cardNumber: string | null
+  cardNumberMasked: string | null
+  cvc: string | null
+  privateCode: string | null
+  cardBalance: number | null
+  cardExpiry: string | null
+  boughtBy: string | null
+  paymentAmount: number | null
   status: DollarCardStatus
   notes: string | null
   createdBy: string
@@ -268,7 +277,7 @@ export interface FleetVehicle {
   balances: Record<string, number>
 }
 
-export type FleetAccountType = 'company' | 'client'
+export type FleetAccountType = 'company' | 'client' | 'wallet'
 export interface FleetAccount {
   id: string
   name: string
@@ -432,7 +441,7 @@ export const ALL_PERMISSIONS = [
   'فتح وردية', 'إغلاق وردية', 'اعتماد الإقفالات', 'إدارة العملات', 'تعديل أسعار الصرف',
   'إدارة البنوك', 'رؤية التقارير', 'رؤية سجل العمليات', 'رؤية الأرباح', 'إدارة الأصول',
   'إدارة المستخدمين', 'إدارة الفروع', 'إدارة الإعدادات',
-  'إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان'
+  'إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان', 'إدارة شركة الامتياز'
 ] as const
 
 export interface Branch {

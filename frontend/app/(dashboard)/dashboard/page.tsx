@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { ArrowUpRight, DollarSign, Users, Activity, CreditCard, Landmark, Clock, ShieldCheck, PlayCircle, Lock } from 'lucide-react'
 import { api, Transaction, Customer, Vault, Shift, ApprovalRequestDTO, BankAccount, ExchangeRate } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
+import { formatDateTime } from '@/lib/format-date'
 
 const statusLabel: Record<string, { label: string; className: string }> = {
   approved: { label: 'مكتمل', className: 'bg-success/10 text-success' },
@@ -14,8 +15,9 @@ const statusLabel: Record<string, { label: string; className: string }> = {
 
 const typeLabel: Record<string, string> = { buy: 'شراء', sell: 'بيع', exchange: 'تبديل', deposit: 'إيداع', withdraw: 'سحب' }
 
+// Fixed en-US so digits are always Latin (ar-LY renders Arabic-Indic digits on some browsers).
 function fmt(n: number) {
-  return n.toLocaleString('ar-LY', { maximumFractionDigits: 2 })
+  return n.toLocaleString('en-US', { maximumFractionDigits: 2 })
 }
 
 export default function DashboardPage() {
@@ -216,7 +218,7 @@ export default function DashboardPage() {
                         {st.label}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-muted-foreground">{tx.timestamp}</td>
+                    <td className="px-6 py-4 text-muted-foreground" dir="ltr">{formatDateTime(tx.timestamp)}</td>
                   </tr>
                 )
               })}

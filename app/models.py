@@ -662,6 +662,16 @@ class DollarCardRecipient(Base):
     account_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     account_bank: Mapped[str | None] = mapped_column(String(150), nullable=True)
     passport_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    passport_expiry: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # The physical card itself. card_number / cvc / private_code are sensitive —
+    # the API only returns them to users holding the manage permission.
+    card_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    cvc: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    private_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    card_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    card_expiry: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bought_by: Mapped[str | None] = mapped_column(String(150), nullable=True)  # who bought the card
+    payment_amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # what was paid for it
     status: Mapped[str] = mapped_column(String(20), default="waiting")  # waiting, in_progress, handed, not_handed
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -703,6 +713,7 @@ class CurrencyPriceLog(Base):
 class FleetVehicle(Base):
     __tablename__ = "fleet_vehicles"
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    company: Mapped[str] = mapped_column(String(20), default="bayan")  # bayan | imtiaz — which sub-company owns this record
     auto_number: Mapped[int] = mapped_column(Integer, unique=True)  # ترقيم تسلسلي تلقائي (001, 002, ...) — لا يتغيّر أبداً
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     type: Mapped[str] = mapped_column(String(100), nullable=False)  # سيارة, جرافة, إسعاف, إلخ — حر
@@ -751,6 +762,7 @@ class FleetAccount(Base):
     Movement does elsewhere in the app."""
     __tablename__ = "fleet_accounts"
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    company: Mapped[str] = mapped_column(String(20), default="bayan")
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
     balance: Mapped[float] = mapped_column(Float, default=0.0)

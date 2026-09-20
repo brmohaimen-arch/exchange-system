@@ -8,6 +8,7 @@ import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
+import { DateInput } from '@/components/ui/date-input'
 
 interface TransferRow {
   id: string
@@ -1577,8 +1578,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
-              <input
-                type="date"
+              <DateInput
                 value={movementsDate}
                 onChange={(e) => setMovementsDate(e.target.value)}
                 className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1659,8 +1659,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
-              <input
-                type="date"
+              <DateInput
                 value={bankMovementsDate}
                 onChange={(e) => setBankMovementsDate(e.target.value)}
                 className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2030,8 +2029,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
-              <input
-                type="date"
+              <DateInput
                 value={customerBankMovementsDate}
                 onChange={(e) => setCustomerBankMovementsDate(e.target.value)}
                 className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2971,7 +2969,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">التاريخ *</label>
-                  <input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الفئة *</label>
@@ -3165,7 +3163,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               {manualEntryForm.opType === 'debt' && (
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">تاريخ الاستحقاق *</label>
-                  <input type="date" value={manualEntryForm.dueDate} onChange={(e) => setManualEntryForm({ ...manualEntryForm, dueDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={manualEntryForm.dueDate} onChange={(e) => setManualEntryForm({ ...manualEntryForm, dueDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                   <p className="mt-1 text-xs text-muted-foreground">تسجيل الدين لا يحرك رصيد {manualEntryTarget.kind === 'vault' ? 'الخزنة' : 'الحساب البنكي'} — هو سجل مستحق منفصل.</p>
                 </div>
               )}
@@ -3223,11 +3221,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <div className="flex flex-wrap items-end gap-3">
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">من تاريخ</label>
-                  <input type="date" value={statementDateFrom} onChange={(e) => setStatementDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={statementDateFrom} onChange={(e) => setStatementDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">إلى تاريخ</label>
-                  <input type="date" value={statementDateTo} onChange={(e) => setStatementDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={statementDateTo} onChange={(e) => setStatementDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">العملة</label>
@@ -3414,11 +3412,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <div className="flex flex-wrap items-end gap-3">
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">من تاريخ</label>
-                  <input type="date" value={allAccountsLedgerDateFrom} onChange={(e) => setAllAccountsLedgerDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={allAccountsLedgerDateFrom} onChange={(e) => setAllAccountsLedgerDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">إلى تاريخ</label>
-                  <input type="date" value={allAccountsLedgerDateTo} onChange={(e) => setAllAccountsLedgerDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={allAccountsLedgerDateTo} onChange={(e) => setAllAccountsLedgerDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">العملة</label>

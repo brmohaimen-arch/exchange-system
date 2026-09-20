@@ -29,6 +29,7 @@ const navigation: NavItem[] = [
   { name: 'بطاقات الدولار', href: '/dollar-cards', icon: CreditCard, permission: 'إدارة بطاقات الدولار' },
   { name: 'الأصول الثابتة', href: '/assets', icon: Package, permission: 'إدارة الأصول' },
   { name: 'شركة بيان', href: '/fleet', icon: Truck, permission: 'إدارة شركة بيان' },
+  { name: 'شركة الامتياز', href: '/imtiaz', icon: Truck, permission: 'إدارة شركة الامتياز' },
   { name: 'التقارير والإقفال اليومي', href: '/reports', icon: FileText, permission: 'رؤية التقارير' },
   { name: 'الإعدادات', href: '/settings', icon: Settings },
 ]

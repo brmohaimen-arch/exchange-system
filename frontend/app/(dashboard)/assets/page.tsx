@@ -7,6 +7,7 @@ import { api, newId, openFile, uploadFile, FixedAsset, Vehicle, RealEstate, Main
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { DateInput } from '@/components/ui/date-input'
 
 interface BranchLite { id: string; name: string }
 
@@ -1106,7 +1107,7 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">تاريخ الشراء</label>
-                  <input type="date" value={assetForm.purchaseDate} onChange={(e) => setAssetForm({ ...assetForm, purchaseDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={assetForm.purchaseDate} onChange={(e) => setAssetForm({ ...assetForm, purchaseDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">المسؤول</label>
@@ -1225,11 +1226,11 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">انتهاء التأمين</label>
-                  <input type="date" value={vehicleForm.insuranceExpiry} onChange={(e) => setVehicleForm({ ...vehicleForm, insuranceExpiry: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={vehicleForm.insuranceExpiry} onChange={(e) => setVehicleForm({ ...vehicleForm, insuranceExpiry: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">انتهاء الترخيص</label>
-                  <input type="date" value={vehicleForm.licenseExpiry} onChange={(e) => setVehicleForm({ ...vehicleForm, licenseExpiry: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={vehicleForm.licenseExpiry} onChange={(e) => setVehicleForm({ ...vehicleForm, licenseExpiry: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -1367,7 +1368,7 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">التاريخ</label>
-                  <input type="date" value={maintForm.date} onChange={(e) => setMaintForm({ ...maintForm, date: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={maintForm.date} onChange={(e) => setMaintForm({ ...maintForm, date: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">التكلفة *</label>
@@ -1514,7 +1515,7 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">تاريخ الانتهاء</label>
-                  <input type="date" value={docForm.expiryDate} onChange={(e) => setDocForm({ ...docForm, expiryDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <DateInput value={docForm.expiryDate} onChange={(e) => setDocForm({ ...docForm, expiryDate: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الحالة</label>
@@ -1563,8 +1564,7 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">تاريخ الانتهاء</label>
-                  <input
-                    type="date"
+                  <DateInput
                     value={docEditForm.expiryDate}
                     onChange={(e) => setDocEditForm({ ...docEditForm, expiryDate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"

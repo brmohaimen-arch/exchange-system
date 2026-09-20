@@ -1023,26 +1023,16 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     # from_currency off them (an exit). Nothing here is guessed from text.
     flow_headers = (["م", "العميل", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"] if show_customer_col
                      else ["م", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"])
-    # A trade moves two different currencies at once, so it needs its own
-    # currency column per side instead of the one shared "العملة" every other
-    # section uses — دخول/خروج stay in the same row (one transaction, one
-    # line), just each paired with the currency it's actually in.
-    trade_headers = (["م", "العميل", "التاريخ", "التفاصيل", "دخول", "عملة الدخول", "خروج", "عملة الخروج", "بواسطة"] if show_customer_col
-                      else ["م", "التاريخ", "التفاصيل", "دخول", "عملة الدخول", "خروج", "عملة الخروج", "بواسطة"])
+    trade_headers = flow_headers
 
     def prefixed(row: list, customer_id: str) -> list:
         return ([customer_name_by_id.get(customer_id, customer_id)] + row) if show_customer_col else row
 
-    # Every one of these operations is genuinely two-sided — a deposit both
-    # leaves a vault/bank account AND enters the customer, a سلفة both leaves
-    # its source AND becomes owed by the customer, a debt both gets registered
-    # against the customer AND (when paid) settles — so دخول/خروج are both
-    # filled on the same row instead of picking one side and leaving the
-    # other blank. Currency doesn't change between the two sides here (unlike
-    # a trade), so both amounts are identical.
-    def entry_exit(amount: float) -> tuple[str, str]:
+    # One amount per row, in exactly one of دخول (money received) / خروج
+    # (money paid out) — same as a classic cash-book ledger.
+    def entry_exit(amount: float, is_entry: bool) -> tuple[str, str]:
         amt = f"{amount:,.2f}"
-        return amt, amt
+        return (amt, "") if is_entry else ("", amt)
 
     # A vault's own name often already reads as "خزنة X" / "الخزنة الرئيسية"
     # ("Vault X" / "The Main Vault"), so blindly prefixing "خزنة" again would
@@ -1056,14 +1046,8 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
             return other_source
         return "غير محدد"
 
-    # 1. معاملات الصرافة — buy/sell/exchange only. Names the vault the trade
-    # ran through, same as السلف already does for its own source. A trade
-    # moves two different currencies in the same transaction — one in, one
-    # out — so both legs sit in the ONE row (not split across two rows),
-    # دخول paired with عملة الدخول and خروج paired with عملة الخروج. amount
-    # is always in from_currency (buy/exchange) or to_currency (sell);
-    # total_amount always carries the other leg's value in the other
-    # currency (see execute_pos_operation, where both are derived together).
+    # 1. معاملات الصرافة — buy/sell/exchange only. A trade has two currency
+    # legs; each gets its own row with a single amount (in دخول or خروج).
     trade_rows_with_ts = []
     for t in txs:
         if t.type == "sell":
@@ -1072,11 +1056,11 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         else:
             in_currency, in_amount = t.to_currency, t.total_amount
             out_currency, out_amount = t.from_currency, t.amount
-        if currency and currency not in (in_currency, out_currency):
-            continue
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — عبر {cash_source_label(vault_name=t.vault_name)}"
-        row = prefixed([t.timestamp, detail, f"{in_amount:,.2f}", in_currency, f"{out_amount:,.2f}", out_currency, t.user], t.customer_id)
-        trade_rows_with_ts.append((t.timestamp, row))
+        if not currency or currency == in_currency:
+            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, f"{in_amount:,.2f}", "", in_currency, t.user], t.customer_id)))
+        if not currency or currency == out_currency:
+            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, "", f"{out_amount:,.2f}", out_currency, t.user], t.customer_id)))
     trade_rows_with_ts.sort(key=lambda r: r[0])
     trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
 
@@ -1092,7 +1076,7 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
             # transfer_in / transfer_out — other_source already reads like
             # "تحويل من/إلى العميل X (id)", so it doubles as the detail text.
             detail = e.other_source or e.type
-        entry, exit_ = entry_exit(e.amount)
+        entry, exit_ = entry_exit(e.amount, e.type in ("deposit", "transfer_in"))
         row = prefixed([e.timestamp, detail, entry, exit_, e.currency, e.user], e.customer_id)
         dw_rows_with_ts.append((e.timestamp, row))
     dw_rows_with_ts.sort(key=lambda r: r[0])
@@ -1105,11 +1089,11 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     debt_items = []
     for d in debts:
         detail = f"تسجيل دين جديد — استحقاق {d.due_date} (سجل دفتري، دون حركة نقدية)"
-        entry, exit_ = entry_exit(d.amount)
+        entry, exit_ = entry_exit(d.amount, False)
         row = prefixed([d.start_date, detail, entry, exit_, d.currency, d.created_by or "—"], d.customer_id)
         debt_items.append((d.start_date, d.currency, row))
     for p in debt_payments:
-        entry, exit_ = entry_exit(p.amount)
+        entry, exit_ = entry_exit(p.amount, True)
         row = prefixed([p.timestamp, "تسديد دفعة دين (سجل دفتري، دون حركة نقدية)", entry, exit_, p.currency, p.user], p.customer_id)
         debt_items.append((p.timestamp, p.currency, row))
     debt_sections = _group_rows_by_currency("الديون", flow_headers, debt_items)
@@ -1118,12 +1102,12 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     advance_items = []
     for a in advances:
         detail = f"صرف سلفة — من {cash_source_label(a.vault_name, a.bank_account_name)}"
-        entry, exit_ = entry_exit(a.amount)
+        entry, exit_ = entry_exit(a.amount, False)
         row = prefixed([a.timestamp, detail, entry, exit_, a.currency, a.created_by], a.customer_id)
         advance_items.append((a.timestamp, a.currency, row))
     for p in advance_payments:
         detail = f"تسديد دفعة سلفة — إلى {cash_source_label(p.vault_name, p.bank_account_name)}"
-        entry, exit_ = entry_exit(p.amount)
+        entry, exit_ = entry_exit(p.amount, True)
         row = prefixed([p.timestamp, detail, entry, exit_, p.currency, p.user], p.customer_id)
         advance_items.append((p.timestamp, p.currency, row))
     advance_sections = _group_rows_by_currency("السلف", flow_headers, advance_items)
@@ -2211,37 +2195,8 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
             rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, f"{m.balance_after:,.2f}", m.user])
         return rows
 
-    # معاملات الصرافة gets its own header shape: a trade paid in cash lands as
-    # TWO Movement rows on this same vault (one per currency leg — see
-    # execute_pos_operation) which belong in ONE row, not two, same as the
-    # customer-facing statement. Grouped by reference_id (the transaction id
-    # every leg of one operation shares); a leg that never touched this
-    # entity (e.g. paid via a bank account instead of cash) just leaves its
-    # side blank instead of forcing a fake pair.
-    trade_headers = ["م", "الوقت", "التفاصيل", "دخول", "عملة الدخول", "رصيد بعد الدخول", "خروج", "عملة الخروج", "رصيد بعد الخروج", "بواسطة"]
-
-    def trade_rows_grouped(items: list[Movement]) -> list[list]:
-        by_ref: dict[str, list[Movement]] = {}
-        for m in items:
-            by_ref.setdefault(m.reference_id, []).append(m)
-        rows = []
-        for ref_id, ms in sorted(by_ref.items(), key=lambda kv: min(x.timestamp for x in kv[1])):
-            in_m = next((x for x in ms if x.amount_in > 0), None)
-            out_m = next((x for x in ms if x.amount_out > 0), None)
-            representative = in_m or out_m
-            tx = db.get(Transaction, ref_id)
-            detail = _RECEIPT_TYPE_LABELS.get(tx.type, tx.type) if tx else representative.type
-            rows.append([
-                min(x.timestamp for x in ms), detail,
-                f"{in_m.amount_in:,.2f}" if in_m else "", in_m.currency if in_m else "", f"{in_m.balance_after:,.2f}" if in_m else "",
-                f"{out_m.amount_out:,.2f}" if out_m else "", out_m.currency if out_m else "", f"{out_m.balance_after:,.2f}" if out_m else "",
-                representative.user,
-            ])
-        rows.sort(key=lambda r: r[0])
-        return [[str(i)] + row for i, row in enumerate(rows, start=1)]
-
     sections = [
-        ("معاملات الصرافة", trade_headers, trade_rows_grouped(groups["trade"])),
+        ("معاملات الصرافة", mv_headers, mv_rows(groups["trade"])),
         ("إيداع وسحب العملاء", mv_headers, mv_rows(groups["customer"])),
         ("السلف", mv_headers, mv_rows(groups["advance"])),
         ("فوائد بنكية", mv_headers, mv_rows(groups["interest"])),
@@ -2437,10 +2392,8 @@ def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, e
 # share a single balance, so each row carries its own account label and that
 # account's own balance-after instead of one running total.
 def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to: str, currency: str):
-    # Same دخول/عملة الدخول/خروج/عملة الخروج shape as the closing ledger, for
-    # the same reason — if any operation ever lands two legs on the same
-    # bank account at once, they belong in one row, not two.
-    headers = ["المرجع", "التاريخ", "اليوم", "الحساب", "البيان", "دخول", "عملة الدخول", "رصيد الدخول بعد", "خروج", "عملة الخروج", "رصيد الخروج بعد", "ملاحظات", "بواسطة"]
+    # One row per movement, single amount in دخول or خروج.
+    headers = ["المرجع", "التاريخ", "اليوم", "الحساب", "البيان", "دخول", "خروج", "العملة", "الرصيد بعد", "ملاحظات", "بواسطة"]
     accounts = db.scalars(select(BankAccount).where(BankAccount.customer_id.isnot(None))).all()
     accounts_by_id = {a.id: a for a in accounts}
     if not accounts_by_id:
@@ -2456,21 +2409,14 @@ def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to
     movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
 
     rows = []
-    for in_m, out_m in _pair_movements_by_operation(movements):
-        rep = in_m or out_m
-        account = accounts_by_id.get(rep.entity_id)
-        account_label = f"{account.bank_name} - {account.account_name}" if account else rep.entity_name
-        date_part = rep.timestamp[:10]
-        if in_m and out_m:
-            tx = db.get(Transaction, rep.reference_id)
-            detail = _RECEIPT_TYPE_LABELS.get(tx.type, tx.type) if tx else f"{in_m.type} / {out_m.type}"
-        else:
-            detail = rep.type
+    for m in movements:
+        account = accounts_by_id.get(m.entity_id)
+        account_label = f"{account.bank_name} - {account.account_name}" if account else m.entity_name
+        date_part = m.timestamp[:10]
         rows.append([
-            rep.id[-8:], date_part, _arabic_weekday(date_part), account_label, detail,
-            f"{in_m.amount_in:,.2f}" if in_m else "", in_m.currency if in_m else "", f"{in_m.balance_after:,.2f}" if in_m else "",
-            f"{out_m.amount_out:,.2f}" if out_m else "", out_m.currency if out_m else "", f"{out_m.balance_after:,.2f}" if out_m else "",
-            _movement_source_notes(db, rep.reference_id), rep.user,
+            m.id[-8:], date_part, _arabic_weekday(date_part), account_label, m.type,
+            f"{m.amount_in:,.2f}" if m.amount_in > 0 else "", f"{m.amount_out:,.2f}" if m.amount_out > 0 else "",
+            m.currency, f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
         ])
     return headers, rows
 
@@ -2512,12 +2458,8 @@ def send_all_customer_bank_accounts_daily_ledger_whatsapp(date_from: str = "", d
 # page: the per-vault-per-currency exports above stay as-is for the treasury
 # and customer-bank-account pages.
 def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str):
-    # دخول/عملة الدخول/رصيد الدخول بعد mirror خروج's three columns instead of
-    # one shared "العملة"/"الرصيد بعد" — a cash-paid trade lands as two
-    # Movement rows on the same vault (one currency in, a different one out),
-    # paired back into a single row by _pair_movements_by_operation; every
-    # other operation only ever fills one side, same as before.
-    headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "البيان", "دخول", "عملة الدخول", "رصيد الدخول بعد", "خروج", "عملة الخروج", "رصيد الخروج بعد", "ملاحظات", "بواسطة"]
+    # One row per movement, single amount in دخول or خروج.
+    headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "البيان", "دخول", "خروج", "العملة", "الرصيد بعد", "ملاحظات", "بواسطة"]
     if not vault_ids:
         return headers, []
     query = select(Movement).where(
@@ -2526,19 +2468,12 @@ def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str):
     ).order_by(Movement.timestamp.asc())
     movements = db.scalars(query).all()
     rows = []
-    for in_m, out_m in _pair_movements_by_operation(movements):
-        rep = in_m or out_m
-        date_part = rep.timestamp[:10]
-        if in_m and out_m:
-            tx = db.get(Transaction, rep.reference_id)
-            detail = _RECEIPT_TYPE_LABELS.get(tx.type, tx.type) if tx else f"{in_m.type} / {out_m.type}"
-        else:
-            detail = rep.type
+    for m in movements:
+        date_part = m.timestamp[:10]
         rows.append([
-            rep.id[-8:], date_part, _arabic_weekday(date_part), rep.entity_name, detail,
-            f"{in_m.amount_in:,.2f}" if in_m else "", in_m.currency if in_m else "", f"{in_m.balance_after:,.2f}" if in_m else "",
-            f"{out_m.amount_out:,.2f}" if out_m else "", out_m.currency if out_m else "", f"{out_m.balance_after:,.2f}" if out_m else "",
-            _movement_source_notes(db, rep.reference_id), rep.user,
+            m.id[-8:], date_part, _arabic_weekday(date_part), m.entity_name, m.type,
+            f"{m.amount_in:,.2f}" if m.amount_in > 0 else "", f"{m.amount_out:,.2f}" if m.amount_out > 0 else "",
+            m.currency, f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
         ])
     return headers, rows
 

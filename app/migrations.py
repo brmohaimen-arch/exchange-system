@@ -110,6 +110,16 @@ NEW_COLUMNS = [
     ("fleet_vehicles", "sale_bank_details", "VARCHAR(300)"),
     ("fleet_accounts", "account_type", "VARCHAR(20) DEFAULT 'company'"),
     ("fleet_vehicles", "sale_client_account_id", "VARCHAR(50) REFERENCES fleet_accounts(id)"),
+    ("fleet_vehicles", "company", "VARCHAR(20) DEFAULT 'bayan'"),
+    ("dollar_card_recipients", "passport_expiry", "VARCHAR(20)"),
+    ("dollar_card_recipients", "card_number", "VARCHAR(30)"),
+    ("dollar_card_recipients", "cvc", "VARCHAR(10)"),
+    ("dollar_card_recipients", "private_code", "VARCHAR(30)"),
+    ("dollar_card_recipients", "card_balance", "REAL"),
+    ("dollar_card_recipients", "card_expiry", "VARCHAR(20)"),
+    ("dollar_card_recipients", "bought_by", "VARCHAR(150)"),
+    ("dollar_card_recipients", "payment_amount", "REAL"),
+    ("fleet_accounts", "company", "VARCHAR(20) DEFAULT 'bayan'"),
 ]
 
 
@@ -339,7 +349,7 @@ def seed_missing_system_settings(db: Session) -> None:
 # out of the new pages they gate. Grants each one to the system admin role only;
 # any other role that should get it is a deliberate call an admin makes from
 # Settings, not something a migration should decide for them.
-NEW_PERMISSIONS_FOR_ADMIN = ['إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان']
+NEW_PERMISSIONS_FOR_ADMIN = ['إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان', 'إدارة شركة الامتياز']
 
 def grant_new_permissions_to_admin(db: Session) -> None:
     role = db.get(Role, 'مدير النظام')
@@ -381,3 +391,12 @@ def seed_trial_start_date(db: Session) -> None:
     db.add(SystemSetting(key="trialStartDate", value={"val": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}))
     db.commit()
     print("[migrations] Stamped trial start date")
+
+
+def rename_fleet_status_active_to_display(db: Session) -> None:
+    """Vehicles' status "نشط" was replaced by "عرض" (on display for sale) —
+    convert any existing rows once so old and new data agree."""
+    from .models import FleetVehicle
+    for v in db.query(FleetVehicle).filter(FleetVehicle.status == "نشط").all():
+        v.status = "عرض"
+    db.commit()

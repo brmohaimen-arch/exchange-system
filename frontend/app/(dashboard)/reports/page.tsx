@@ -6,6 +6,7 @@ import { FileText, Download, TrendingUp, AlertTriangle, ShieldAlert, Check, Book
 import { api, downloadFile, openFile, ComplianceFlag, JournalEntry, CancelledTransaction, Branch, DailyClosingDTO } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
+import { DateInput } from '@/components/ui/date-input'
 
 interface BreakdownEntry { profit: number; count: number }
 
@@ -328,11 +329,11 @@ function ReportsPageInner() {
             </div>
             <div>
               <label className="block text-xs text-muted-foreground mb-1">من تاريخ</label>
-              <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              <DateInput value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
             </div>
             <div>
               <label className="block text-xs text-muted-foreground mb-1">إلى تاريخ</label>
-              <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              <DateInput value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
             </div>
             <button onClick={clearDateFilter} className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors">كل الفترات</button>
             {!dateFrom && !dateTo && <span className="text-xs text-warning">عرض كل الفترات — قد تشمل عمليات قديمة تؤثر على الإجمالي</span>}
