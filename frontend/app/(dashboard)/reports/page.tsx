@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState, FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { FileText, Download, TrendingUp, AlertTriangle, ShieldAlert, Check, BookOpen, ChevronDown, RotateCcw, Building2, User as UserIcon, Ban, X, Loader2, MessageCircle, Filter, Lock, Landmark, CheckCircle2 } from 'lucide-react'
-import { api, downloadFile, openFile, ComplianceFlag, JournalEntry, CancelledTransaction, Branch, DailyClosingDTO } from '@/lib/api-client'
+import { api, downloadFile, openFile, ComplianceFlag, JournalEntry, CancelledTransaction, Branch, DailyClosingDTO, Currency } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { DateInput } from '@/components/ui/date-input'
@@ -135,13 +135,16 @@ function ReportsPageInner() {
   const [expandedClosing, setExpandedClosing] = useState<string | null>(null)
   const [closingsPage, setClosingsPage] = useState(1)
   const [closingLedgerDownloading, setClosingLedgerDownloading] = useState<string | null>(null)
+  const [closingLedgerCcy, setClosingLedgerCcy] = useState('')
+  const [ledgerCurrencies, setLedgerCurrencies] = useState<Currency[]>([])
+  useEffect(() => { api.get<Currency[]>('/currencies').then(setLedgerCurrencies).catch(() => {}) }, [])
 
   const downloadClosingFullLedger = async (closingId: string, format: 'pdf' | 'xlsx') => {
     const key = `${closingId}-${format}`
     setClosingLedgerDownloading(key)
     setError('')
     try {
-      const path = `/daily_closings/${closingId}/full_ledger/export?format=${format}`
+      const path = `/daily_closings/${closingId}/full_ledger/export?format=${format}${closingLedgerCcy ? `&currency=${closingLedgerCcy}` : ''}`
       if (format === 'pdf') {
         await openFile(path)
       } else {
@@ -752,6 +755,10 @@ function ReportsPageInner() {
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-xs font-semibold text-foreground">الإجماليات</p>
                         <div className="flex items-center gap-2">
+                          <select value={closingLedgerCcy} onChange={(e) => setClosingLedgerCcy(e.target.value)} className="rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/50" title="عملة الكشف">
+                            <option value="">كل العملات</option>
+                            {ledgerCurrencies.map((cur) => <option key={cur.code} value={cur.code}>{cur.code}</option>)}
+                          </select>
                           <button
                             onClick={() => downloadClosingFullLedger(c.id, 'pdf')}
                             disabled={closingLedgerDownloading === `${c.id}-pdf`}

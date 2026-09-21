@@ -867,10 +867,10 @@ function CustomersPageInner() {
   const statementTransactions = useMemo(
     () => transactions
       .filter((t) => {
-        if (t.customerId !== statementCustomer?.id || !['buy', 'sell', 'exchange'].includes(t.type)) return false
+        if (t.customerId !== statementCustomer?.id || !['buy', 'sell', 'exchange'].includes(t.type) || t.status === 'reversed') return false
         if (!statementCurrency) return true
-        const txCurrency = t.type === 'sell' ? t.toCurrency : t.fromCurrency
-        return txCurrency === statementCurrency
+        // A trade moves two currencies — it belongs to the statement of either one.
+        return t.fromCurrency === statementCurrency || t.toCurrency === statementCurrency
       })
       .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
     [transactions, statementCustomer, statementCurrency]

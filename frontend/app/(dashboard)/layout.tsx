@@ -2,6 +2,7 @@ import { Sidebar } from '@/components/layout/sidebar'
 import { Header } from '@/components/layout/header'
 import { AuthGuard } from '@/components/layout/auth-guard'
 import { SidebarProvider } from '@/lib/sidebar-context'
+import { FormGuard } from '@/components/FormGuard'
 
 export default function DashboardLayout({
   children,
@@ -10,6 +11,7 @@ export default function DashboardLayout({
 }) {
   return (
     <AuthGuard>
+      <FormGuard />
       <SidebarProvider>
         <div className="flex h-screen overflow-hidden bg-background">
           <Sidebar />

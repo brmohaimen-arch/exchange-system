@@ -713,7 +713,10 @@ class CurrencyPriceLog(Base):
 class FleetVehicle(Base):
     __tablename__ = "fleet_vehicles"
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
-    company: Mapped[str] = mapped_column(String(20), default="bayan")  # bayan | imtiaz — which sub-company owns this record
+    company: Mapped[str] = mapped_column(String(20), default="bayan")  # bayan | imtiaz | itqan — which sub-company owns this record
+    seller_name: Mapped[str | None] = mapped_column(String(150), nullable=True)  # who the vehicle was bought from
+    sale_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)  # currency the sale was paid in (may differ from the purchase currency)
+    purchase_bank_details: Mapped[str | None] = mapped_column(String(400), nullable=True)  # manually-typed bank info for a bank purchase
     auto_number: Mapped[int] = mapped_column(Integer, unique=True)  # ترقيم تسلسلي تلقائي (001, 002, ...) — لا يتغيّر أبداً
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     type: Mapped[str] = mapped_column(String(100), nullable=False)  # سيارة, جرافة, إسعاف, إلخ — حر

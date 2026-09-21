@@ -259,6 +259,9 @@ export interface FleetVehicle {
   purchasePrice: number
   purchasePaymentMethod: FleetPaymentMethod | null
   purchaseAccountId: string | null
+  sellerName: string | null
+  purchaseBankDetails: string | null
+  purchaseManualBank: boolean
   purchaseAccountName: string | null
   saleDate: string | null
   buyerName: string | null
@@ -270,6 +273,9 @@ export interface FleetVehicle {
   saleClientAccountName: string | null
   saleBankDetails: string | null
   profit: number | null
+  profitCurrency: string
+  saleCurrency: string | null
+  saleManualBank: boolean
   currency: string
   notes: string | null
   createdBy: string
@@ -441,7 +447,7 @@ export const ALL_PERMISSIONS = [
   'فتح وردية', 'إغلاق وردية', 'اعتماد الإقفالات', 'إدارة العملات', 'تعديل أسعار الصرف',
   'إدارة البنوك', 'رؤية التقارير', 'رؤية سجل العمليات', 'رؤية الأرباح', 'إدارة الأصول',
   'إدارة المستخدمين', 'إدارة الفروع', 'إدارة الإعدادات',
-  'إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان', 'إدارة شركة الامتياز'
+  'إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان', 'إدارة شركة الامتياز', 'إدارة شركة اتقن المحركات'
 ] as const
 
 export interface Branch {

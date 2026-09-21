@@ -967,6 +967,21 @@ def _group_rows_by_currency(name_prefix: str, headers: list[str], items_with_ts_
         sections.append((f"{name_prefix} - {ccy}", headers, rows))
     return sections
 
+def _reversed_journal_refs():
+    """References of journal entries flipped to "reversed" by عكس قيد — except
+    a live (non-reversed) transaction's own id: editing a transaction also
+    flips its journal entry while the transaction itself stays valid."""
+    live_tx = select(Transaction.id).where(Transaction.status != "reversed")
+    return select(JournalEntry.reference).where(JournalEntry.status == "reversed", JournalEntry.reference.not_in(live_tx))
+
+def _not_reversed_movement():
+    """SQL clause: hide every Movement (the original legs AND the "عكس عملية" /
+    "عكس قيد" counter-legs) belonging to an operation that has since been
+    reversed — a reversed operation must not appear in any statement. The pair
+    nets to zero on the balance, so the running balance stays continuous."""
+    reversed_tx = select(Transaction.id).where(Transaction.status == "reversed")
+    return or_(Movement.reference_id.is_(None), (Movement.reference_id.not_in(reversed_tx)) & (Movement.reference_id.not_in(_reversed_journal_refs())))
+
 def _customers_statement_sections(db: Session, customers: list[Customer], date_from: str = "", date_to: str = "", currency: str = "", show_customer_col: bool = False):
     """Every buy/sell/exchange transaction, deposit/withdraw/transfer entry, debt,
     and سلفة for the given customers — kept separated by kind (and, for
@@ -980,12 +995,18 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     customer_ids = [c.id for c in customers]
     customer_name_by_id = {c.id: c.name for c in customers}
 
-    txs_query = select(Transaction).where(Transaction.customer_id.in_(customer_ids), Transaction.type.in_(["buy", "sell", "exchange"]))
+    txs_query = select(Transaction).where(Transaction.customer_id.in_(customer_ids), Transaction.type.in_(["buy", "sell", "exchange"]), Transaction.status != "reversed")
     entries_query = select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id.in_(customer_ids))
     debts_query = select(Debt).where(Debt.customer_id.in_(customer_ids))
     debt_payments_query = select(DebtPaymentRecord).where(DebtPaymentRecord.customer_id.in_(customer_ids))
     advances_query = select(Advance).where(Advance.customer_id.in_(customer_ids))
     advance_payments_query = select(AdvancePaymentRecord).where(AdvancePaymentRecord.customer_id.in_(customer_ids))
+    _rev = _reversed_journal_refs()
+    entries_query = entries_query.where(CustomerAccountEntry.id.not_in(_rev))
+    debts_query = debts_query.where(Debt.id.not_in(_rev))
+    debt_payments_query = debt_payments_query.where(DebtPaymentRecord.id.not_in(_rev))
+    advances_query = advances_query.where(Advance.id.not_in(_rev))
+    advance_payments_query = advance_payments_query.where(AdvancePaymentRecord.id.not_in(_rev))
     if date_from:
         txs_query = txs_query.where(Transaction.timestamp >= date_from)
         entries_query = entries_query.where(CustomerAccountEntry.timestamp >= date_from)
@@ -2064,11 +2085,13 @@ def send_debt_receipt_whatsapp(debt_id: str, actor: User = Depends(get_current_u
     return success_response(data={"sent": True}, message_ar="تم إرسال الإيصال عبر واتساب بنجاح")
 
 @router.get("/movements")
-def list_movements(vault_id: str = "", entity_type: str = "vault", entity_id: str = "", date_from: str = "", date_to: str = "", db: Session = Depends(get_db)):
+def list_movements(vault_id: str = "", entity_type: str = "vault", entity_id: str = "", date_from: str = "", date_to: str = "", include_reversed: bool = False, db: Session = Depends(get_db)):
     """entity_type defaults to "vault" for backward compatibility with the existing
     vault movements tab; pass entity_type="bank_account" (+ entity_id, or the legacy
     vault_id param) to get the same feed for a bank account instead."""
     query = select(Movement).where(Movement.entity_type == entity_type)
+    if not include_reversed:
+        query = query.where(_not_reversed_movement())
     target_id = entity_id or vault_id
     if target_id:
         query = query.where(Movement.entity_id == target_id)
@@ -2171,7 +2194,7 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     قيود يدوية / تحويلات مباشرة مع خزنة أو بنك / أخرى, plus a "التحويلات بين
     الحسابات" section from the Transfer/approval system — for the PDF/Excel
     export and WhatsApp send. Returns (sections, closing_line)."""
-    mv_query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id)
+    mv_query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id, _not_reversed_movement())
     if date_from:
         mv_query = mv_query.where(Movement.timestamp >= date_from)
     if date_to:
@@ -2349,7 +2372,7 @@ def _pair_movements_by_operation(movements: list) -> list[tuple]:
     return pairs
 
 def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, date_from: str, date_to: str, currency: str):
-    query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id, Movement.currency == currency)
+    query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id, Movement.currency == currency, _not_reversed_movement())
     opening_query = query
     if date_from:
         opening_before = db.scalars(opening_query.where(Movement.timestamp < date_from).order_by(Movement.timestamp.desc()))
@@ -2399,7 +2422,7 @@ def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to
     if not accounts_by_id:
         return headers, []
 
-    query = select(Movement).where(Movement.entity_type == "bank_account", Movement.entity_id.in_(accounts_by_id.keys()))
+    query = select(Movement).where(Movement.entity_type == "bank_account", Movement.entity_id.in_(accounts_by_id.keys()), _not_reversed_movement())
     if currency:
         query = query.where(Movement.currency == currency)
     if date_from:
@@ -2457,16 +2480,21 @@ def send_all_customer_bank_accounts_daily_ledger_whatsapp(date_from: str = "", d
 # instead of a separate export per vault/currency. Specific to the closing
 # page: the per-vault-per-currency exports above stay as-is for the treasury
 # and customer-bank-account pages.
-def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str):
-    # One row per movement, single amount in دخول or خروج.
+def _vaults_ledger_rows(db: Session, vault_ids: list[str], date_from: str, date_to: str, currency: str = ""):
+    # One row per movement, single amount in دخول or خروج. Shared by the
+    # closing statement (one day) and the all-vaults statement (any range);
+    # currency "" = every currency, otherwise only that currency's movements.
     headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "البيان", "دخول", "خروج", "العملة", "الرصيد بعد", "ملاحظات", "بواسطة"]
     if not vault_ids:
         return headers, []
-    query = select(Movement).where(
-        Movement.entity_type == "vault", Movement.entity_id.in_(vault_ids),
-        Movement.timestamp >= date, Movement.timestamp <= date + " 23:59:59"
-    ).order_by(Movement.timestamp.asc())
-    movements = db.scalars(query).all()
+    query = select(Movement).where(Movement.entity_type == "vault", Movement.entity_id.in_(vault_ids), _not_reversed_movement())
+    if date_from:
+        query = query.where(Movement.timestamp >= date_from)
+    if date_to:
+        query = query.where(Movement.timestamp <= date_to + " 23:59:59")
+    if currency:
+        query = query.where(Movement.currency == currency)
+    movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
     rows = []
     for m in movements:
         date_part = m.timestamp[:10]
@@ -2477,10 +2505,13 @@ def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str):
         ])
     return headers, rows
 
-def _closing_full_ledger_export(db: Session, closing: DailyClosing, format: str):
+def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str, currency: str = ""):
+    return _vaults_ledger_rows(db, vault_ids, date, date, currency)
+
+def _closing_full_ledger_export(db: Session, closing: DailyClosing, format: str, currency: str = ""):
     vault_ids = list(closing.balances_snapshot.keys())
-    headers, rows = _closing_full_ledger_rows(db, vault_ids, closing.date)
-    title = f"كشف حركة شامل — {closing.target_name} — {closing.date}"
+    headers, rows = _closing_full_ledger_rows(db, vault_ids, closing.date, currency)
+    title = f"كشف حركة شامل — {closing.target_name} — {closing.date}" + (f" — {currency}" if currency else "")
     if closing.notes:
         title += f" (ملاحظات الإقفال: {closing.notes})"
     if format == "xlsx":
@@ -2493,16 +2524,32 @@ def _closing_full_ledger_export(db: Session, closing: DailyClosing, format: str)
     return buf.read(), "pdf"
 
 @router.get("/daily_closings/{closing_id}/full_ledger/export")
-def export_closing_full_ledger(closing_id: str, format: str = "pdf", actor: User = Depends(require_permission("رؤية التقارير")), db: Session = Depends(get_db)):
+def export_closing_full_ledger(closing_id: str, format: str = "pdf", currency: str = "", actor: User = Depends(require_permission("رؤية التقارير")), db: Session = Depends(get_db)):
     closing = db.get(DailyClosing, closing_id)
     if not closing:
         raise APIError(code="CLOSING_NOT_FOUND", message_ar="الإقفال المحدد غير موجود", message_en="Closing not found", status_code=400)
-    content, ext = _closing_full_ledger_export(db, closing, format)
+    content, ext = _closing_full_ledger_export(db, closing, format, currency)
     media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
     disposition = "attachment" if ext == "xlsx" else "inline"
     # closing_id embeds the branch/company name (often Arabic), which an HTTP
     # header can't carry (latin-1 only) — the filename must stay ASCII-safe.
     return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="closing_ledger_{closing.date}.{ext}"'})
+
+@router.get("/vaults/all/daily_ledger/export")
+def export_all_vaults_ledger(format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    """One combined statement across EVERY vault for a date range, optionally
+    limited to a single currency — the all-vaults counterpart of the
+    per-vault statements."""
+    vault_ids = list(db.scalars(select(Vault.id)).all())
+    headers, rows = _vaults_ledger_rows(db, vault_ids, date_from, date_to, currency)
+    title = "كشف حركة شامل — جميع الخزائن" + (f" — {currency}" if currency else " — كل العملات")
+    if format == "xlsx":
+        return StreamingResponse(build_excel(title, headers, rows), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="all_vaults_ledger.xlsx"'})
+    try:
+        buf = build_pdf(title, headers, rows)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحركة: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'inline; filename="all_vaults_ledger.pdf"'})
 
 @router.get("/vaults/{vault_id}/daily_ledger/export")
 def export_vault_daily_ledger(vault_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "LYD", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):

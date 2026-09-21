@@ -120,6 +120,9 @@ NEW_COLUMNS = [
     ("dollar_card_recipients", "bought_by", "VARCHAR(150)"),
     ("dollar_card_recipients", "payment_amount", "REAL"),
     ("fleet_accounts", "company", "VARCHAR(20) DEFAULT 'bayan'"),
+    ("fleet_vehicles", "seller_name", "VARCHAR(150)"),
+    ("fleet_vehicles", "sale_currency", "VARCHAR(10)"),
+    ("fleet_vehicles", "purchase_bank_details", "VARCHAR(400)"),
 ]
 
 
@@ -349,7 +352,7 @@ def seed_missing_system_settings(db: Session) -> None:
 # out of the new pages they gate. Grants each one to the system admin role only;
 # any other role that should get it is a deliberate call an admin makes from
 # Settings, not something a migration should decide for them.
-NEW_PERMISSIONS_FOR_ADMIN = ['إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان', 'إدارة شركة الامتياز']
+NEW_PERMISSIONS_FOR_ADMIN = ['إدارة بطاقات الدولار', 'إدارة سجل أسعار العملات', 'إدارة شركة بيان', 'إدارة شركة الامتياز', 'إدارة شركة اتقن المحركات']
 
 def grant_new_permissions_to_admin(db: Session) -> None:
     role = db.get(Role, 'مدير النظام')
@@ -399,4 +402,57 @@ def rename_fleet_status_active_to_display(db: Session) -> None:
     from .models import FleetVehicle
     for v in db.query(FleetVehicle).filter(FleetVehicle.status == "نشط").all():
         v.status = "عرض"
+    db.commit()
+
+
+def rename_fleet_wallets(db: Session) -> None:
+    """Keeps each company's built-in cash wallet named after the company's
+    current display name (so a rename shows up on old wallets too)."""
+    from .models import FleetAccount
+    from .routers.fleet import COMPANY_NAMES
+    for w in db.query(FleetAccount).filter(FleetAccount.account_type == "wallet").all():
+        name = COMPANY_NAMES.get(w.company or "bayan")
+        if name:
+            w.name = f"محفظة {name} النقدية ({w.currency})"
+    # The company was first registered as "اتقن الحركات" — fix roles that
+    # were granted the misspelled permission string.
+    from .models import Role
+    for role in db.query(Role).all():
+        perms = list(role.permissions or [])
+        if "إدارة شركة اتقن الحركات" in perms:
+            fixed = [p for p in perms if p != "إدارة شركة اتقن الحركات"]
+            if "إدارة شركة اتقن المحركات" not in fixed:
+                fixed.append("إدارة شركة اتقن المحركات")
+            role.permissions = fixed
+    db.commit()
+
+
+def backfill_manual_bank_balances(db: Session) -> None:
+    """Purchases/sales recorded through a hand-typed bank account before the
+    tracked-balance feature have no account link and so no "الرصيد بعد".
+    Links each one (oldest first) to the tracked manual account for its typed
+    account number and records the running balance. Idempotent: only rows with
+    no account yet are touched."""
+    from .models import FleetTransaction, FleetVehicle
+    from .routers.fleet import _get_manual_account
+    rows = (
+        db.query(FleetTransaction, FleetVehicle)
+        .join(FleetVehicle, FleetVehicle.id == FleetTransaction.vehicle_id)
+        .filter(FleetTransaction.account_id.is_(None))
+        .order_by(FleetTransaction.timestamp)
+        .all()
+    )
+    for tx, v in rows:
+        if tx.category == "شراء المركبة/المعدة" and v.purchase_payment_method == "bank":
+            details = v.purchase_bank_details
+        elif tx.category == "بيع المركبة/المعدة" and v.sale_payment_method == "bank" and not v.sale_account_id:
+            details = v.sale_bank_details
+        else:
+            continue
+        if not details:
+            continue
+        acct = _get_manual_account(db, v.company or "bayan", tx.currency, details)
+        acct.balance += tx.amount if tx.type == "income" else -tx.amount
+        tx.account_id = acct.id
+        tx.balance_after = acct.balance
     db.commit()

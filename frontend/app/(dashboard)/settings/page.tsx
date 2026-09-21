@@ -630,7 +630,7 @@ export default function SettingsPage() {
                 <XCircle className="h-4 w-4" /> تعطيل المصادقة الثنائية
               </button>
             ) : (
-              <form onSubmit={confirmMfaDisable} className="space-y-3 max-w-xs">
+              <form data-allow-enter data-no-confirm onSubmit={confirmMfaDisable} className="space-y-3 max-w-xs">
                 <label className="block text-sm font-medium text-foreground mb-1">أدخل كلمة المرور للتأكيد</label>
                 <input
                   type="password"
@@ -656,7 +656,7 @@ export default function SettingsPage() {
             </button>
           </div>
         ) : (
-          <form onSubmit={confirmMfaEnrollment} className="space-y-4 text-right max-w-md">
+          <form data-allow-enter data-no-confirm onSubmit={confirmMfaEnrollment} className="space-y-4 text-right max-w-md">
             <p className="text-sm text-muted-foreground">
               أضف هذا المفتاح يدوياً في تطبيق المصادقة الخاص بك (مثل Google Authenticator أو Authy)، ثم أدخل الرمز المكوّن من 6 أرقام لتأكيد التفعيل:
             </p>
@@ -714,7 +714,7 @@ export default function SettingsPage() {
                   )}
                 </div>
               ))}
-              <form onSubmit={(e) => { e.preventDefault(); addRole() }} className="flex items-center gap-1 pt-2 border-t border-border mt-2">
+              <form data-allow-enter data-no-confirm onSubmit={(e) => { e.preventDefault(); addRole() }} className="flex items-center gap-1 pt-2 border-t border-border mt-2">
                 <input
                   value={newRoleName}
                   onChange={(e) => setNewRoleName(e.target.value)}

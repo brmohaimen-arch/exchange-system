@@ -215,6 +215,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [ledgerSending, setLedgerSending] = useState(false)
 
   // ---------------- Combined ledger — all customer bank accounts at once ----------------
+  const [allVaultsOpen, setAllVaultsOpen] = useState(false)
+  const [allVaultsFrom, setAllVaultsFrom] = useState('')
+  const [allVaultsTo, setAllVaultsTo] = useState('')
+  const [allVaultsCcy, setAllVaultsCcy] = useState('')
+  const [allVaultsDownloading, setAllVaultsDownloading] = useState<string | null>(null)
   const [allAccountsLedgerOpen, setAllAccountsLedgerOpen] = useState(false)
   const [allAccountsLedgerDateFrom, setAllAccountsLedgerDateFrom] = useState('')
   const [allAccountsLedgerDateTo, setAllAccountsLedgerDateTo] = useState('')
@@ -384,6 +389,24 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       setError(err instanceof ApiError ? err.message : 'تعذر إرسال كشف الحركة اليومية عبر واتساب')
     } finally {
       setLedgerSending(false)
+    }
+  }
+
+  const downloadAllVaultsLedger = async (format: 'pdf' | 'xlsx') => {
+    setAllVaultsDownloading(format)
+    setError('')
+    try {
+      const params = new URLSearchParams({ format })
+      if (allVaultsFrom) params.set('date_from', allVaultsFrom)
+      if (allVaultsTo) params.set('date_to', allVaultsTo)
+      if (allVaultsCcy) params.set('currency', allVaultsCcy)
+      const path = `/vaults/all/daily_ledger/export?${params.toString()}`
+      if (format === 'pdf') await openFile(path)
+      else await downloadFile(path, 'all_vaults_ledger.xlsx')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الخزائن')
+    } finally {
+      setAllVaultsDownloading(null)
     }
   }
 
@@ -1371,6 +1394,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         <div className="flex items-center gap-2">
           {tab === 'vaults' && (
             <>
+              <button onClick={() => setAllVaultsOpen(true)} className="flex items-center gap-2 rounded-md border border-primary/30 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10 transition-colors">
+                <FileText className="h-4 w-4" /> كشف كل الخزائن
+              </button>
               {canManageVaults && (
                 <button onClick={openCreateVault} className="flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
                   <Plus className="h-4 w-4" /> إضافة خزنة
@@ -3393,6 +3419,45 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   )}
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {allVaultsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">كشف حركة شامل — جميع الخزائن</h3>
+              <button onClick={() => setAllVaultsOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-muted-foreground">جميع حركات كل الخزائن مجتمعة مرتبة زمنياً. اختر عملة واحدة للحصول على حركاتها فقط، أو اتركها «كل العملات».</p>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">من تاريخ</label>
+                  <DateInput value={allVaultsFrom} onChange={(e) => setAllVaultsFrom(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">إلى تاريخ</label>
+                  <DateInput value={allVaultsTo} onChange={(e) => setAllVaultsTo(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">العملة</label>
+                  <select value={allVaultsCcy} onChange={(e) => setAllVaultsCcy(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                    <option value="">كل العملات</option>
+                    {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={() => downloadAllVaultsLedger('pdf')} disabled={allVaultsDownloading === 'pdf'} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50">
+                  {allVaultsDownloading === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />} فتح PDF
+                </button>
+                <button onClick={() => downloadAllVaultsLedger('xlsx')} disabled={allVaultsDownloading === 'xlsx'} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50">
+                  {allVaultsDownloading === 'xlsx' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />} تحميل Excel
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -3,7 +3,8 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Users, Settings, ArrowRightLeft, Landmark, FileText, Coins, Package, Clock, ClipboardList, Building2, CreditCard, LineChart, Truck } from 'lucide-react'
+import { Fragment, useState } from 'react'
+import { LayoutDashboard, Users, Settings, ArrowRightLeft, Landmark, FileText, Coins, Package, Clock, ClipboardList, Building2, CreditCard, LineChart, Truck, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth-provider'
 import { useSidebarState } from '@/lib/sidebar-context'
@@ -28,15 +29,23 @@ const navigation: NavItem[] = [
   { name: 'العملاء', href: '/customers', icon: Users, permission: 'إدارة العملاء' },
   { name: 'بطاقات الدولار', href: '/dollar-cards', icon: CreditCard, permission: 'إدارة بطاقات الدولار' },
   { name: 'الأصول الثابتة', href: '/assets', icon: Package, permission: 'إدارة الأصول' },
-  { name: 'شركة بيان', href: '/fleet', icon: Truck, permission: 'إدارة شركة بيان' },
-  { name: 'شركة الامتياز', href: '/imtiaz', icon: Truck, permission: 'إدارة شركة الامتياز' },
   { name: 'التقارير والإقفال اليومي', href: '/reports', icon: FileText, permission: 'رؤية التقارير' },
   { name: 'الإعدادات', href: '/settings', icon: Settings },
+]
+
+// Sub-companies grouped under one collapsible "الشركات" entry.
+const companyLinks: NavItem[] = [
+  { name: 'بيان الدولية', href: '/fleet', icon: Truck, permission: 'إدارة شركة بيان' },
+  { name: 'شركة الامتياز', href: '/imtiaz', icon: Truck, permission: 'إدارة شركة الامتياز' },
+  { name: 'شركة اتقن المحركات', href: '/itqan', icon: Truck, permission: 'إدارة شركة اتقن المحركات' },
 ]
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
   const { hasPermission } = useAuth()
+  const visibleCompanies = companyLinks.filter((c) => !c.permission || hasPermission(c.permission))
+  const companyActive = visibleCompanies.some((c) => pathname === c.href)
+  const [companiesOpen, setCompaniesOpen] = useState(companyActive)
 
   return (
     <div className="flex h-full w-64 flex-col bg-card">
@@ -52,7 +61,44 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           if (item.permission && !hasPermission(item.permission)) return null
 
           const active = pathname === item.href
+          const companiesGroup = item.href === '/reports' && visibleCompanies.length > 0 && (
+            <div key="companies-group">
+              <button
+                type="button"
+                onClick={() => setCompaniesOpen((o) => !o)}
+                aria-expanded={companiesOpen}
+                className={cn(
+                  'flex w-full items-center px-3 py-2.5 text-sm font-medium rounded-md transition-colors',
+                  companyActive ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-accent hover:text-primary'
+                )}
+              >
+                <Building2 className="ml-3 h-5 w-5 flex-shrink-0" aria-hidden="true" />
+                الشركات
+                <ChevronDown className={cn('mr-auto h-4 w-4 transition-transform', companiesOpen && 'rotate-180')} aria-hidden="true" />
+              </button>
+              {companiesOpen && (
+                <div className="mt-1 space-y-1 pr-6">
+                  {visibleCompanies.map((c) => (
+                    <Link
+                      key={c.href}
+                      href={c.href}
+                      onClick={onNavigate}
+                      className={cn(
+                        'flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors',
+                        pathname === c.href ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-accent hover:text-primary'
+                      )}
+                    >
+                      <c.icon className="ml-3 h-4 w-4 flex-shrink-0" aria-hidden="true" />
+                      {c.name}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
           return (
+            <Fragment key={item.name}>
+            {companiesGroup}
             <Link
               key={item.name}
               href={item.href}
@@ -67,6 +113,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               <item.icon className="ml-3 h-5 w-5 flex-shrink-0" aria-hidden="true" />
               {item.name}
             </Link>
+            </Fragment>
           )
         })}
       </nav>
