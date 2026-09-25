@@ -12,6 +12,7 @@ import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 const typeLabels: Record<string, string> = { individual: 'فرد', company: 'شركة' }
 const debtStatusClass: Record<string, string> = {
@@ -206,6 +207,19 @@ function CustomersPageInner() {
   }
 
   useEffect(() => { load() }, [])
+
+  // Deep link from the quick-access search bar: /customers?customer=<id> opens that customer.
+  const customerParam = searchParams.get('customer')
+  useEffect(() => {
+    if (!customerParam || customers.length === 0) return
+    const target = customers.find((c) => c.id === customerParam)
+    if (target) {
+      setTab('customers')
+      setSelected(target)
+      setSelectedCurrency(Object.keys(target.balances)[0] || '')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerParam, customers.length])
 
   const openCreate = async () => {
     setEditingCustomer(null)
@@ -835,14 +849,17 @@ function CustomersPageInner() {
     const isNum = (id: string) => /^\d+$/.test(id)
     return [...customers].sort((a, b) => (isNum(a.id) && isNum(b.id) ? Number(a.id) - Number(b.id) : isNum(a.id) ? -1 : isNum(b.id) ? 1 : 0))
   }, [customers])
-  const pagedCustomers = paginate(sortedCustomers, customersPage)
+  const fCustomers = useTableFilters(sortedCustomers, { onChange: () => setCustomersPage(1) })
+  const pagedCustomers = paginate(fCustomers.filtered, customersPage)
 
   const sortedDebts = useMemo(() => [...debts].reverse(), [debts])
-  const pagedDebts = paginate(sortedDebts, debtsPage)
+  const fDebts = useTableFilters(sortedDebts, { onChange: () => setDebtsPage(1) })
+  const pagedDebts = paginate(fDebts.filtered, debtsPage)
 
   const openAdvancesCount = advances.filter((a) => a.status !== 'paid').length
   const sortedAdvances = useMemo(() => [...advances].reverse(), [advances])
-  const pagedAdvances = paginate(sortedAdvances, advancesPage)
+  const fAdvances = useTableFilters(sortedAdvances, { onChange: () => setAdvancesPage(1) })
+  const pagedAdvances = paginate(fAdvances.filtered, advancesPage)
 
   // Outstanding advances per customer/currency — a third, independent number
   // from balance and debt, never merged into either.
@@ -857,10 +874,12 @@ function CustomersPageInner() {
   }, [advances])
 
   const sortedDocuments = useMemo(() => [...documents].filter((d) => d.customerId).reverse(), [documents])
-  const pagedDocuments = paginate(sortedDocuments, documentsPage)
+  const fDocuments = useTableFilters(sortedDocuments, { onChange: () => setDocumentsPage(1) })
+  const pagedDocuments = paginate(fDocuments.filtered, documentsPage)
 
   const unlinkedDocuments = useMemo(() => [...documents].filter((d) => !d.customerId).reverse(), [documents])
-  const pagedUnlinkedDocuments = paginate(unlinkedDocuments, unlinkedDocsPage)
+  const fUnlinkedDocuments = useTableFilters(unlinkedDocuments, { onChange: () => setUnlinkedDocsPage(1) })
+  const pagedUnlinkedDocuments = paginate(fUnlinkedDocuments.filtered, unlinkedDocsPage)
 
   const statementEntries = useMemo(
     () => accountEntries
@@ -868,7 +887,8 @@ function CustomersPageInner() {
       .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
     [accountEntries, statementCustomer, statementCurrency]
   )
-  const pagedStatementEntries = paginate(statementEntries, statementPage)
+  const fStatementEntries = useTableFilters(statementEntries, { onChange: () => setStatementPage(1) })
+  const pagedStatementEntries = paginate(fStatementEntries.filtered, statementPage)
 
   const statementTransactions = useMemo(
     () => transactions
@@ -881,7 +901,8 @@ function CustomersPageInner() {
       .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
     [transactions, statementCustomer, statementCurrency]
   )
-  const pagedStatementTransactions = paginate(statementTransactions, statementTxPage)
+  const fStatementTransactions = useTableFilters(statementTransactions, { onChange: () => setStatementTxPage(1) })
+  const pagedStatementTransactions = paginate(fStatementTransactions.filtered, statementTxPage)
 
   const statementDocuments = useMemo(
     () => documents.filter((d) => d.customerId === statementCustomer?.id),
@@ -897,7 +918,8 @@ function CustomersPageInner() {
       .map((p) => ({ key: `debtpay_${p.id}`, kind: 'paid' as const, amount: p.amount, currency: p.currency, user: p.user, timestamp: p.timestamp }))
     return [...created, ...paid].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
   }, [debts, debtPayments, statementCustomer, statementCurrency])
-  const pagedStatementDebtHistory = paginate(statementDebtHistory, statementDebtPage)
+  const fStatementDebtHistory = useTableFilters(statementDebtHistory, { onChange: () => setStatementDebtPage(1) })
+  const pagedStatementDebtHistory = paginate(fStatementDebtHistory.filtered, statementDebtPage)
 
   const statementAdvanceHistory = useMemo(() => {
     const disbursed = advances
@@ -908,7 +930,8 @@ function CustomersPageInner() {
       .map((p) => ({ key: `advpay_${p.id}`, kind: 'paid' as const, amount: p.amount, currency: p.currency, user: p.user, timestamp: p.timestamp }))
     return [...disbursed, ...paid].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
   }, [advances, advancePayments, statementCustomer, statementCurrency])
-  const pagedStatementAdvanceHistory = paginate(statementAdvanceHistory, statementAdvancePage)
+  const fStatementAdvanceHistory = useTableFilters(statementAdvanceHistory, { onChange: () => setStatementAdvancePage(1) })
+  const pagedStatementAdvanceHistory = paginate(fStatementAdvanceHistory.filtered, statementAdvancePage)
 
   return (
     <div className="space-y-6">
@@ -926,6 +949,12 @@ function CustomersPageInner() {
             className="flex items-center gap-1.5 rounded-md border border-primary/30 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
           >
             <FileText className="h-3.5 w-3.5" /> كشف حساب شامل لجميع العملاء
+          </Link>
+          <Link
+            href="/customers/balances"
+            className="flex items-center gap-1.5 rounded-md border border-primary/30 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
+          >
+            <FileText className="h-3.5 w-3.5" /> كشف أرصدة العملاء (عليهم / لهم)
           </Link>
         </div>
         {tab === 'customers' && canManage && (
@@ -1061,6 +1090,7 @@ function CustomersPageInner() {
       {tab === 'customers' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fCustomers.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -1172,10 +1202,11 @@ function CustomersPageInner() {
               </tbody>
             </table>
           </div>
-          <TablePagination page={customersPage} totalItems={sortedCustomers.length} onPageChange={setCustomersPage} />
+          <TablePagination page={customersPage} totalItems={fCustomers.filtered.length} onPageChange={setCustomersPage} />
         </div>
       )}
 
+      {tab === 'cards' && customers.length > 0 && <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">{fCustomers.filterBar}</div>}
       {tab === 'cards' && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {customers.length === 0 ? (
@@ -1227,13 +1258,14 @@ function CustomersPageInner() {
               )}
             </div>
           ))}
-          <TablePagination page={customersPage} totalItems={sortedCustomers.length} onPageChange={setCustomersPage} />
+          <TablePagination page={customersPage} totalItems={fCustomers.filtered.length} onPageChange={setCustomersPage} />
         </div>
       )}
 
       {tab === 'debts' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fDebts.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -1298,13 +1330,14 @@ function CustomersPageInner() {
               </tbody>
             </table>
           </div>
-          <TablePagination page={debtsPage} totalItems={sortedDebts.length} onPageChange={setDebtsPage} />
+          <TablePagination page={debtsPage} totalItems={fDebts.filtered.length} onPageChange={setDebtsPage} />
         </div>
       )}
 
       {tab === 'advances' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fAdvances.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -1361,7 +1394,7 @@ function CustomersPageInner() {
               </tbody>
             </table>
           </div>
-          <TablePagination page={advancesPage} totalItems={sortedAdvances.length} onPageChange={setAdvancesPage} />
+          <TablePagination page={advancesPage} totalItems={fAdvances.filtered.length} onPageChange={setAdvancesPage} />
         </div>
       )}
 
@@ -1374,6 +1407,7 @@ function CustomersPageInner() {
                 <p className="text-xs text-muted-foreground mt-1">مستندات تم رفعها قبل إنشاء أو تحديد سجل العميل — اربطها بعميل فور توفره</p>
               </div>
               <div className="overflow-x-auto">
+                {fUnlinkedDocuments.filterBar}
                 <table className="w-full text-sm text-right">
                   <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                     <tr>
@@ -1411,12 +1445,13 @@ function CustomersPageInner() {
                   </tbody>
                 </table>
               </div>
-              <TablePagination page={unlinkedDocsPage} totalItems={unlinkedDocuments.length} onPageChange={setUnlinkedDocsPage} />
+              <TablePagination page={unlinkedDocsPage} totalItems={fUnlinkedDocuments.filtered.length} onPageChange={setUnlinkedDocsPage} />
             </div>
           )}
 
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
+              {fDocuments.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -1467,7 +1502,7 @@ function CustomersPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={documentsPage} totalItems={sortedDocuments.length} onPageChange={setDocumentsPage} />
+            <TablePagination page={documentsPage} totalItems={fDocuments.filtered.length} onPageChange={setDocumentsPage} />
           </div>
         </div>
       )}
@@ -2605,6 +2640,7 @@ function CustomersPageInner() {
               <div className="mb-4">
                 <p className="text-sm font-medium text-foreground mb-2">معاملات الصرافة (شراء / بيع / تبديل)</p>
                 <div className="rounded-md border border-border overflow-x-auto">
+                  {fStatementTransactions.filterBar}
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>
@@ -2646,12 +2682,13 @@ function CustomersPageInner() {
                     </tbody>
                   </table>
                 </div>
-                <TablePagination page={statementTxPage} totalItems={statementTransactions.length} onPageChange={setStatementTxPage} />
+                <TablePagination page={statementTxPage} totalItems={fStatementTransactions.filtered.length} onPageChange={setStatementTxPage} />
               </div>
 
               <div>
                 <p className="text-sm font-medium text-foreground mb-2">حركات الإيداع والسحب والتحويل على الحساب</p>
                 <div className="rounded-md border border-border overflow-x-auto">
+                  {fStatementEntries.filterBar}
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>
@@ -2697,12 +2734,13 @@ function CustomersPageInner() {
                     </tbody>
                   </table>
                 </div>
-                <TablePagination page={statementPage} totalItems={statementEntries.length} onPageChange={setStatementPage} />
+                <TablePagination page={statementPage} totalItems={fStatementEntries.filtered.length} onPageChange={setStatementPage} />
               </div>
 
               <div>
                 <p className="text-sm font-medium text-foreground mb-2">الديون</p>
                 <div className="rounded-md border border-border overflow-x-auto">
+                  {fStatementDebtHistory.filterBar}
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>
@@ -2732,12 +2770,13 @@ function CustomersPageInner() {
                     </tbody>
                   </table>
                 </div>
-                <TablePagination page={statementDebtPage} totalItems={statementDebtHistory.length} onPageChange={setStatementDebtPage} />
+                <TablePagination page={statementDebtPage} totalItems={fStatementDebtHistory.filtered.length} onPageChange={setStatementDebtPage} />
               </div>
 
               <div>
                 <p className="text-sm font-medium text-foreground mb-2">السلف</p>
                 <div className="rounded-md border border-border overflow-x-auto">
+                  {fStatementAdvanceHistory.filterBar}
                   <table className="w-full text-xs text-right">
                     <thead className="bg-secondary/50 text-muted-foreground">
                       <tr>
@@ -2767,7 +2806,7 @@ function CustomersPageInner() {
                     </tbody>
                   </table>
                 </div>
-                <TablePagination page={statementAdvancePage} totalItems={statementAdvanceHistory.length} onPageChange={setStatementAdvancePage} />
+                <TablePagination page={statementAdvancePage} totalItems={fStatementAdvanceHistory.filtered.length} onPageChange={setStatementAdvancePage} />
               </div>
             </div>
           </div>

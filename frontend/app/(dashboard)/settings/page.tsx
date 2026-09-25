@@ -7,6 +7,7 @@ import { ApiError, useAuth } from '@/lib/auth-provider'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 interface Branch { id: string; name: string; city: string }
 interface VaultLite { id: string; name: string }
@@ -147,19 +148,24 @@ export default function SettingsPage() {
   }, [selectedRole, roles])
 
   const sortedUsers = useMemo(() => [...users].reverse(), [users])
-  const pagedUsers = paginate(sortedUsers, usersPage)
+  const fUsers = useTableFilters(sortedUsers, { onChange: () => setUsersPage(1) })
+  const pagedUsers = paginate(fUsers.filtered, usersPage)
 
   const sortedRules = useMemo(() => [...rules].reverse(), [rules])
-  const pagedRules = paginate(sortedRules, rulesPage)
+  const fRules = useTableFilters(sortedRules, { onChange: () => setRulesPage(1) })
+  const pagedRules = paginate(fRules.filtered, rulesPage)
 
   const sortedAuditLogs = useMemo(() => [...auditLogs].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [auditLogs])
-  const pagedAuditLogs = paginate(sortedAuditLogs, auditLogsPage)
+  const fAuditLogs = useTableFilters(sortedAuditLogs, { onChange: () => setAuditLogsPage(1) })
+  const pagedAuditLogs = paginate(fAuditLogs.filtered, auditLogsPage)
 
   const sortedLoginLogs = useMemo(() => [...loginLogs].sort((a, b) => (a.loginTime < b.loginTime ? 1 : -1)), [loginLogs])
-  const pagedLoginLogs = paginate(sortedLoginLogs, loginLogsPage)
+  const fLoginLogs = useTableFilters(sortedLoginLogs, { onChange: () => setLoginLogsPage(1) })
+  const pagedLoginLogs = paginate(fLoginLogs.filtered, loginLogsPage)
 
   const sortedBackups = useMemo(() => [...backups].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [backups])
-  const pagedBackups = paginate(sortedBackups, backupsPage)
+  const fBackups = useTableFilters(sortedBackups, { onChange: () => setBackupsPage(1) })
+  const pagedBackups = paginate(fBackups.filtered, backupsPage)
 
   const setField = (key: string, value: any) => setSettings((s) => ({ ...s, [key]: value }))
 
@@ -780,6 +786,7 @@ export default function SettingsPage() {
             </button>
           </div>
           <div className="overflow-x-auto">
+            {fUsers.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -825,7 +832,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
-          <TablePagination page={usersPage} totalItems={sortedUsers.length} onPageChange={setUsersPage} />
+          <TablePagination page={usersPage} totalItems={fUsers.filtered.length} onPageChange={setUsersPage} />
         </div>
       )}
 
@@ -846,6 +853,7 @@ export default function SettingsPage() {
             </button>
           </div>
           <div className="overflow-x-auto">
+            {fRules.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -879,7 +887,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
-          <TablePagination page={rulesPage} totalItems={sortedRules.length} onPageChange={setRulesPage} />
+          <TablePagination page={rulesPage} totalItems={fRules.filtered.length} onPageChange={setRulesPage} />
         </div>
       )}
 
@@ -902,6 +910,7 @@ export default function SettingsPage() {
                 {chainStatus.valid ? 'السجل سليم ولم يتم التلاعب به' : 'تنبيه: تم اكتشاف كسر في سلسلة السجل'}
               </div>
             )}
+            {fAuditLogs.filterBar}
             <div className="max-h-96 overflow-y-auto divide-y divide-border">
               {sortedAuditLogs.length === 0 ? (
                 <p className="px-6 py-8 text-center text-muted-foreground text-sm">لا توجد سجلات</p>
@@ -916,7 +925,7 @@ export default function SettingsPage() {
                 </div>
               ))}
             </div>
-            <TablePagination page={auditLogsPage} totalItems={sortedAuditLogs.length} onPageChange={setAuditLogsPage} />
+            <TablePagination page={auditLogsPage} totalItems={fAuditLogs.filtered.length} onPageChange={setAuditLogsPage} />
           </div>
 
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -924,6 +933,7 @@ export default function SettingsPage() {
               <h3 className="text-lg font-semibold text-foreground">سجل تسجيل الدخول</h3>
             </div>
             <div className="overflow-x-auto max-h-96 overflow-y-auto">
+              {fLoginLogs.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase sticky top-0">
                   <tr>
@@ -952,7 +962,7 @@ export default function SettingsPage() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={loginLogsPage} totalItems={sortedLoginLogs.length} onPageChange={setLoginLogsPage} />
+            <TablePagination page={loginLogsPage} totalItems={fLoginLogs.filtered.length} onPageChange={setLoginLogsPage} />
           </div>
         </div>
       )}
@@ -1231,6 +1241,7 @@ export default function SettingsPage() {
             </button>
           </div>
           <div className="overflow-x-auto">
+            {fBackups.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -1258,7 +1269,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
-          <TablePagination page={backupsPage} totalItems={sortedBackups.length} onPageChange={setBackupsPage} />
+          <TablePagination page={backupsPage} totalItems={fBackups.filtered.length} onPageChange={setBackupsPage} />
         </div>
       )}
 

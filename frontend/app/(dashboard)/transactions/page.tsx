@@ -7,6 +7,7 @@ import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { usePersistedState, clearPersistedState } from '@/lib/usePersistedState'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 const paymentMethodLabels: Record<string, string> = {
   cash: 'نقداً', customer_account: 'حساب العميل', bank_account: 'حساب بنكي', debt: 'دين (آجل)',
@@ -394,7 +395,8 @@ export default function TransactionsPage() {
   }
 
   const sortedTransactions = useMemo(() => [...transactions].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [transactions])
-  const pagedTransactions = paginate(sortedTransactions, historyPage)
+  const fTransactions = useTableFilters(sortedTransactions, { onChange: () => setHistoryPage(1) })
+  const pagedTransactions = paginate(fTransactions.filtered, historyPage)
 
   return (
     <div className="space-y-6">
@@ -816,6 +818,7 @@ export default function TransactionsPage() {
           <h3 className="text-lg font-semibold text-foreground">آخر العمليات</h3>
         </div>
         <div className="overflow-x-auto">
+          {fTransactions.filterBar}
           <table className="w-full text-sm text-right">
             <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
               <tr>
@@ -895,7 +898,7 @@ export default function TransactionsPage() {
             </tbody>
           </table>
         </div>
-        <TablePagination page={historyPage} totalItems={sortedTransactions.length} onPageChange={setHistoryPage} />
+        <TablePagination page={historyPage} totalItems={fTransactions.filtered.length} onPageChange={setHistoryPage} />
       </div>
 
       {/* Close Shift Modal */}

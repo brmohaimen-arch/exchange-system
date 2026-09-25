@@ -7,6 +7,7 @@ import { api, downloadFile, openFile, ComplianceFlag, JournalEntry, CancelledTra
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { DateInput } from '@/components/ui/date-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 interface BreakdownEntry { profit: number; count: number }
 
@@ -90,22 +91,28 @@ function ReportsPageInner() {
   const canReverse = hasPermission('إنشاء عملية عكسية')
 
   const sortedFlags = useMemo(() => [...flags].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [flags])
-  const pagedFlags = paginate(sortedFlags, flagsPage)
+  const fFlags = useTableFilters(sortedFlags, { onChange: () => setFlagsPage(1) })
+  const pagedFlags = paginate(fFlags.filtered, flagsPage)
 
   const sortedJournalEntries = useMemo(() => [...journalEntries].sort((a, b) => (a.date < b.date ? 1 : -1)), [journalEntries])
-  const pagedJournalEntries = paginate(sortedJournalEntries, journalPage)
+  const fJournal = useTableFilters(sortedJournalEntries, { onChange: () => setJournalPage(1) })
+  const pagedJournalEntries = paginate(fJournal.filtered, journalPage)
 
   const sortedCancelledTx = useMemo(() => [...cancelledTx].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [cancelledTx])
-  const pagedCancelledTx = paginate(sortedCancelledTx, cancelledPage)
+  const fCancelledTx = useTableFilters(sortedCancelledTx, { onChange: () => setCancelledPage(1) })
+  const pagedCancelledTx = paginate(fCancelledTx.filtered, cancelledPage)
 
   const branchEntries = useMemo(() => Object.entries(profit?.profitByBranch || {}).sort((a, b) => b[1].profit - a[1].profit), [profit])
-  const pagedBranchEntries = paginate(branchEntries, branchPage)
+  const fBranchEntries = useTableFilters(branchEntries, { onChange: () => setBranchPage(1) })
+  const pagedBranchEntries = paginate(fBranchEntries.filtered, branchPage)
 
   const cashierEntries = useMemo(() => Object.entries(profit?.profitByCashier || {}).sort((a, b) => b[1].profit - a[1].profit), [profit])
-  const pagedCashierEntries = paginate(cashierEntries, cashierPage)
+  const fCashierEntries = useTableFilters(cashierEntries, { onChange: () => setCashierPage(1) })
+  const pagedCashierEntries = paginate(fCashierEntries.filtered, cashierPage)
 
   const volumeEntries = useMemo(() => Object.entries(profit?.volumeByCurrency || {}), [profit])
-  const pagedVolumeEntries = paginate(volumeEntries, volumePage)
+  const fVolumeEntries = useTableFilters(volumeEntries, { onChange: () => setVolumePage(1) })
+  const pagedVolumeEntries = paginate(fVolumeEntries.filtered, volumePage)
 
   const profitQuery = () => {
     const params = new URLSearchParams()
@@ -127,6 +134,7 @@ function ReportsPageInner() {
 
   // ---------------- Closing tab state ----------------
   const [branches, setBranches] = useState<Branch[]>([])
+  const fBranches = useTableFilters(branches)
   const [closings, setClosings] = useState<DailyClosingDTO[]>([])
   const [closingTarget, setClosingTarget] = useState<{ level: 'branch' | 'company'; id: string; name: string } | null>(null)
   const [closeNotes, setCloseNotes] = useState('')
@@ -163,7 +171,8 @@ function ReportsPageInner() {
   const allBranchesClosed = branches.length > 0 && branches.every((b) => closedBranchIds.has(b.id))
 
   const sortedClosings = useMemo(() => [...closings].sort((a, b) => (a.closedAt < b.closedAt ? 1 : -1)), [closings])
-  const pagedClosings = paginate(sortedClosings, closingsPage)
+  const fClosings = useTableFilters(sortedClosings, { onChange: () => setClosingsPage(1) })
+  const pagedClosings = paginate(fClosings.filtered, closingsPage)
 
   const openClose = (level: 'branch' | 'company', id: string, name: string) => {
     setClosingTarget({ level, id, name })
@@ -400,6 +409,7 @@ function ReportsPageInner() {
               <h3 className="text-lg font-semibold text-foreground">عمليات تستوجب المراجعة (الامتثال ومكافحة غسل الأموال)</h3>
             </div>
             <div className="overflow-x-auto">
+              {fFlags.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -442,7 +452,7 @@ function ReportsPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={flagsPage} totalItems={sortedFlags.length} onPageChange={setFlagsPage} />
+            <TablePagination page={flagsPage} totalItems={fFlags.filtered.length} onPageChange={setFlagsPage} />
           </div>
 
           {/* Journal Entries */}
@@ -451,6 +461,7 @@ function ReportsPageInner() {
               <BookOpen className="h-4 w-4 text-primary" />
               <h3 className="text-lg font-semibold text-foreground">القيود المحاسبية</h3>
             </div>
+            {fJournal.filterBar}
             <div className="divide-y divide-border max-h-[28rem] overflow-y-auto">
               {journalEntries.length === 0 ? (
                 <p className="px-6 py-8 text-center text-muted-foreground text-sm">لا توجد قيود محاسبية</p>
@@ -513,7 +524,7 @@ function ReportsPageInner() {
                 </div>
               ))}
             </div>
-            <TablePagination page={journalPage} totalItems={sortedJournalEntries.length} onPageChange={setJournalPage} />
+            <TablePagination page={journalPage} totalItems={fJournal.filtered.length} onPageChange={setJournalPage} />
           </div>
 
           {/* Profit breakdown by branch / cashier */}
@@ -524,6 +535,7 @@ function ReportsPageInner() {
                 <h3 className="text-lg font-semibold text-foreground">الأرباح حسب الفرع</h3>
               </div>
               <div className="overflow-x-auto">
+                {fBranchEntries.filterBar}
                 <table className="w-full text-sm text-right">
                   <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                     <tr>
@@ -545,7 +557,7 @@ function ReportsPageInner() {
                   </tbody>
                 </table>
               </div>
-              <TablePagination page={branchPage} totalItems={branchEntries.length} onPageChange={setBranchPage} />
+              <TablePagination page={branchPage} totalItems={fBranchEntries.filtered.length} onPageChange={setBranchPage} />
             </div>
 
             <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -554,6 +566,7 @@ function ReportsPageInner() {
                 <h3 className="text-lg font-semibold text-foreground">الأرباح حسب الصراف</h3>
               </div>
               <div className="overflow-x-auto">
+                {fCashierEntries.filterBar}
                 <table className="w-full text-sm text-right">
                   <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                     <tr>
@@ -575,7 +588,7 @@ function ReportsPageInner() {
                   </tbody>
                 </table>
               </div>
-              <TablePagination page={cashierPage} totalItems={cashierEntries.length} onPageChange={setCashierPage} />
+              <TablePagination page={cashierPage} totalItems={fCashierEntries.filtered.length} onPageChange={setCashierPage} />
             </div>
           </div>
 
@@ -586,6 +599,7 @@ function ReportsPageInner() {
               <h3 className="text-lg font-semibold text-foreground">العمليات الملغاة (المعكوسة)</h3>
             </div>
             <div className="overflow-x-auto">
+              {fCancelledTx.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -615,7 +629,7 @@ function ReportsPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={cancelledPage} totalItems={sortedCancelledTx.length} onPageChange={setCancelledPage} />
+            <TablePagination page={cancelledPage} totalItems={fCancelledTx.filtered.length} onPageChange={setCancelledPage} />
           </div>
 
           {/* Volume by currency */}
@@ -624,6 +638,7 @@ function ReportsPageInner() {
               <h3 className="text-lg font-semibold text-foreground">حجم التداول حسب العملة</h3>
             </div>
             <div className="overflow-x-auto">
+              {fVolumeEntries.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -645,7 +660,7 @@ function ReportsPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={volumePage} totalItems={volumeEntries.length} onPageChange={setVolumePage} />
+            <TablePagination page={volumePage} totalItems={fVolumeEntries.filtered.length} onPageChange={setVolumePage} />
           </div>
         </>
       )}
@@ -658,6 +673,7 @@ function ReportsPageInner() {
               <Building2 className="h-4 w-4 text-primary" />
               <h3 className="text-lg font-semibold text-foreground">إقفال يومية الفروع</h3>
             </div>
+            {fBranches.filterBar}
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
@@ -670,7 +686,7 @@ function ReportsPageInner() {
                 <tbody className="divide-y divide-border">
                   {branches.length === 0 ? (
                     <tr><td colSpan={3} className="px-6 py-8 text-center text-muted-foreground">لا توجد فروع مسجلة</td></tr>
-                  ) : branches.map((b) => {
+                  ) : fBranches.filtered.map((b) => {
                     const closed = closedBranchIds.has(b.id)
                     return (
                       <tr key={b.id} className="hover:bg-muted/50 transition-colors">
@@ -728,6 +744,7 @@ function ReportsPageInner() {
             <div className="border-b border-border px-6 py-4 bg-secondary/30">
               <h3 className="text-lg font-semibold text-foreground">سجل الإقفالات</h3>
             </div>
+            {fClosings.filterBar}
             <div className="divide-y divide-border">
               {closings.length === 0 ? (
                 <p className="px-6 py-8 text-center text-muted-foreground text-sm">لا توجد إقفالات مسجلة</p>
@@ -816,7 +833,7 @@ function ReportsPageInner() {
                 </div>
               ))}
             </div>
-            <TablePagination page={closingsPage} totalItems={sortedClosings.length} onPageChange={setClosingsPage} />
+            <TablePagination page={closingsPage} totalItems={fClosings.filtered.length} onPageChange={setClosingsPage} />
           </div>
 
           {closingTarget && (

@@ -10,6 +10,7 @@ import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from '@/components/ui/chart'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -102,6 +103,7 @@ export default function CurrencyHistoryPage() {
     [entries]
   )
   const sortedEntries = useMemo(() => [...entries].sort((a, b) => (a.date < b.date ? 1 : -1)), [entries])
+  const fEntries = useTableFilters(sortedEntries)
   const currencyFlag = (code: string) => currencies.find((c) => c.code === code)?.flag || ''
 
   return (
@@ -190,6 +192,7 @@ export default function CurrencyHistoryPage() {
         <div className="border-b border-border px-6 py-4 bg-secondary/30">
           <h3 className="text-sm font-semibold text-foreground">سجل الإدخالات</h3>
         </div>
+        {fEntries.filterBar}
         {sortedEntries.length === 0 ? (
           <p className="px-6 py-8 text-center text-sm text-muted-foreground">لا توجد إدخالات بعد</p>
         ) : (
@@ -206,7 +209,7 @@ export default function CurrencyHistoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {sortedEntries.map((row) => (
+                {fEntries.filtered.map((row) => (
                   <tr key={row.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-4 py-3 font-medium">{row.date}</td>
                     <td className="px-4 py-3" dir="ltr">{row.buyRate.toLocaleString()}</td>

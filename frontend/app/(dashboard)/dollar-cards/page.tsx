@@ -9,6 +9,7 @@ import { useConfirm } from '@/components/ConfirmProvider'
 import { DateInput } from '@/components/ui/date-input'
 import { formatDate } from '@/lib/format-date'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 const STATUS_LABELS: Record<DollarCardStatus, { label: string; className: string }> = {
   waiting: { label: 'قيد الانتظار', className: 'bg-secondary text-muted-foreground' },
@@ -172,7 +173,8 @@ export default function DollarCardsPage() {
     }
   }
 
-  const pagedRecipients = paginate(recipients, page)
+  const fRecipients = useTableFilters(recipients, { onChange: () => setPage(1) })
+  const pagedRecipients = paginate(fRecipients.filtered, page)
 
   return (
     <div className="space-y-6">
@@ -197,6 +199,7 @@ export default function DollarCardsPage() {
           <p className="px-6 py-8 text-center text-sm text-muted-foreground">لا يوجد مستفيدون مسجلون بعد</p>
         ) : (
           <div className="overflow-x-auto">
+            {fRecipients.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -265,7 +268,7 @@ export default function DollarCardsPage() {
             </table>
           </div>
         )}
-        <TablePagination page={page} totalItems={recipients.length} onPageChange={setPage} />
+        <TablePagination page={page} totalItems={fRecipients.filtered.length} onPageChange={setPage} />
       </div>
 
       {/* Create/Edit modal */}

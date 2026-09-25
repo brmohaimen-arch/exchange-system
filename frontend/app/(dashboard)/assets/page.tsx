@@ -9,6 +9,7 @@ import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 interface BranchLite { id: string; name: string }
 
@@ -155,12 +156,18 @@ function AssetsPageInner() {
   const [assetDocsPage, setAssetDocsPage] = useState(1)
   const [depreciationPage, setDepreciationPage] = useState(1)
 
-  const pagedAssets = paginate(sortedAssets, assetsPage)
-  const pagedVehicles = paginate(sortedVehicles, vehiclesPage)
-  const pagedEstates = paginate(sortedEstates, estatesPage)
-  const pagedMaintenance = paginate(sortedMaintenance, maintenancePage)
-  const pagedAssetDocs = paginate(sortedAssetDocs, assetDocsPage)
-  const pagedDepreciation = paginate(sortedDepreciation, depreciationPage)
+  const fAssets = useTableFilters(sortedAssets, { onChange: () => setAssetsPage(1) })
+  const pagedAssets = paginate(fAssets.filtered, assetsPage)
+  const fVehicles = useTableFilters(sortedVehicles, { onChange: () => setVehiclesPage(1) })
+  const pagedVehicles = paginate(fVehicles.filtered, vehiclesPage)
+  const fEstates = useTableFilters(sortedEstates, { onChange: () => setEstatesPage(1) })
+  const pagedEstates = paginate(fEstates.filtered, estatesPage)
+  const fMaintenance = useTableFilters(sortedMaintenance, { onChange: () => setMaintenancePage(1) })
+  const pagedMaintenance = paginate(fMaintenance.filtered, maintenancePage)
+  const fAssetDocs = useTableFilters(sortedAssetDocs, { onChange: () => setAssetDocsPage(1) })
+  const pagedAssetDocs = paginate(fAssetDocs.filtered, assetDocsPage)
+  const fDepreciation = useTableFilters(sortedDepreciation, { onChange: () => setDepreciationPage(1) })
+  const pagedDepreciation = paginate(fDepreciation.filtered, depreciationPage)
 
   const load = async () => {
     try {
@@ -681,6 +688,7 @@ function AssetsPageInner() {
           )}
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
+              {fAssets.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -739,7 +747,7 @@ function AssetsPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={assetsPage} totalItems={sortedAssets.length} onPageChange={setAssetsPage} />
+            <TablePagination page={assetsPage} totalItems={fAssets.filtered.length} onPageChange={setAssetsPage} />
           </div>
         </div>
       )}
@@ -769,6 +777,7 @@ function AssetsPageInner() {
           </div>
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
+              {fVehicles.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -823,7 +832,7 @@ function AssetsPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={vehiclesPage} totalItems={sortedVehicles.length} onPageChange={setVehiclesPage} />
+            <TablePagination page={vehiclesPage} totalItems={fVehicles.filtered.length} onPageChange={setVehiclesPage} />
           </div>
         </div>
       )}
@@ -837,6 +846,7 @@ function AssetsPageInner() {
               </button>
             </div>
           )}
+          {estates.length > 0 && <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">{fEstates.filterBar}</div>}
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {estates.length === 0 ? (
               <p className="text-muted-foreground text-sm">لا توجد عقارات مسجلة</p>
@@ -870,7 +880,7 @@ function AssetsPageInner() {
               </div>
             ))}
           </div>
-          <TablePagination page={estatesPage} totalItems={sortedEstates.length} onPageChange={setEstatesPage} />
+          <TablePagination page={estatesPage} totalItems={fEstates.filtered.length} onPageChange={setEstatesPage} />
         </div>
       )}
 
@@ -885,6 +895,7 @@ function AssetsPageInner() {
           )}
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
+              {fMaintenance.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -930,7 +941,7 @@ function AssetsPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={maintenancePage} totalItems={sortedMaintenance.length} onPageChange={setMaintenancePage} />
+            <TablePagination page={maintenancePage} totalItems={fMaintenance.filtered.length} onPageChange={setMaintenancePage} />
           </div>
         </div>
       )}
@@ -946,6 +957,7 @@ function AssetsPageInner() {
           )}
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
+              {fAssetDocs.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -996,7 +1008,7 @@ function AssetsPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={assetDocsPage} totalItems={sortedAssetDocs.length} onPageChange={setAssetDocsPage} />
+            <TablePagination page={assetDocsPage} totalItems={fAssetDocs.filtered.length} onPageChange={setAssetDocsPage} />
           </div>
         </div>
       )}
@@ -1004,6 +1016,7 @@ function AssetsPageInner() {
       {tab === 'depreciation' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fDepreciation.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -1033,7 +1046,7 @@ function AssetsPageInner() {
               </tbody>
             </table>
           </div>
-          <TablePagination page={depreciationPage} totalItems={sortedDepreciation.length} onPageChange={setDepreciationPage} />
+          <TablePagination page={depreciationPage} totalItems={fDepreciation.filtered.length} onPageChange={setDepreciationPage} />
         </div>
       )}
 

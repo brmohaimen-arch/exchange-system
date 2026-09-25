@@ -179,6 +179,23 @@ def _style_for(text, arabic_style: ParagraphStyle, latin_style: ParagraphStyle) 
 _NUMERIC_COLUMN_KEYWORDS = ("الرصيد", "التاريخ", "دخول", "خروج", "عليه", "سعر")
 _NUMERIC_COLUMN_FACTOR = 1.6
 
+# A negative amount ("-7,503.00", optionally followed by a currency code) is drawn in red —
+# the customer statements show عليه (the customer owes) that way.
+_NEGATIVE_AMOUNT_RE = re.compile(r"^-\s?\d[\d,]*(\.\d+)?(\s*[A-Za-z]{3})?$")
+_RED = "#DC2626"
+
+
+def _is_negative_amount(cell) -> bool:
+    return isinstance(cell, str) and bool(_NEGATIVE_AMOUNT_RE.match(cell.strip()))
+
+
+def _cell_paragraph(cell, width, font_name, font_size, arabic_style, latin_style):
+    text = shape_arabic(cell, width, font_name, font_size)
+    if _is_negative_amount(cell):
+        text = f'<font color="{_RED}">{text}</font>'
+    return Paragraph(text, _style_for(cell, arabic_style, latin_style))
+
+
 def _column_weights(headers: list[str]) -> list[float]:
     weights = []
     for h in headers:
@@ -229,6 +246,8 @@ def build_excel(sheet_title: str, headers: list[str], rows: list[list]) -> io.By
     for row_idx, row in enumerate(rows, start=2):
         for col_idx, value in enumerate(row, start=1):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            if _is_negative_amount(value):
+                cell.font = Font(color="DC2626")
             if col_idx in wide_cols:
                 cell.alignment = Alignment(horizontal="right", wrap_text=True)
 
@@ -269,7 +288,7 @@ def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
     # Arabic reads right-to-left, so the header/row columns are reversed for display
     # while keeping the shaped text itself correctly ordered per-cell.
     display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, 9), _style_for(h, header_style, header_style_latin)) for i, h in enumerate(reversed(headers))]
-    display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, 9), _style_for(cell, cell_style, cell_style_latin)) for i, cell in enumerate(reversed(row))] for row in rows]
+    display_rows = [[_cell_paragraph(cell, rev_widths[i] - 6, font_name, 9, cell_style, cell_style_latin) for i, cell in enumerate(reversed(row))] for row in rows]
 
     table_data = [display_headers] + display_rows
     table = Table(table_data, repeatRows=1, colWidths=rev_widths)
@@ -384,6 +403,8 @@ def build_sectioned_excel(sections: list[tuple[str, list[str], list[list]]]) -> 
             for row in rows:
                 for col_idx, value in enumerate(row, start=1):
                     cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    if _is_negative_amount(value):
+                        cell.font = Font(color="DC2626")
                     if col_idx in wide_cols:
                         cell.alignment = Alignment(horizontal="right", wrap_text=True)
                 row_idx += 1
@@ -474,7 +495,7 @@ def build_sectioned_pdf(
             h_style, h_style_lat = ParagraphStyle("SH", parent=header_style, fontSize=fs), ParagraphStyle("SHL", parent=header_style_latin, fontSize=fs)
             c_style, c_style_lat = ParagraphStyle("SC", parent=cell_style, fontSize=fs), ParagraphStyle("SCL", parent=cell_style_latin, fontSize=fs)
             display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, fs), _style_for(h, h_style, h_style_lat)) for i, h in enumerate(reversed(headers))]
-            display_rows = [[Paragraph(shape_arabic(cell, rev_widths[i] - 6, font_name, fs), _style_for(cell, c_style, c_style_lat)) for i, cell in enumerate(reversed(row))] for row in rows]
+            display_rows = [[_cell_paragraph(cell, rev_widths[i] - 6, font_name, fs, c_style, c_style_lat) for i, cell in enumerate(reversed(row))] for row in rows]
             table_data = [display_headers] + display_rows
             table = Table(table_data, repeatRows=1, colWidths=rev_widths)
             table.setStyle(TableStyle([

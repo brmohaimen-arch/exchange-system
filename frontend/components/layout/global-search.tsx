@@ -10,6 +10,7 @@ import {
   CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem, CommandShortcut,
 } from '@/components/ui/command'
 import { api, Customer, Transaction } from '@/lib/api-client'
+import { matchesQuery, matchesPersonQuery, normalizeText } from '@/lib/search'
 
 interface PageEntry {
   label: string
@@ -72,15 +73,26 @@ export function GlobalSearch() {
     router.push(href)
   }
 
-  const q = query.trim().toLowerCase()
-  const matchedPages = PAGES.filter((p) => !q || p.label.toLowerCase().includes(q) || p.keywords.toLowerCase().includes(q))
+  // cmdk's own fuzzy filter is turned off (shouldFilter={false} below) — it only ever
+  // looked at each item's `value` string, so a customer's phone number was never
+  // searchable. Matching is done here instead, folding Arabic spelling variants and
+  // accepting a phone in any local/international form (0918…, 918…, +218 91-8…).
+  const q = normalizeText(query)
+  const matchedPages = PAGES.filter((p) => !q || matchesQuery(q, p.label, p.keywords))
 
   const matchedCustomers = q
-    ? customers.filter((c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.phone?.toLowerCase().includes(q)).slice(0, 5)
+    ? customers
+        .filter((c) => matchesPersonQuery(q, [c.name, c.id, c.idNumber], c.phone))
+        .sort((a, b) => {
+          // exact code first, then names that start with what was typed
+          const score = (c: Customer) => (normalizeText(c.id) === q ? 2 : 0) + (normalizeText(c.name).startsWith(q) ? 1 : 0)
+          return score(b) - score(a)
+        })
+        .slice(0, 8)
     : []
 
   const matchedTransactions = q
-    ? transactions.filter((t) => t.id.toLowerCase().includes(q) || t.customerName?.toLowerCase().includes(q)).slice(0, 5)
+    ? transactions.filter((t) => matchesQuery(q, t.id, t.customerName)).slice(0, 5)
     : []
 
   return (
@@ -95,8 +107,8 @@ export function GlobalSearch() {
         <CommandShortcut className="ml-0 hidden sm:inline-flex">Ctrl K</CommandShortcut>
       </button>
 
-      <CommandDialog open={open} onOpenChange={setOpen} title="بحث سريع" description="ابحث في صفحات النظام أو العملاء أو المعاملات">
-        <CommandInput placeholder="ابحث عن صفحة، عميل، أو رقم معاملة..." value={query} onValueChange={setQuery} dir="rtl" />
+      <CommandDialog open={open} onOpenChange={setOpen} shouldFilter={false} title="بحث سريع" description="ابحث في صفحات النظام أو العملاء أو المعاملات">
+        <CommandInput placeholder="ابحث باسم العميل أو رقمه أو هاتفه، أو صفحة، أو رقم معاملة..." value={query} onValueChange={setQuery} dir="rtl" />
         <CommandList dir="rtl">
           <CommandEmpty>لا توجد نتائج</CommandEmpty>
 
@@ -113,8 +125,20 @@ export function GlobalSearch() {
           {matchedCustomers.length > 0 && (
             <CommandGroup heading="العملاء">
               {matchedCustomers.map((c) => (
-                <CommandItem key={c.id} value={`customer-${c.id}-${c.name}`} onSelect={() => go('/customers')}>
-                  <UserRound /> {c.name} <span className="text-muted-foreground">({c.id})</span>
+                <CommandItem key={c.id} value={`customer-${c.id}`} onSelect={() => go(`/customers?customer=${encodeURIComponent(c.id)}`)}>
+                  <UserRound />
+                  <span className="flex flex-1 flex-wrap items-center gap-x-2">
+                    <span className="font-medium">{c.name}</span>
+                    <span className="text-xs text-muted-foreground">#{c.id}</span>
+                    {c.phone && <span className="text-xs text-muted-foreground" dir="ltr">{c.phone}</span>}
+                  </span>
+                  <span className="flex flex-wrap items-center gap-1" dir="ltr">
+                    {Object.entries(c.balances).filter(([, v]) => Math.abs(v) > 0.004).map(([ccy, v]) => (
+                      <span key={ccy} className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${v < 0 ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'}`}>
+                        {v < 0 ? '-' : ''}{Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 2 })} {ccy}
+                      </span>
+                    ))}
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>

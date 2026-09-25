@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText } from 'lucide-react'
+import { matchesQuery } from '@/lib/search'
 import { api, openFile, downloadFile, Customer, Currency } from '@/lib/api-client'
 import { ApiError } from '@/lib/auth-provider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
@@ -19,6 +20,7 @@ export default function CustomerStatementPage() {
   const [currencyFilter, setCurrencyFilter] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [rowSearch, setRowSearch] = useState('')
   const [statement, setStatement] = useState<StatementData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -210,7 +212,12 @@ export default function CustomerStatementPage() {
             <p className="text-xs text-muted-foreground mt-1">{selectedCustomer.phone || '—'} · {dateFrom || 'البداية'} إلى {dateTo || 'اليوم'}</p>
           </div>
 
-          {statement.sections.map((section) => (
+          <div className="relative">
+            <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input value={rowSearch} onChange={(e) => setRowSearch(e.target.value)} placeholder="بحث داخل الكشف (تفاصيل، ملاحظات، مبلغ، تاريخ...)" className="w-full rounded-md border border-input bg-background py-2 pl-3 pr-9 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+          </div>
+
+          {statement.sections.map((section0) => { const section = { ...section0, rows: section0.rows.filter((r) => matchesQuery(rowSearch, ...r)) }; return (
             <div key={section.name} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
               <div className="border-b border-border px-6 py-3 bg-secondary/30">
                 <h4 className="text-sm font-semibold text-foreground">{section.name}</h4>
@@ -239,8 +246,8 @@ export default function CustomerStatementPage() {
                             return (
                               <td
                                 key={j}
-                                dir={isEntry || isExit ? 'ltr' : undefined}
-                                className={`px-4 py-3 ${isEntry ? 'font-bold text-success' : isExit ? 'font-bold text-danger' : ''}`}
+                                dir={isEntry || isExit || /^-?\s?\d[\d,]*\.\d+$/.test(cell) ? 'ltr' : undefined}
+                                className={`px-4 py-3 ${isEntry ? 'font-bold text-success' : isExit ? 'font-bold text-danger' : /^-\s?\d/.test(cell) ? 'font-bold text-danger' : ''}`}
                               >
                                 {isEntry ? `+${cell}` : isExit ? `-${cell}` : cell}
                               </td>
@@ -253,7 +260,7 @@ export default function CustomerStatementPage() {
                 </table>
               </div>
             </div>
-          ))}
+          ) })}
 
           <div className="rounded-xl border border-border bg-card shadow-sm px-6 py-3 text-sm font-medium text-foreground">
             {statement.closingLine}

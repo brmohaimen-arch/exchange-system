@@ -18,7 +18,7 @@ from .database import engine, Base, SessionLocal
 from .seed import seed_database
 from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings, seed_trial_start_date, grant_new_permissions_to_admin, backfill_fleet_vehicle_auto_numbers, rename_fleet_status_active_to_display, rename_fleet_wallets, backfill_manual_bank_balances, seed_fleet_warehouses, fix_fleet_warehouse_split
 from .request_context import set_request_meta, extract_client_ip
-from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp, telegram, dollar_cards, currency_price_log, fleet
+from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp, telegram, dollar_cards, currency_price_log, fleet, customer_balances
 
 # Create any brand-new tables, then patch any new columns onto pre-existing tables
 Base.metadata.create_all(bind=engine)
@@ -87,6 +87,7 @@ app.include_router(telegram.router, prefix="/api")
 app.include_router(dollar_cards.router, prefix="/api")
 app.include_router(currency_price_log.router, prefix="/api")
 app.include_router(fleet.router, prefix="/api")
+app.include_router(customer_balances.router, prefix="/api")
 # Same router, second mount: paths under /api/imtiaz/... are شركة الامتياز (see fleet.get_company).
 app.include_router(fleet.router, prefix="/api/imtiaz")
 app.include_router(fleet.router, prefix="/api/itqan")

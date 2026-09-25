@@ -10,6 +10,7 @@ import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 interface PeriodTotals { income: number; expense: number; profit: number; count: number }
 interface PeriodKpis extends PeriodTotals { profitChangePct: number | null; incomeChangePct: number | null; previous: PeriodTotals }
@@ -586,11 +587,15 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
     }
   }
 
-  const pagedVehicles = paginate(vehicles, page)
+  const fVehicles = useTableFilters(vehicles, { onChange: () => setPage(1) })
+  const pagedVehicles = paginate(fVehicles.filtered, page)
   const [statementCcy, setStatementCcy] = useState('')
   const statementCurrencies = Array.from(new Set(allTransactions.map((t) => t.currency)))
   const shownTransactions = statementCcy ? allTransactions.filter((t) => t.currency === statementCcy) : allTransactions
-  const pagedStatement = paginate(shownTransactions, statementPage)
+  const fStatement = useTableFilters(shownTransactions, { onChange: () => setStatementPage(1) })
+  const fWarehouses = useTableFilters(warehouses)
+  const fAccounts = useTableFilters(accounts)
+  const pagedStatement = paginate(fStatement.filtered, statementPage)
 
   return (
     <div className="space-y-6">
@@ -740,6 +745,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
               </button>
             )}
           </div>
+          {fWarehouses.filterBar}
           {warehouses.length === 0 ? (
             <p className="px-6 py-8 text-center text-sm text-muted-foreground">لا توجد مخازن — أضف مخزناً ثم اربط السيارات به من نموذج السيارة</p>
           ) : (
@@ -754,7 +760,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {warehouses.map((w) => (
+                {fWarehouses.filtered.map((w) => (
                   <tr key={w.id} className="hover:bg-muted/50 transition-colors">
                     <td className="px-4 py-3 font-medium">{w.name}</td>
                     <td className="px-4 py-3">{w.inStockCount}</td>
@@ -776,6 +782,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         </div>
       ) : view === 'accounts' ? (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+          {fAccounts.filterBar}
           {accountsLoading ? (
             <p className="px-6 py-8 text-center text-sm text-muted-foreground">جاري التحميل...</p>
           ) : accounts.length === 0 ? (
@@ -796,7 +803,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {accounts.map((a) => (
+                  {fAccounts.filtered.map((a) => (
                     <tr key={a.id} className="hover:bg-muted/50 transition-colors">
                       <td className="px-4 py-3 font-medium">{a.name}</td>
                       <td className="px-4 py-3">
@@ -831,6 +838,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         </div>
       ) : view === 'statement' ? (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+          {fStatement.filterBar}
           {statementLoading ? (
             <p className="px-6 py-8 text-center text-sm text-muted-foreground">جاري التحميل...</p>
           ) : shownTransactions.length === 0 ? (
@@ -888,7 +896,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
               ))}
             </div>
           )}
-          <TablePagination page={statementPage} totalItems={shownTransactions.length} onPageChange={setStatementPage} />
+          <TablePagination page={statementPage} totalItems={fStatement.filtered.length} onPageChange={setStatementPage} />
         </div>
       ) : (
       <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -898,6 +906,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
           <p className="px-6 py-8 text-center text-sm text-muted-foreground">لا توجد مركبات أو معدات مسجلة بعد</p>
         ) : (
           <div className="overflow-x-auto">
+            {fVehicles.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -960,7 +969,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
             </table>
           </div>
         )}
-        <TablePagination page={page} totalItems={vehicles.length} onPageChange={setPage} />
+        <TablePagination page={page} totalItems={fVehicles.filtered.length} onPageChange={setPage} />
       </div>
       )}
 

@@ -10,6 +10,7 @@ import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 interface TransferRow {
   id: string
@@ -597,7 +598,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   // Newest-first, capped to a page of results — each list is already the full
   // set fetched from the server, so pagination here is purely client-side.
   const sortedTransfers = useMemo(() => [...transfers].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [transfers])
-  const pagedTransfers = paginate(sortedTransfers, transfersPage)
+  const fTransfers = useTableFilters(sortedTransfers, { onChange: () => setTransfersPage(1) })
+  const fMovements = useTableFilters(movements)
+  const pagedTransfers = paginate(fTransfers.filtered, transfersPage)
 
   // Bank accounts are split into the company's own accounts and accounts that
   // belong to a customer (linked via customerId, auto-created from their
@@ -640,7 +643,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     }),
     [companyBankTransfers, bankMovementsDate, bankMovementsAccountId]
   )
-  const pagedBankMovements = paginate(filteredBankMovements, bankMovementsPage)
+  const fBankMovements = useTableFilters(filteredBankMovements, { onChange: () => setBankMovementsPage(1) })
+  const pagedBankMovements = paginate(fBankMovements.filtered, bankMovementsPage)
 
   const filteredCustomerBankMovements = useMemo(
     () => customerBankTransfers.filter((t) => {
@@ -650,7 +654,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     }),
     [customerBankTransfers, customerBankMovementsDate, customerBankMovementsAccountId]
   )
-  const pagedCustomerBankMovements = paginate(filteredCustomerBankMovements, customerBankMovementsPage)
+  const fCustomerBankMovements = useTableFilters(filteredCustomerBankMovements, { onChange: () => setCustomerBankMovementsPage(1) })
+  const pagedCustomerBankMovements = paginate(fCustomerBankMovements.filtered, customerBankMovementsPage)
 
   const bankMovementsTotals = useMemo(() => {
     const totals: Record<string, { in: number; out: number }> = {}
@@ -692,7 +697,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   }
 
   const companyAccountGroups = useMemo(() => groupByBank(sortedBankAccounts), [sortedBankAccounts])
-  const pagedCompanyAccountGroups = paginate(companyAccountGroups, bankAccountsPage)
+  const fCompanyGroups = useTableFilters(companyAccountGroups, { onChange: () => setBankAccountsPage(1) })
+  const pagedCompanyAccountGroups = paginate(fCompanyGroups.filtered, bankAccountsPage)
 
   interface CustomerAccountGroup { customerId: string; customerName: string; banks: BankGroup[] }
   const customerAccountGroups = useMemo((): CustomerAccountGroup[] => {
@@ -705,19 +711,24 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     }
     return order.map((cid) => ({ customerId: cid, customerName: customerNameFor(cid), banks: groupByBank(byCustomer.get(cid)!) }))
   }, [sortedCustomerBankAccounts, customers])
-  const pagedCustomerAccountGroups = paginate(customerAccountGroups, customerBankAccountsPage)
+  const fCustomerGroups = useTableFilters(customerAccountGroups, { onChange: () => setCustomerBankAccountsPage(1) })
+  const pagedCustomerAccountGroups = paginate(fCustomerGroups.filtered, customerBankAccountsPage)
 
   const sortedShifts = useMemo(() => [...shifts].sort((a, b) => ((a.requestedAt || a.startTime || '') < (b.requestedAt || b.startTime || '') ? 1 : -1)), [shifts])
-  const pagedShifts = paginate(sortedShifts, shiftsPage)
+  const fShifts = useTableFilters(sortedShifts, { onChange: () => setShiftsPage(1) })
+  const pagedShifts = paginate(fShifts.filtered, shiftsPage)
 
   const sortedInventoryCounts = useMemo(() => [...inventoryCounts].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [inventoryCounts])
-  const pagedInventoryCounts = paginate(sortedInventoryCounts, inventoryPage)
+  const fInventoryCounts = useTableFilters(sortedInventoryCounts, { onChange: () => setInventoryPage(1) })
+  const pagedInventoryCounts = paginate(fInventoryCounts.filtered, inventoryPage)
 
   // expenses already arrive newest-first from the server (ORDER BY timestamp DESC)
-  const pagedExpenses = paginate(expenses, expensesPage)
+  const fExpenses = useTableFilters(expenses, { onChange: () => setExpensesPage(1) })
+  const pagedExpenses = paginate(fExpenses.filtered, expensesPage)
 
   const sortedApprovals = useMemo(() => [...approvals].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [approvals])
-  const pagedApprovals = paginate(sortedApprovals, approvalsPage)
+  const fApprovals = useTableFilters(sortedApprovals, { onChange: () => setApprovalsPage(1) })
+  const pagedApprovals = paginate(fApprovals.filtered, approvalsPage)
 
   // ---------------- Transfers ----------------
   const openTransfer = () => {
@@ -1563,6 +1574,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <h3 className="text-lg font-semibold text-foreground">طلبات التحويل</h3>
             </div>
             <div className="overflow-x-auto">
+              {fTransfers.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -1595,7 +1607,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </tbody>
               </table>
             </div>
-            <TablePagination page={transfersPage} totalItems={sortedTransfers.length} onPageChange={setTransfersPage} />
+            <TablePagination page={transfersPage} totalItems={fTransfers.filtered.length} onPageChange={setTransfersPage} />
           </div>
         </>
       )}
@@ -1642,6 +1654,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
             <div className="border-b border-border px-6 py-4 bg-secondary/30">
               <h3 className="text-lg font-semibold text-foreground">حركة الخزنة — دخول وخروج</h3>
             </div>
+            {fMovements.filterBar}
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
@@ -1659,7 +1672,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
                   ) : movements.length === 0 ? (
                     <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
-                  ) : movements.map((m) => {
+                  ) : fMovements.filtered.map((m) => {
                     const isIn = m.amountIn > 0
                     return (
                       <tr key={m.id} className="hover:bg-muted/50 transition-colors">
@@ -1724,6 +1737,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <h3 className="text-lg font-semibold text-foreground">حركة حسابات الشركة البنكية — دخول وخروج</h3>
             </div>
             <div className="overflow-x-auto">
+              {fBankMovements.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -1764,7 +1778,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </tbody>
               </table>
             </div>
-            <TablePagination page={bankMovementsPage} totalItems={filteredBankMovements.length} onPageChange={setBankMovementsPage} />
+            <TablePagination page={bankMovementsPage} totalItems={fBankMovements.filtered.length} onPageChange={setBankMovementsPage} />
           </div>
         </div>
       )}
@@ -1851,6 +1865,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <p className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد حسابات بنكية</p>
             ) : (
               <>
+                <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">{fCompanyGroups.filterBar}</div>
                 {pagedCompanyAccountGroups.map((group) => (
                   <div key={group.bankId} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
                     <div className="border-b border-border px-6 py-4 bg-secondary/30 flex items-center gap-2">
@@ -1929,7 +1944,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     </div>
                   </div>
                 ))}
-                <TablePagination page={bankAccountsPage} totalItems={companyAccountGroups.length} onPageChange={setBankAccountsPage} />
+                <TablePagination page={bankAccountsPage} totalItems={fCompanyGroups.filtered.length} onPageChange={setBankAccountsPage} />
               </>
             )}
           </div>
@@ -1951,6 +1966,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
             <p className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد حسابات بنكية للعملاء بعد</p>
           ) : (
             <>
+              <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">{fCustomerGroups.filterBar}</div>
               <div className="space-y-6">
                 {pagedCustomerAccountGroups.map((cg) => (
                   <div key={cg.customerId} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -2045,7 +2061,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   </div>
                 ))}
               </div>
-              <TablePagination page={customerBankAccountsPage} totalItems={customerAccountGroups.length} onPageChange={setCustomerBankAccountsPage} />
+              <TablePagination page={customerBankAccountsPage} totalItems={fCustomerGroups.filtered.length} onPageChange={setCustomerBankAccountsPage} />
             </>
           )}
         </div>
@@ -2094,6 +2110,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <h3 className="text-lg font-semibold text-foreground">حركة حسابات العملاء البنكية — دخول وخروج</h3>
             </div>
             <div className="overflow-x-auto">
+              {fCustomerBankMovements.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -2134,7 +2151,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </tbody>
               </table>
             </div>
-            <TablePagination page={customerBankMovementsPage} totalItems={filteredCustomerBankMovements.length} onPageChange={setCustomerBankMovementsPage} />
+            <TablePagination page={customerBankMovementsPage} totalItems={fCustomerBankMovements.filtered.length} onPageChange={setCustomerBankMovementsPage} />
           </div>
         </div>
       )}
@@ -2142,6 +2159,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       {tab === 'shifts' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fShifts.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -2211,13 +2229,14 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               </tbody>
             </table>
           </div>
-          <TablePagination page={shiftsPage} totalItems={sortedShifts.length} onPageChange={setShiftsPage} />
+          <TablePagination page={shiftsPage} totalItems={fShifts.filtered.length} onPageChange={setShiftsPage} />
         </div>
       )}
 
       {tab === 'inventory' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fInventoryCounts.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -2262,13 +2281,14 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               </tbody>
             </table>
           </div>
-          <TablePagination page={inventoryPage} totalItems={sortedInventoryCounts.length} onPageChange={setInventoryPage} />
+          <TablePagination page={inventoryPage} totalItems={fInventoryCounts.filtered.length} onPageChange={setInventoryPage} />
         </div>
       )}
 
       {tab === 'expenses' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fExpenses.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -2302,13 +2322,14 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               </tbody>
             </table>
           </div>
-          <TablePagination page={expensesPage} totalItems={expenses.length} onPageChange={setExpensesPage} />
+          <TablePagination page={expensesPage} totalItems={fExpenses.filtered.length} onPageChange={setExpensesPage} />
         </div>
       )}
 
       {tab === 'approvals' && (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
+            {fApprovals.filterBar}
             <table className="w-full text-sm text-right">
               <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                 <tr>
@@ -2362,7 +2383,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               </tbody>
             </table>
           </div>
-          <TablePagination page={approvalsPage} totalItems={sortedApprovals.length} onPageChange={setApprovalsPage} />
+          <TablePagination page={approvalsPage} totalItems={fApprovals.filtered.length} onPageChange={setApprovalsPage} />
         </div>
       )}
 

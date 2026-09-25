@@ -9,6 +9,7 @@ import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { NumberInput } from '@/components/ui/number-input'
+import { useTableFilters } from '@/components/TableFilters'
 
 const tabs = [
   { key: 'currencies', label: 'العملات', icon: Coins },
@@ -154,9 +155,11 @@ function CurrenciesPageInner() {
   const [ratesPage, setRatesPage] = useState(1)
   const [historyPage, setHistoryPage] = useState(1)
 
-  const pagedRates = paginate(rates, ratesPage)
+  const fRates = useTableFilters(rates, { onChange: () => setRatesPage(1) })
+  const pagedRates = paginate(fRates.filtered, ratesPage)
   const sortedHistory = useMemo(() => [...history].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)), [history])
-  const pagedHistory = paginate(sortedHistory, historyPage)
+  const fHistory = useTableFilters(sortedHistory, { onChange: () => setHistoryPage(1) })
+  const pagedHistory = paginate(fHistory.filtered, historyPage)
 
   const currencyName = (code: string) => {
     const c = currencies.find((x) => x.code === code)
@@ -323,6 +326,7 @@ function CurrenciesPageInner() {
         <>
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
+              {fRates.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -372,7 +376,7 @@ function CurrenciesPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={ratesPage} totalItems={rates.length} onPageChange={setRatesPage} />
+            <TablePagination page={ratesPage} totalItems={fRates.filtered.length} onPageChange={setRatesPage} />
           </div>
 
           {/* Rate change history */}
@@ -382,6 +386,7 @@ function CurrenciesPageInner() {
               <h3 className="text-lg font-semibold text-foreground">سجل تغييرات الأسعار</h3>
             </div>
             <div className="overflow-x-auto">
+              {fHistory.filterBar}
               <table className="w-full text-sm text-right">
                 <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
                   <tr>
@@ -415,7 +420,7 @@ function CurrenciesPageInner() {
                 </tbody>
               </table>
             </div>
-            <TablePagination page={historyPage} totalItems={sortedHistory.length} onPageChange={setHistoryPage} />
+            <TablePagination page={historyPage} totalItems={fHistory.filtered.length} onPageChange={setHistoryPage} />
           </div>
         </>
       )}

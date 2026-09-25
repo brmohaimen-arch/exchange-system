@@ -2434,9 +2434,10 @@ def _balance_cells(balance: float, currency: str, with_sides: bool) -> list[str]
     belongs to: positive = له, negative = عليه). Vault/bank-of-the-company
     statements skip the two side columns."""
     if with_sides:
+        # Signed: عليه (the customer owes) carries a minus, which the PDF/Excel draw in red.
         return [
-            f"{abs(balance):,.2f}", amount_in_words(balance, currency),
-            f"{balance:,.2f}" if balance > 0 else "", f"{abs(balance):,.2f}" if balance < 0 else "",
+            f"{balance:,.2f}", amount_in_words(balance, currency),
+            f"{balance:,.2f}" if balance > 0 else "", f"-{abs(balance):,.2f}" if balance < 0 else "",
         ]
     words = amount_in_words(balance, currency)
     return [f"{balance:,.2f}", (f"سالب {words}" if balance < 0 else words)]
