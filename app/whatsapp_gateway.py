@@ -15,6 +15,7 @@ text — that's a WhatsApp platform rule, not something this code can route
 around. Callers pass template_name/template_params for that case.
 """
 
+import base64
 import json
 import mimetypes
 import urllib.error
@@ -33,6 +34,48 @@ def get_setting(db: Session, key: str, default=None):
     return row.value.get("val") if row else default
 
 
+def _openwa_settings(db: Session) -> tuple[str, str, str] | None:
+    """(base_url, api_key, session_id) when the OpenWA provider is selected and
+    fully configured, else None."""
+    if get_setting(db, "whatsappProvider", "cloud") != "openwa":
+        return None
+    base = (get_setting(db, "openwaBaseUrl", "") or "").strip().rstrip("/")
+    key = (get_setting(db, "openwaApiKey", "") or "").strip()
+    session = (get_setting(db, "openwaSessionId", "") or "").strip()
+    if not (get_setting(db, "whatsappEnabled", False) and base and key and session):
+        return None
+    return base, key, session
+
+
+def _chat_id(phone: str) -> str:
+    """OpenWA addresses a person as <digits>@c.us — international format, no + or leading 00."""
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return f"{digits}@c.us"
+
+
+def _openwa_post(cfg: tuple[str, str, str], path: str, payload: dict) -> dict:
+    base, key, session = cfg
+    req = urllib.request.Request(
+        f"{base}/api/sessions/{session}/messages/{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"X-API-Key": key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return {"sent": True, "response": json.loads(body) if body else {}}
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")
+        print(f"[whatsapp_gateway] OpenWA error {e.code}: {error_body}")
+        return {"sent": False, "reason": "api_error", "status": e.code, "details": error_body}
+    except (urllib.error.URLError, TimeoutError) as e:
+        print(f"[whatsapp_gateway] OpenWA network error: {e}")
+        return {"sent": False, "reason": "network_error", "details": str(e)}
+
+
 def send_whatsapp(
     db: Session,
     to_phone: str,
@@ -47,6 +90,14 @@ def send_whatsapp(
     business-initiated alert outside a customer-reply window). Otherwise sends
     free-form text (only valid within 24h of the recipient messaging first).
     """
+    if get_setting(db, "whatsappProvider", "cloud") == "openwa":
+        cfg = _openwa_settings(db)
+        if not cfg or not to_phone:
+            print(f"[whatsapp_gateway] OpenWA not configured — would have sent to {to_phone}: {message}")
+            return {"sent": False, "reason": "not_configured"}
+        # Templates are a Meta Cloud API concept; OpenWA just sends the plain text.
+        return _openwa_post(cfg, "send-text", {"chatId": _chat_id(to_phone), "text": message})
+
     enabled = get_setting(db, "whatsappEnabled", False)
     access_token = get_setting(db, "whatsappAccessToken", "")
     phone_number_id = get_setting(db, "whatsappPhoneNumberId", "")
@@ -158,6 +209,21 @@ def send_whatsapp_document(db: Session, to_phone: str, file_bytes: bytes, filena
     as a WhatsApp attachment. Uploads the file to Meta's Media API first, then
     sends a document-type message referencing it — same not-configured no-op
     behavior as send_whatsapp when credentials aren't set up yet."""
+    if get_setting(db, "whatsappProvider", "cloud") == "openwa":
+        cfg = _openwa_settings(db)
+        if not cfg or not to_phone:
+            print(f"[whatsapp_gateway] OpenWA not configured — would have sent document '{filename}' to {to_phone}")
+            return {"sent": False, "reason": "not_configured"}
+        payload = {
+            "chatId": _chat_id(to_phone),
+            "base64": base64.b64encode(file_bytes).decode("ascii"),
+            "mimetype": mimetypes.guess_type(filename)[0] or "application/pdf",
+            "filename": filename,
+        }
+        if caption:
+            payload["caption"] = caption[:1024]
+        return _openwa_post(cfg, "send-document", payload)
+
     enabled = get_setting(db, "whatsappEnabled", False)
     access_token = get_setting(db, "whatsappAccessToken", "")
     phone_number_id = get_setting(db, "whatsappPhoneNumberId", "")

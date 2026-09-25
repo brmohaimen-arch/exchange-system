@@ -260,6 +260,8 @@ export interface FleetVehicle {
   purchasePaymentMethod: FleetPaymentMethod | null
   purchaseAccountId: string | null
   sellerName: string | null
+  warehouseId: string | null
+  warehouseName: string | null
   purchaseBankDetails: string | null
   purchaseManualBank: boolean
   purchaseAccountName: string | null
@@ -333,6 +335,19 @@ export interface FleetDamageRecord {
 
 export interface FleetTransactionWithVehicle extends FleetTransaction {
   vehicleName: string
+  vehicleChassis: string | null
+  vehiclePurchasePrice: number | null
+  vehiclePurchaseCurrency: string | null
+}
+
+export interface FleetWarehouse {
+  id: string
+  name: string
+  notes: string | null
+  createdBy: string
+  timestamp: string
+  inStockCount: number
+  vehicleCount: number
 }
 
 export interface FleetSummary {

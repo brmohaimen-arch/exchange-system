@@ -9,6 +9,7 @@ import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DateInput } from '@/components/ui/date-input'
+import { NumberInput } from '@/components/ui/number-input'
 
 interface TransferRow {
   id: string
@@ -2409,8 +2410,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={transferForm.amount}
                     onChange={(e) => setTransferForm({ ...transferForm, amount: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2504,8 +2504,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 {balanceEditRows.map((row, idx) => (
                   <div key={row.currency} className="flex items-center gap-2">
                     <span className="w-14 text-sm font-medium text-foreground">{row.currency}</span>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="any"
                       value={row.amount}
                       onChange={(e) => setBalanceEditRows((rows) => rows.map((r, i) => (i === idx ? { ...r, amount: e.target.value } : r)))}
@@ -2559,8 +2558,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ ({bankOpAccount.currency}) *</label>
-                <input
-                  type="number"
+                <NumberInput
                   step="any"
                   value={bankOpForm.amount}
                   onChange={(e) => setBankOpForm({ ...bankOpForm, amount: e.target.value })}
@@ -2570,8 +2568,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               {bankOpType === 'deposit' && bankOpAccount.currency !== 'LYD' && (
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">نسبة فائدة هذه الوديعة (%) — اختياري</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.01"
                     value={bankOpForm.interestRate}
                     onChange={(e) => setBankOpForm({ ...bankOpForm, interestRate: e.target.value })}
@@ -2617,11 +2614,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               <form onSubmit={submitNewDeposit} className="grid grid-cols-3 gap-2 items-end rounded-md bg-secondary/30 p-3">
                 <div>
                   <label className="block text-xs font-medium text-foreground mb-1">مبلغ الوديعة ({interestAccount.currency})</label>
-                  <input type="number" step="any" value={newDepositForm.amount} onChange={(e) => setNewDepositForm({ ...newDepositForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput step="any" value={newDepositForm.amount} onChange={(e) => setNewDepositForm({ ...newDepositForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-foreground mb-1">نسبة الفائدة (%)</label>
-                  <input type="number" step="0.01" value={newDepositForm.rate} onChange={(e) => setNewDepositForm({ ...newDepositForm, rate: e.target.value })} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput step="0.01" value={newDepositForm.rate} onChange={(e) => setNewDepositForm({ ...newDepositForm, rate: e.target.value })} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <button type="submit" disabled={savingInterest} className="flex items-center justify-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {savingInterest && <Loader2 className="h-4 w-4 animate-spin" />} تسجيل وديعة
@@ -2879,7 +2876,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">{editingAccount ? 'الرصيد' : 'الرصيد الافتتاحي'}</label>
-                  <input type="number" value={accountForm.balance} onChange={(e) => setAccountForm({ ...accountForm, balance: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={accountForm.balance} onChange={(e) => setAccountForm({ ...accountForm, balance: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
 
@@ -2911,8 +2908,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               ) : Object.entries(closeBalances).map(([ccy, val]) => (
                 <div key={ccy} className="flex items-center gap-2">
                   <span className="w-16 text-sm font-medium text-foreground">{ccy}</span>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={val}
                     onChange={(e) => setCloseBalances({ ...closeBalances, [ccy]: e.target.value })}
                     className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2958,7 +2954,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الرصيد الفعلي المعدود *</label>
-                  <input type="number" value={inventoryForm.actualBalance} onChange={(e) => setInventoryForm({ ...inventoryForm, actualBalance: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={inventoryForm.actualBalance} onChange={(e) => setInventoryForm({ ...inventoryForm, actualBalance: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
               <div>
@@ -3013,7 +3009,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                  <input type="number" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
               <div>
@@ -3207,7 +3203,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                  <input type="number" value={manualEntryForm.amount} onChange={(e) => setManualEntryForm({ ...manualEntryForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={manualEntryForm.amount} onChange={(e) => setManualEntryForm({ ...manualEntryForm, amount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
 

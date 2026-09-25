@@ -6,6 +6,7 @@ import { api, newId, openFile, Currency, Customer, ExchangeRate, Vault, Transact
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { usePersistedState, clearPersistedState } from '@/lib/usePersistedState'
+import { NumberInput } from '@/components/ui/number-input'
 
 const paymentMethodLabels: Record<string, string> = {
   cash: 'نقداً', customer_account: 'حساب العميل', bank_account: 'حساب بنكي', debt: 'دين (آجل)',
@@ -524,8 +525,8 @@ export default function TransactionsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ (أجنبي)</label>
-                <input
-                  type="number" placeholder="1000"
+                <NumberInput
+                  placeholder="1000"
                   value={buyForm.amount}
                   onChange={(e) => setBuyForm({ ...buyForm, amount: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -535,8 +536,8 @@ export default function TransactionsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء المطبق</label>
-                <input
-                  type="number" step="0.001"
+                <NumberInput
+                  step="0.001"
                   value={buyForm.rate}
                   onChange={(e) => setBuyForm({ ...buyForm, rate: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -635,8 +636,8 @@ export default function TransactionsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ (أجنبي)</label>
-                <input
-                  type="number" placeholder="500"
+                <NumberInput
+                  placeholder="500"
                   value={sellForm.amount}
                   onChange={(e) => setSellForm({ ...sellForm, amount: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -646,8 +647,8 @@ export default function TransactionsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">سعر البيع المطبق</label>
-                <input
-                  type="number" step="0.001"
+                <NumberInput
+                  step="0.001"
                   value={sellForm.rate}
                   onChange={(e) => setSellForm({ ...sellForm, rate: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -761,8 +762,8 @@ export default function TransactionsPage() {
           <div className="grid gap-4 md:grid-cols-3">
             <div>
               <label className="block text-sm font-medium text-foreground mb-1">المبلغ (من العملة الأولى)</label>
-              <input
-                type="number" placeholder="100"
+              <NumberInput
+                placeholder="100"
                 value={exchangeForm.amount}
                 onChange={(e) => setExchangeForm({ ...exchangeForm, amount: e.target.value })}
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -770,8 +771,8 @@ export default function TransactionsPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-foreground mb-1">سعر التبديل المطبق</label>
-              <input
-                type="number" step="0.0001"
+              <NumberInput
+                step="0.0001"
                 value={exchangeForm.rate}
                 onChange={(e) => setExchangeForm({ ...exchangeForm, rate: e.target.value })}
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -912,8 +913,7 @@ export default function TransactionsPage() {
               ) : Object.entries(closeBalances).map(([ccy, val]) => (
                 <div key={ccy} className="flex items-center gap-2">
                   <span className="w-16 text-sm font-medium text-foreground">{ccy}</span>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={val}
                     onChange={(e) => setCloseBalances({ ...closeBalances, [ccy]: e.target.value })}
                     className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -948,8 +948,7 @@ export default function TransactionsPage() {
               </p>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
-                <input
-                  type="number"
+                <NumberInput
                   value={editForm.amount}
                   onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -958,8 +957,8 @@ export default function TransactionsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">السعر</label>
-                  <input
-                    type="number" step="0.0001"
+                  <NumberInput
+                    step="0.0001"
                     value={editForm.rate}
                     onChange={(e) => setEditForm({ ...editForm, rate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -967,8 +966,8 @@ export default function TransactionsPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">العمولة</label>
-                  <input
-                    type="number" step="0.01"
+                  <NumberInput
+                    step="0.01"
                     value={editForm.commission}
                     onChange={(e) => setEditForm({ ...editForm, commission: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"

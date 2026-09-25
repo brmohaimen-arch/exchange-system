@@ -8,6 +8,7 @@ import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { DateInput } from '@/components/ui/date-input'
 import { formatDate } from '@/lib/format-date'
+import { NumberInput } from '@/components/ui/number-input'
 
 const STATUS_LABELS: Record<DollarCardStatus, { label: string; className: string }> = {
   waiting: { label: 'قيد الانتظار', className: 'bg-secondary text-muted-foreground' },
@@ -331,7 +332,7 @@ export default function DollarCardsPage() {
                 <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-foreground mb-1">رصيد البطاقة</label>
-                    <input type="number" step="any" value={form.cardBalance} onChange={(e) => setForm({ ...form, cardBalance: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    <NumberInput step="any" value={form.cardBalance} onChange={(e) => setForm({ ...form, cardBalance: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-foreground mb-1">من اشتراها</label>
@@ -339,7 +340,7 @@ export default function DollarCardsPage() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-foreground mb-1">مبلغ الدفع</label>
-                    <input type="number" step="any" value={form.paymentAmount} onChange={(e) => setForm({ ...form, paymentAmount: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    <NumberInput step="any" value={form.paymentAmount} onChange={(e) => setForm({ ...form, paymentAmount: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                   </div>
                 </div>
               </div>

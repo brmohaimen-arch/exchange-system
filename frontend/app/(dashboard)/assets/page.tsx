@@ -8,6 +8,7 @@ import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { DateInput } from '@/components/ui/date-input'
+import { NumberInput } from '@/components/ui/number-input'
 
 interface BranchLite { id: string; name: string }
 
@@ -1086,7 +1087,7 @@ function AssetsPageInner() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-foreground mb-1">سنة الصنع</label>
-                      <input type="number" value={assetForm.makeYear} onChange={(e) => setAssetForm({ ...assetForm, makeYear: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                      <NumberInput value={assetForm.makeYear} onChange={(e) => setAssetForm({ ...assetForm, makeYear: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                     </div>
                   </div>
                 </div>
@@ -1117,7 +1118,7 @@ function AssetsPageInner() {
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء *</label>
-                  <input type="number" value={assetForm.purchasePrice} onChange={(e) => setAssetForm({ ...assetForm, purchasePrice: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={assetForm.purchasePrice} onChange={(e) => setAssetForm({ ...assetForm, purchasePrice: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
@@ -1127,7 +1128,7 @@ function AssetsPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">القيمة الحالية</label>
-                  <input type="number" value={assetForm.currentValue} onChange={(e) => setAssetForm({ ...assetForm, currentValue: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={assetForm.currentValue} onChange={(e) => setAssetForm({ ...assetForm, currentValue: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
               <div>
@@ -1189,7 +1190,7 @@ function AssetsPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">السنة</label>
-                  <input type="number" value={vehicleForm.makeYear} onChange={(e) => setVehicleForm({ ...vehicleForm, makeYear: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={vehicleForm.makeYear} onChange={(e) => setVehicleForm({ ...vehicleForm, makeYear: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">اللون</label>
@@ -1207,7 +1208,7 @@ function AssetsPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">عداد المسافة (كم)</label>
-                  <input type="number" value={vehicleForm.mileage} onChange={(e) => setVehicleForm({ ...vehicleForm, mileage: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={vehicleForm.mileage} onChange={(e) => setVehicleForm({ ...vehicleForm, mileage: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -1311,7 +1312,7 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">المساحة (م²)</label>
-                  <input type="number" value={estateForm.area} onChange={(e) => setEstateForm({ ...estateForm, area: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={estateForm.area} onChange={(e) => setEstateForm({ ...estateForm, area: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">نوع الملكية</label>
@@ -1324,11 +1325,11 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">القيمة التقديرية الحالية</label>
-                  <input type="number" value={estateForm.currentEstimatedValue} onChange={(e) => setEstateForm({ ...estateForm, currentEstimatedValue: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={estateForm.currentEstimatedValue} onChange={(e) => setEstateForm({ ...estateForm, currentEstimatedValue: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الإيجار الشهري (إن وجد)</label>
-                  <input type="number" value={estateForm.monthlyRent} onChange={(e) => setEstateForm({ ...estateForm, monthlyRent: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={estateForm.monthlyRent} onChange={(e) => setEstateForm({ ...estateForm, monthlyRent: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
 
@@ -1372,7 +1373,7 @@ function AssetsPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">التكلفة *</label>
-                  <input type="number" value={maintForm.cost} onChange={(e) => setMaintForm({ ...maintForm, cost: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={maintForm.cost} onChange={(e) => setMaintForm({ ...maintForm, cost: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
               <div>
@@ -1413,7 +1414,7 @@ function AssetsPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">سعر البيع *</label>
-                  <input type="number" value={sellForm.price} onChange={(e) => setSellForm({ ...sellForm, price: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={sellForm.price} onChange={(e) => setSellForm({ ...sellForm, price: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
@@ -1615,8 +1616,7 @@ function AssetsPageInner() {
             <form onSubmit={submitCompleteMaintenance} className="space-y-4 p-6 text-right">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">التكلفة النهائية</label>
-                <input
-                  type="number"
+                <NumberInput
                   value={finalCostInput}
                   onChange={(e) => setFinalCostInput(e.target.value)}
                   autoFocus

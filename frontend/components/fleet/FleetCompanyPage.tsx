@@ -1,14 +1,15 @@
 'use client'
 
 import { useEffect, useState, FormEvent } from 'react'
-import { Plus, X, Loader2, Trash2, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag, ArrowUpRight, ArrowDownRight, CalendarRange } from 'lucide-react'
+import { Plus, X, Loader2, Trash2, Package, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag, ArrowUpRight, ArrowDownRight, CalendarRange } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from '@/components/ui/chart'
-import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, Currency } from '@/lib/api-client'
+import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, FleetWarehouse, Currency } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { DateInput } from '@/components/ui/date-input'
+import { NumberInput } from '@/components/ui/number-input'
 
 interface PeriodTotals { income: number; expense: number; profit: number; count: number }
 interface PeriodKpis extends PeriodTotals { profitChangePct: number | null; incomeChangePct: number | null; previous: PeriodTotals }
@@ -49,7 +50,7 @@ function formatAutoNumber(n: number) {
 function emptyVehicleForm() {
   return {
     name: '', type: '', serialNumber: '', chassisNumber: '', color: '', manufactureDate: '', operator: '', status: 'عرض',
-    purchaseDate: '', purchasePrice: '', purchasePaymentMethod: '' as FleetPaymentMethod | '', purchaseAccountId: '', sellerName: '', bankName: '', bankAccountNumber: '', bankHolder: '',
+    purchaseDate: '', purchasePrice: '', purchasePaymentMethod: '' as FleetPaymentMethod | '', purchaseAccountId: '', sellerName: '', bankName: '', bankAccountNumber: '', bankHolder: '', warehouseId: '',
     currency: 'LYD', notes: '',
   }
 }
@@ -105,7 +106,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const [error, setError] = useState('')
   const [page, setPage] = useState(1)
 
-  const [view, setView] = useState<'vehicles' | 'statement' | 'accounts'>('vehicles')
+  const [view, setView] = useState<'vehicles' | 'statement' | 'accounts' | 'warehouses'>('vehicles')
   const [summary, setSummary] = useState<FleetSummary | null>(null)
   const [kpis, setKpis] = useState<FleetKpis | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(true)
@@ -120,6 +121,10 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const [accountsLoading, setAccountsLoading] = useState(true)
   const [showAccountModal, setShowAccountModal] = useState(false)
   const [wallets, setWallets] = useState<FleetAccount[]>([])
+  const [warehouses, setWarehouses] = useState<FleetWarehouse[]>([])
+  const [whModal, setWhModal] = useState<{ id: string | null; name: string; notes: string } | null>(null)
+  const [whError, setWhError] = useState('')
+  const [savingWh, setSavingWh] = useState(false)
   const [editingAccount, setEditingAccount] = useState<FleetAccount | null>(null)
   const [accountForm, setAccountForm] = useState(emptyAccountForm())
   const [accountFormError, setAccountFormError] = useState('')
@@ -189,6 +194,42 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
     }
   }
 
+  const loadWarehouses = async () => {
+    try {
+      setWarehouses(await api.get<FleetWarehouse[]>(`${base}/fleet/warehouses`))
+    } catch { /* the warehouse list is supplementary */ }
+  }
+
+  const submitWarehouse = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!whModal) return
+    if (!whModal.name.trim()) { setWhError('اسم المخزن مطلوب'); return }
+    setSavingWh(true)
+    setWhError('')
+    try {
+      const payload = { name: whModal.name.trim(), notes: whModal.notes.trim() || null }
+      if (whModal.id) await api.put(`${base}/fleet/warehouses/${whModal.id}`, payload)
+      else await api.post(`${base}/fleet/warehouses`, payload)
+      setWhModal(null)
+      await Promise.all([loadWarehouses(), load()])
+    } catch (err) {
+      setWhError(err instanceof ApiError ? err.message : 'تعذر حفظ المخزن')
+    } finally {
+      setSavingWh(false)
+    }
+  }
+
+  const removeWarehouse = async (w: FleetWarehouse) => {
+    if (!(await confirmDialog(`هل تريد حذف المخزن "${w.name}"؟`, { requireTypedWord: true }))) return
+    setError('')
+    try {
+      await api.delete(`${base}/fleet/warehouses/${w.id}`)
+      await loadWarehouses()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر حذف المخزن')
+    }
+  }
+
   const loadKpis = async () => {
     try {
       setKpis(await api.get<FleetKpis>(`${base}/fleet/kpis`))
@@ -236,6 +277,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
     load()
     loadSummary()
     loadAccounts()
+    loadWarehouses()
     api.get<Currency[]>('/currencies').then(setCurrencies).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -259,7 +301,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
       name: v.name, type: v.type, serialNumber: v.serialNumber || '', chassisNumber: v.chassisNumber || '',
       color: v.color || '', manufactureDate: v.manufactureDate || '', operator: v.operator || '',
       status: v.status, purchaseDate: v.purchaseDate || '', purchasePrice: v.purchasePrice ? String(v.purchasePrice) : '',
-      purchasePaymentMethod: v.purchasePaymentMethod || '', purchaseAccountId: v.purchaseManualBank ? MANUAL_ACCOUNT : (v.purchaseAccountId || ''), sellerName: v.sellerName || '', bankName: '', bankAccountNumber: '', bankHolder: '',
+      purchasePaymentMethod: v.purchasePaymentMethod || '', purchaseAccountId: v.purchaseManualBank ? MANUAL_ACCOUNT : (v.purchaseAccountId || ''), sellerName: v.sellerName || '', warehouseId: v.warehouseId || '', bankName: '', bankAccountNumber: '', bankHolder: '',
       currency: v.currency, notes: v.notes || '',
     })
     setFormError('')
@@ -295,7 +337,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
           name: form.name.trim(), type: form.type.trim(), serial_number: form.serialNumber.trim() || null,
           chassis_number: form.chassisNumber.trim() || null, color: form.color.trim() || null,
           manufacture_date: form.manufactureDate || null, operator: form.operator.trim() || null,
-          status: form.status, currency: form.currency, notes: form.notes.trim() || null,
+          status: form.status, currency: form.currency, notes: form.notes.trim() || null, warehouse_id: form.warehouseId || null,
           purchase_price: purchasePrice, purchase_date: form.purchaseDate || null,
           purchase_payment_method: purchasePrice > 0 ? form.purchasePaymentMethod : null,
           purchase_account_id: purchasePrice > 0 && form.purchasePaymentMethod === 'bank' && !manualBank ? form.purchaseAccountId : null,
@@ -311,7 +353,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
           purchase_payment_method: purchasePrice > 0 ? form.purchasePaymentMethod : null,
           purchase_account_id: purchasePrice > 0 && form.purchasePaymentMethod === 'bank' && !manualBank ? form.purchaseAccountId : null,
           purchase_manual_bank: manualBank, seller_name: form.sellerName.trim() || null, purchase_bank_details: manualDetails,
-          currency: form.currency, notes: form.notes.trim() || null,
+          currency: form.currency, notes: form.notes.trim() || null, warehouse_id: form.warehouseId || null,
         }
         await api.post(`${base}/fleet/vehicles`, payload)
       }
@@ -621,11 +663,11 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
               </div>
               <p className={`mt-4 text-3xl font-bold ${c.k.profit < 0 ? 'text-danger' : 'text-foreground'}`} dir="ltr">{money(c.k.profit)} <span className="text-sm font-medium text-muted-foreground">د.ل</span></p>
               <p className="text-xs text-muted-foreground">صافي الربح — {c.prevLabel}: {money(c.k.previous.profit)} د.ل</p>
-              <ChartContainer config={kpiChartConfig} className="mt-4 h-40 w-full" dir="ltr">
+              <ChartContainer config={kpiChartConfig} className="mt-4 h-40 w-full" dir="ltr" style={{ direction: 'ltr' }}>
                 <BarChart data={c.series} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
                   <CartesianGrid vertical={false} strokeDasharray="3 3" />
                   <XAxis dataKey="x" fontSize={11} tickLine={false} axisLine={false} />
-                  <YAxis fontSize={11} tickLine={false} axisLine={false} width={48} />
+                  <YAxis fontSize={11} tickLine={false} axisLine={false} width={64} tickFormatter={(v: number) => `\u200E${v < 0 ? '\u2212' : ''}${Math.abs(v).toLocaleString('en-US')}`} />
                   <ChartTooltip content={<ChartTooltipContent />} />
                   <Bar dataKey="profit" fill="var(--color-profit)" radius={[4, 4, 0, 0]} />
                 </BarChart>
@@ -647,6 +689,9 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         </button>
         <button onClick={() => setView('statement')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'statement' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
           <ListTree className="h-3.5 w-3.5" /> كشف حركات الشركة
+        </button>
+        <button onClick={() => setView('warehouses')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'warehouses' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+          <Package className="h-3.5 w-3.5" /> المخازن
         </button>
         <button onClick={() => setView('accounts')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'accounts' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
           <Landmark className="h-3.5 w-3.5" /> الحسابات
@@ -685,7 +730,51 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         </div>
       )}
 
-      {view === 'accounts' ? (
+      {view === 'warehouses' ? (
+        <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-5 py-3">
+            <h3 className="text-base font-semibold text-foreground">مخازن السيارات</h3>
+            {canManage && (
+              <button onClick={() => { setWhModal({ id: null, name: '', notes: '' }); setWhError('') }} className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+                <Plus className="h-4 w-4" /> إضافة مخزن
+              </button>
+            )}
+          </div>
+          {warehouses.length === 0 ? (
+            <p className="px-6 py-8 text-center text-sm text-muted-foreground">لا توجد مخازن — أضف مخزناً ثم اربط السيارات به من نموذج السيارة</p>
+          ) : (
+            <table className="w-full text-sm text-right">
+              <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
+                <tr>
+                  <th className="px-4 py-3 font-medium">اسم المخزن</th>
+                  <th className="px-4 py-3 font-medium">السيارات الحالية</th>
+                  <th className="px-4 py-3 font-medium">إجمالي السيارات</th>
+                  <th className="px-4 py-3 font-medium">ملاحظات</th>
+                  {canManage && <th className="px-4 py-3 font-medium">إجراءات</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {warehouses.map((w) => (
+                  <tr key={w.id} className="hover:bg-muted/50 transition-colors">
+                    <td className="px-4 py-3 font-medium">{w.name}</td>
+                    <td className="px-4 py-3">{w.inStockCount}</td>
+                    <td className="px-4 py-3">{w.vehicleCount}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{w.notes || '—'}</td>
+                    {canManage && (
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <button onClick={() => { setWhModal({ id: w.id, name: w.name, notes: w.notes || '' }); setWhError('') }} className="text-xs font-medium text-primary hover:underline">تعديل</button>
+                          <button onClick={() => removeWarehouse(w)} className="text-xs font-medium text-danger hover:underline">حذف</button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : view === 'accounts' ? (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           {accountsLoading ? (
             <p className="px-6 py-8 text-center text-sm text-muted-foreground">جاري التحميل...</p>
@@ -757,6 +846,8 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                   <tr>
                     <th className="px-4 py-3 font-medium">التاريخ</th>
                     <th className="px-4 py-3 font-medium">المركبة/المعدة</th>
+                    <th className="px-4 py-3 font-medium">رقم الهيكل</th>
+                    <th className="px-4 py-3 font-medium">سعر الشراء</th>
                     <th className="px-4 py-3 font-medium">التفاصيل</th>
                     <th className="px-4 py-3 font-medium">دخول</th>
                     <th className="px-4 py-3 font-medium">خروج</th>
@@ -777,6 +868,8 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                       <tr key={t.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-4 py-3">{t.date}</td>
                         <td className="px-4 py-3 font-medium">{t.vehicleName}</td>
+                        <td className="px-4 py-3" dir="ltr">{t.vehicleChassis || '—'}</td>
+                        <td className="px-4 py-3" dir="ltr">{t.vehiclePurchasePrice ? `${t.vehiclePurchasePrice.toLocaleString()} ${t.vehiclePurchaseCurrency || ''}` : '—'}</td>
                         <td className="px-4 py-3">{t.category}</td>
                         <td className="px-4 py-3 text-success" dir="ltr">{t.type === 'income' ? t.amount.toLocaleString() : ''}</td>
                         <td className="px-4 py-3 text-danger" dir="ltr">{t.type === 'expense' ? t.amount.toLocaleString() : ''}</td>
@@ -814,6 +907,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                   <th className="px-4 py-3 font-medium">اللوحة</th>
                   <th className="px-4 py-3 font-medium">رقم الهيكل</th>
                   <th className="px-4 py-3 font-medium">اللون</th>
+                  <th className="px-4 py-3 font-medium">المخزن</th>
                   <th className="px-4 py-3 font-medium">السائق/المشغّل</th>
                   <th className="px-4 py-3 font-medium">الحالة</th>
                   <th className="px-4 py-3 font-medium">الرصيد</th>
@@ -831,6 +925,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                     <td className="px-4 py-3" dir="ltr">{v.serialNumber || '—'}</td>
                     <td className="px-4 py-3" dir="ltr">{v.chassisNumber || '—'}</td>
                     <td className="px-4 py-3">{v.color || '—'}</td>
+                    <td className="px-4 py-3">{v.warehouseName || '—'}</td>
                     <td className="px-4 py-3">{v.operator || '—'}</td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground">{v.status}</span>
@@ -920,6 +1015,13 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                   </select>
                 </div>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">المخزن</label>
+                <select value={form.warehouseId} onChange={(e) => setForm({ ...form, warehouseId: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                  <option value="">بدون مخزن الآن — يُحدَّد لاحقاً</option>
+                  {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">عملة الحسابات</label>
@@ -939,7 +1041,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء</label>
-                      <input type="number" step="any" value={form.purchasePrice} onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                      <NumberInput step="any" value={form.purchasePrice} onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-foreground mb-1">طريقة الدفع {(parseFloat(form.purchasePrice) || 0) > 0 && '*'}</label>
@@ -1027,7 +1129,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                         <input placeholder="الفئة (إيجار، وقود، صيانة...)" value={txForm.category} onChange={(e) => setTxForm({ ...txForm, category: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                       </div>
                       <div className="grid grid-cols-3 gap-3">
-                        <input type="number" step="any" placeholder="المبلغ" value={txForm.amount} onChange={(e) => setTxForm({ ...txForm, amount: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                        <NumberInput step="any" placeholder="المبلغ" value={txForm.amount} onChange={(e) => setTxForm({ ...txForm, amount: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                         <select value={txForm.currency} onChange={(e) => setTxForm({ ...txForm, currency: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                           {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
                         </select>
@@ -1098,7 +1200,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                     <form onSubmit={submitDamage} className="rounded-md border border-border p-4 space-y-3">
                       <textarea placeholder="وصف الضرر *" value={damageForm.description} onChange={(e) => setDamageForm({ ...damageForm, description: e.target.value })} rows={2} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                       <div className="grid grid-cols-3 gap-3">
-                        <input type="number" step="any" placeholder="التكلفة" value={damageForm.cost} onChange={(e) => setDamageForm({ ...damageForm, cost: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                        <NumberInput step="any" placeholder="التكلفة" value={damageForm.cost} onChange={(e) => setDamageForm({ ...damageForm, cost: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                         <select value={damageForm.currency} onChange={(e) => setDamageForm({ ...damageForm, currency: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                           {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
                         </select>
@@ -1177,7 +1279,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-foreground">سعر البيع *</label>
-                  <input type="number" step="any" value={sellForm.salePrice} onChange={(e) => setSellForm({ ...sellForm, salePrice: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-right" />
+                  <NumberInput step="any" value={sellForm.salePrice} onChange={(e) => setSellForm({ ...sellForm, salePrice: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-right" />
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-foreground">عملة البيع</label>
@@ -1262,6 +1364,35 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         </div>
         )
       })()}
+
+      {/* Warehouse modal */}
+      {whModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-5 py-3">
+              <h3 className="text-base font-semibold text-foreground">{whModal.id ? 'تعديل مخزن' : 'إضافة مخزن'}</h3>
+              <button onClick={() => setWhModal(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitWarehouse} className="space-y-3 p-5 text-right">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-foreground">اسم المخزن *</label>
+                <input value={whModal.name} onChange={(e) => setWhModal({ ...whModal, name: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-foreground">ملاحظات</label>
+                <input value={whModal.notes} onChange={(e) => setWhModal({ ...whModal, notes: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              </div>
+              {whError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{whError}</p>}
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" onClick={() => setWhModal(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={savingWh} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60">
+                  {savingWh && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Account create/edit modal */}
       {showAccountModal && (

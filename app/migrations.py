@@ -46,6 +46,10 @@ DEFAULT_SETTINGS = {
     "autoBackupRetentionCount": 14,
     "lastAutoBackupAt": "",
     "whatsappEnabled": False,
+    "whatsappProvider": "cloud",  # cloud = Meta Cloud API, openwa = self-hosted OpenWA gateway
+    "openwaBaseUrl": "",
+    "openwaApiKey": "",
+    "openwaSessionId": "",
     "whatsappAccessToken": "",
     "whatsappPhoneNumberId": "",
     "whatsappManagerPhone": "",
@@ -122,6 +126,7 @@ NEW_COLUMNS = [
     ("fleet_accounts", "company", "VARCHAR(20) DEFAULT 'bayan'"),
     ("fleet_vehicles", "seller_name", "VARCHAR(150)"),
     ("fleet_vehicles", "sale_currency", "VARCHAR(10)"),
+    ("fleet_vehicles", "warehouse_id", "VARCHAR(50)"),
     ("fleet_vehicles", "purchase_bank_details", "VARCHAR(400)"),
 ]
 
@@ -455,4 +460,48 @@ def backfill_manual_bank_balances(db: Session) -> None:
         acct.balance += tx.amount if tx.type == "income" else -tx.amount
         tx.account_id = acct.id
         tx.balance_after = acct.balance
+    db.commit()
+
+
+DEFAULT_FLEET_WAREHOUSES = ["11 يوليو", "النوفلين", "عرادة طريق المطا"]
+
+def seed_fleet_warehouses(db: Session) -> None:
+    """Gives each fleet company its starting warehouses — once only (tracked in
+    system_settings), so a warehouse the user later deletes never comes back."""
+    from .models import FleetWarehouse, SystemSetting
+    from .id_gen import new_id
+    from datetime import datetime
+    if db.get(SystemSetting, "fleet_warehouses_seeded"):
+        return
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    for company in ("bayan", "imtiaz", "itqan"):
+        for name in DEFAULT_FLEET_WAREHOUSES:
+            db.add(FleetWarehouse(id=new_id("fleetwh"), company=company, name=name, created_by="النظام", timestamp=ts))
+    db.add(SystemSetting(key="fleet_warehouses_seeded", value={"val": True}))
+    db.add(SystemSetting(key="fleet_warehouses_split_fix", value={"val": True}))  # a fresh seed already has the 3 names
+    db.commit()
+
+
+def fix_fleet_warehouse_split(db: Session) -> None:
+    """The first seed mistakenly merged "11 يوليو" and "النوفلين" into one
+    warehouse. Rename it to "11 يوليو" and add "النوفلين" — unless cars are
+    already attached to the merged one, in which case it stays and the two
+    correct names are just added. Runs once."""
+    from .models import FleetWarehouse, FleetVehicle, SystemSetting
+    from .id_gen import new_id
+    from datetime import datetime
+    if db.get(SystemSetting, "fleet_warehouses_split_fix"):
+        return
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    for company in ("bayan", "imtiaz", "itqan"):
+        existing = {w.name: w for w in db.query(FleetWarehouse).filter(FleetWarehouse.company == company).all()}
+        merged = existing.get("(11 يوليو) النوفلين")
+        if merged and not db.query(FleetVehicle).filter(FleetVehicle.warehouse_id == merged.id).first():
+            merged.name = "11 يوليو"
+            existing["11 يوليو"] = merged
+            del existing["(11 يوليو) النوفلين"]
+        for name in ("11 يوليو", "النوفلين"):
+            if name not in existing:
+                db.add(FleetWarehouse(id=new_id("fleetwh"), company=company, name=name, created_by="النظام", timestamp=ts))
+    db.add(SystemSetting(key="fleet_warehouses_split_fix", value={"val": True}))
     db.commit()

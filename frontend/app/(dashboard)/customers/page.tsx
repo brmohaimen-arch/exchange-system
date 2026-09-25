@@ -11,6 +11,7 @@ import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { DateInput } from '@/components/ui/date-input'
+import { NumberInput } from '@/components/ui/number-input'
 
 const typeLabels: Record<string, string> = { individual: 'فرد', company: 'شركة' }
 const debtStatusClass: Record<string, string> = {
@@ -828,7 +829,12 @@ function CustomersPageInner() {
   // Newest-first, capped to a page — lists arrive in insertion order from the
   // server, so reversing (or sorting by timestamp where one exists) puts the
   // newest record first before slicing to a page.
-  const sortedCustomers = useMemo(() => [...customers].reverse(), [customers])
+  // Customers read oldest-first: 001, 002, ... with new ones at the end.
+  // Numeric codes sort by value; any non-numeric legacy code keeps its server order after them.
+  const sortedCustomers = useMemo(() => {
+    const isNum = (id: string) => /^\d+$/.test(id)
+    return [...customers].sort((a, b) => (isNum(a.id) && isNum(b.id) ? Number(a.id) - Number(b.id) : isNum(a.id) ? -1 : isNum(b.id) ? 1 : 0))
+  }, [customers])
   const pagedCustomers = paginate(sortedCustomers, customersPage)
 
   const sortedDebts = useMemo(() => [...debts].reverse(), [debts])
@@ -1632,8 +1638,7 @@ function CustomersPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">حد الدين المسموح (د.ل)</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={form.debtLimit}
                     onChange={(e) => setForm({ ...form, debtLimit: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1641,8 +1646,7 @@ function CustomersPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">نسبة الربح الإضافية (%)</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={form.profitPct}
                     onChange={(e) => setForm({ ...form, profitPct: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1683,8 +1687,7 @@ function CustomersPageInner() {
                         >
                           {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
                         </select>
-                        <input
-                          type="number"
+                        <NumberInput
                           value={row.amount}
                           onChange={(e) => updateBalanceRow(idx, { amount: e.target.value })}
                           className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1877,8 +1880,7 @@ function CustomersPageInner() {
               </p>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">مبلغ الدفعة *</label>
-                <input
-                  type="number"
+                <NumberInput
                   value={payAmount}
                   onChange={(e) => setPayAmount(e.target.value)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1938,8 +1940,7 @@ function CustomersPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={debtForm.amount}
                     onChange={(e) => setDebtForm({ ...debtForm, amount: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1970,8 +1971,7 @@ function CustomersPageInner() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">قيمة القسط (اختياري)</label>
-                <input
-                  type="number"
+                <NumberInput
                   value={debtForm.paymentAmount}
                   onChange={(e) => setDebtForm({ ...debtForm, paymentAmount: e.target.value })}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2035,8 +2035,7 @@ function CustomersPageInner() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">مبلغ الدفعة *</label>
-                <input
-                  type="number"
+                <NumberInput
                   value={advancePayAmount}
                   onChange={(e) => setAdvancePayAmount(e.target.value)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2107,8 +2106,7 @@ function CustomersPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={advanceForm.amount}
                     onChange={(e) => setAdvanceForm({ ...advanceForm, amount: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2295,8 +2293,7 @@ function CustomersPageInner() {
                     <label className="block text-sm font-medium text-foreground mb-1">
                       المبلغ * {dwForm.ownBankAccountId && <span className="text-xs font-normal text-muted-foreground">({bankAccounts.find((b) => b.id === dwForm.ownBankAccountId)?.currency})</span>}
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       value={dwForm.amount}
                       onChange={(e) => setDwForm({ ...dwForm, amount: e.target.value })}
                       className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2372,8 +2369,7 @@ function CustomersPageInner() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                      <input
-                        type="number"
+                      <NumberInput
                         value={dwForm.amount}
                         onChange={(e) => setDwForm({ ...dwForm, amount: e.target.value })}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2471,8 +2467,7 @@ function CustomersPageInner() {
                     <label className="block text-sm font-medium text-foreground mb-1">
                       المبلغ * {transferForm.ownBankAccountId && <span className="text-xs font-normal text-muted-foreground">({bankAccounts.find((b) => b.id === transferForm.ownBankAccountId)?.currency})</span>}
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       value={transferForm.amount}
                       onChange={(e) => setTransferForm({ ...transferForm, amount: e.target.value })}
                       className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -2507,8 +2502,7 @@ function CustomersPageInner() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-foreground mb-1">المبلغ *</label>
-                      <input
-                        type="number"
+                      <NumberInput
                         value={transferForm.amount}
                         onChange={(e) => setTransferForm({ ...transferForm, amount: e.target.value })}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"

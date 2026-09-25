@@ -715,6 +715,7 @@ class FleetVehicle(Base):
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
     company: Mapped[str] = mapped_column(String(20), default="bayan")  # bayan | imtiaz | itqan — which sub-company owns this record
     seller_name: Mapped[str | None] = mapped_column(String(150), nullable=True)  # who the vehicle was bought from
+    warehouse_id: Mapped[str | None] = mapped_column(String(50), nullable=True)  # مخزن السيارة — optional, can be set later
     sale_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)  # currency the sale was paid in (may differ from the purchase currency)
     purchase_bank_details: Mapped[str | None] = mapped_column(String(400), nullable=True)  # manually-typed bank info for a bank purchase
     auto_number: Mapped[int] = mapped_column(Integer, unique=True)  # ترقيم تسلسلي تلقائي (001, 002, ...) — لا يتغيّر أبداً
@@ -817,6 +818,17 @@ class FleetDamageRecord(Base):
     currency: Mapped[str] = mapped_column(String(10), ForeignKey("currencies.code"))
     reported_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="مُبلغ عنه")  # مُبلغ عنه, قيد الإصلاح, تم الإصلاح
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
+class FleetWarehouse(Base):
+    """A place where a fleet company keeps its cars (معرض / عرادة / مخزن)."""
+    __tablename__ = "fleet_warehouses"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    company: Mapped[str] = mapped_column(String(20), default="bayan")
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
     timestamp: Mapped[str] = mapped_column(String(50), nullable=False)

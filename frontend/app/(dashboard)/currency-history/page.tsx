@@ -9,6 +9,7 @@ import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from '@/components/ui/chart'
 import { DateInput } from '@/components/ui/date-input'
+import { NumberInput } from '@/components/ui/number-input'
 
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -144,11 +145,11 @@ export default function CurrencyHistoryPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء</label>
-              <input type="number" step="any" value={form.buyRate} onChange={(e) => setForm({ ...form, buyRate: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              <NumberInput step="any" value={form.buyRate} onChange={(e) => setForm({ ...form, buyRate: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
             </div>
             <div>
               <label className="block text-sm font-medium text-foreground mb-1">سعر البيع</label>
-              <input type="number" step="any" value={form.sellRate} onChange={(e) => setForm({ ...form, sellRate: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+              <NumberInput step="any" value={form.sellRate} onChange={(e) => setForm({ ...form, sellRate: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
             </div>
             <div>
               <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>

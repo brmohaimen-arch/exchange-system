@@ -6,6 +6,7 @@ import { api, newId, ALL_PERMISSIONS, Currency, RoleDTO, UserDTO, CommissionRule
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { TablePagination, paginate } from '@/components/TablePagination'
+import { NumberInput } from '@/components/ui/number-input'
 
 interface Branch { id: string; name: string; city: string }
 interface VaultLite { id: string; name: string }
@@ -549,8 +550,7 @@ export default function SettingsPage() {
             <div className="grid grid-cols-2 gap-4 pt-2 border-t border-border">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">مهلة الجلسة (دقيقة)</label>
-                <input
-                  type="number"
+                <NumberInput
                   value={settings.sessionTimeout ?? ''}
                   onChange={(e) => setField('sessionTimeout', parseInt(e.target.value) || 0)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -558,8 +558,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">حد الإبلاغ (د.ل)</label>
-                <input
-                  type="number"
+                <NumberInput
                   value={settings.amlThresholdLYD ?? ''}
                   onChange={(e) => setField('amlThresholdLYD', parseFloat(e.target.value) || 0)}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -573,8 +572,7 @@ export default function SettingsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">كل كم ساعة</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   value={settings.autoBackupIntervalHours ?? ''}
                   onChange={(e) => setField('autoBackupIntervalHours', parseInt(e.target.value) || 0)}
@@ -583,8 +581,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">عدد النسخ المحتفظ بها</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   value={settings.autoBackupRetentionCount ?? ''}
                   onChange={(e) => setField('autoBackupRetentionCount', parseInt(e.target.value) || 0)}
@@ -970,17 +967,50 @@ export default function SettingsPage() {
             <h3 className="text-lg font-semibold text-foreground">مساعد واتساب للمدير</h3>
           </div>
           <p className="text-xs text-muted-foreground mb-4">
-            يتطلب حساب Meta Business App مع WhatsApp Cloud API — سجّل رابط الويب هوك التالي في إعدادات التطبيق على Meta:
+            {settings.whatsappProvider === 'openwa'
+              ? 'بوابة OpenWA مفتوحة المصدر تعمل على جهاز/خادم مستقل (Node.js) — تُستخدم لإرسال الكشوف والتنبيهات. تنبيه: هي غير رسمية وقد يتعرض الرقم للحظر، استخدم رقماً مخصصاً ولا تستخدم رقم عملك الأساسي.'
+              : 'يتطلب حساب Meta Business App مع WhatsApp Cloud API — سجّل رابط الويب هوك التالي في إعدادات التطبيق على Meta:'}
           </p>
-          <div dir="ltr" className="mb-4 rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs font-mono text-foreground break-all">
-            {whatsappWebhookUrl}
-          </div>
+          {settings.whatsappProvider !== 'openwa' && (
+            <div dir="ltr" className="mb-4 rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs font-mono text-foreground break-all">
+              {whatsappWebhookUrl}
+            </div>
+          )}
 
           <fieldset className="space-y-4 text-right">
             <div className="flex items-center justify-between">
               <span className="text-sm text-foreground">تفعيل مساعد واتساب</span>
               <Toggle checked={!!settings.whatsappEnabled} onChange={(v) => setField('whatsappEnabled', v)} />
             </div>
+
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">مزوّد الإرسال</label>
+              <select
+                value={settings.whatsappProvider || 'cloud'}
+                onChange={(e) => setField('whatsappProvider', e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="cloud">Meta WhatsApp Cloud API (رسمي)</option>
+                <option value="openwa">OpenWA (مجاني، مفتوح المصدر — غير رسمي)</option>
+              </select>
+            </div>
+
+            {settings.whatsappProvider === 'openwa' && (
+              <div className="grid grid-cols-3 gap-4">
+                <div className="col-span-3 sm:col-span-1">
+                  <label className="block text-sm font-medium text-foreground mb-1">عنوان OpenWA</label>
+                  <input value={settings.openwaBaseUrl || ''} onChange={(e) => setField('openwaBaseUrl', e.target.value)} placeholder="https://wa.example.com:2785" dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div className="col-span-3 sm:col-span-1">
+                  <label className="block text-sm font-medium text-foreground mb-1">API Key</label>
+                  <input type="password" value={settings.openwaApiKey || ''} onChange={(e) => setField('openwaApiKey', e.target.value)} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+                <div className="col-span-3 sm:col-span-1">
+                  <label className="block text-sm font-medium text-foreground mb-1">Session ID</label>
+                  <input value={settings.openwaSessionId || ''} onChange={(e) => setField('openwaSessionId', e.target.value)} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -993,6 +1023,7 @@ export default function SettingsPage() {
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
                 />
               </div>
+              {settings.whatsappProvider !== 'openwa' && (
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">Phone Number ID</label>
                 <input
@@ -1002,7 +1033,10 @@ export default function SettingsPage() {
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
                 />
               </div>
+              )}
             </div>
+
+            {settings.whatsappProvider !== 'openwa' && (<>
 
             <div>
               <label className="block text-sm font-medium text-foreground mb-1">Access Token</label>
@@ -1046,6 +1080,7 @@ export default function SettingsPage() {
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50"
               />
             </div>
+            </>)}
 
             <div className="space-y-2 pt-2 border-t border-border">
               <div className="flex items-center justify-between">
@@ -1063,8 +1098,8 @@ export default function SettingsPage() {
               {!!settings.whatsappDailySummaryEnabled && (
                 <div className="max-w-[10rem]">
                   <label className="block text-sm font-medium text-foreground mb-1">ساعة الإرسال (توقيت ليبيا، 0-23)</label>
-                  <input
-                    type="number" min={0} max={23}
+                  <NumberInput
+                    min={0} max={23}
                     value={settings.whatsappDailySummaryHour ?? 20}
                     onChange={(e) => setField('whatsappDailySummaryHour', parseInt(e.target.value) || 0)}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -1262,11 +1297,11 @@ export default function SettingsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الحد الأدنى للمبلغ</label>
-                  <input type="number" value={ruleForm.minAmount} onChange={(e) => setRuleForm({ ...ruleForm, minAmount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={ruleForm.minAmount} onChange={(e) => setRuleForm({ ...ruleForm, minAmount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الحد الأقصى (اختياري)</label>
-                  <input type="number" value={ruleForm.maxAmount} onChange={(e) => setRuleForm({ ...ruleForm, maxAmount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={ruleForm.maxAmount} onChange={(e) => setRuleForm({ ...ruleForm, maxAmount: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -1279,11 +1314,11 @@ export default function SettingsPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">القيمة *</label>
-                  <input type="number" value={ruleForm.rateValue} onChange={(e) => setRuleForm({ ...ruleForm, rateValue: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={ruleForm.rateValue} onChange={(e) => setRuleForm({ ...ruleForm, rateValue: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الأولوية</label>
-                  <input type="number" value={ruleForm.priority} onChange={(e) => setRuleForm({ ...ruleForm, priority: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  <NumberInput value={ruleForm.priority} onChange={(e) => setRuleForm({ ...ruleForm, priority: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
 

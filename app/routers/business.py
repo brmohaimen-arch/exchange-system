@@ -18,6 +18,7 @@ from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
 from ..export_utils import build_excel, build_pdf, build_receipt_pdf, build_statement_pdf, build_sectioned_excel, build_sectioned_pdf, ArabicFontUnavailable
 from ..file_storage import save_upload, resolve_path
+from ..arabic_numbers import amount_in_words, balance_side
 from ..whatsapp_gateway import send_manager_alert, send_whatsapp_document, get_setting as get_whatsapp_setting
 from ..telegram_gateway import send_manager_alert as send_telegram_alert
 from fastapi.responses import StreamingResponse, FileResponse
@@ -948,7 +949,7 @@ def transfer_between_customers(customer_id: str, data: CustomerTransferOp, actor
 
 @router.get("/customer_account_entries")
 def list_customer_account_entries(db: Session = Depends(get_db)):
-    res = db.scalars(select(CustomerAccountEntry).order_by(CustomerAccountEntry.timestamp.desc())).all()
+    res = db.scalars(select(CustomerAccountEntry).where(CustomerAccountEntry.id.not_in(_reversed_journal_refs())).order_by(CustomerAccountEntry.timestamp.desc())).all()
     return success_response(data=[customer_account_entry_to_dict(e) for e in res])
 
 def _group_rows_by_currency(name_prefix: str, headers: list[str], items_with_ts_ccy_row: list[tuple[str, str, list]]) -> list[tuple[str, list[str], list[list]]]:
@@ -1042,9 +1043,65 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     # that leg's direction is fixed by which side of the counter it's on: a
     # sell hands the customer to_currency (an entry), a buy/exchange takes
     # from_currency off them (an exit). Nothing here is guessed from text.
-    flow_headers = (["م", "العميل", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"] if show_customer_col
-                     else ["م", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "بواسطة"])
+    bal_headers = _balance_headers(True)
+    flow_headers = (["المرجع", "العميل", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + bal_headers + ["بواسطة"] if show_customer_col
+                     else ["المرجع", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + bal_headers + ["بواسطة"])
     trade_headers = flow_headers
+
+    # Running customer balance per currency. Deposits/withdrawals/transfers
+    # store the exact balance_after; a trade paid from the customer's account
+    # moves it by a known delta; everything else (cash trades, debts, سلف)
+    # leaves it unchanged, so those rows simply repeat the balance at that time.
+    # Built from the customer's whole history, not only the filtered range.
+    reversed_refs = _reversed_journal_refs()
+    hist_entries = db.scalars(select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id.in_(customer_ids), CustomerAccountEntry.id.not_in(reversed_refs))).all()
+    hist_trades = db.scalars(select(Transaction).where(
+        Transaction.customer_id.in_(customer_ids), Transaction.type.in_(["buy", "sell", "exchange"]),
+        Transaction.status != "reversed", Transaction.payment_method == "customer_account")).all()
+
+    def _norm_ts(ts: str) -> str:
+        ts = (ts or "").replace("T", " ")
+        return ts + " 23:59:59" if len(ts) == 10 else ts[:19]
+
+    events: dict[tuple[str, str], list[tuple[str, str, float, float]]] = {}
+    for e in hist_entries:
+        events.setdefault((e.customer_id, e.currency), []).append((_norm_ts(e.timestamp), "abs", e.balance_after, e.balance_before))
+    for t in hist_trades:
+        if t.type == "sell":
+            events.setdefault((t.customer_id, t.from_currency), []).append((_norm_ts(t.timestamp), "delta", -(t.amount * t.rate + t.commission), 0.0))
+        else:
+            pay = t.amount * t.rate - (t.commission if t.type == "buy" else 0.0)
+            events.setdefault((t.customer_id, t.to_currency), []).append((_norm_ts(t.timestamp), "delta", pay, 0.0))
+    for evs in events.values():
+        evs.sort(key=lambda x: x[0])
+
+    customers_by_id = {c.id: c for c in customers}
+
+    def initial_state(customer_id: str, ccy: str) -> float:
+        """Balance before the first tracked event. If a deposit/withdraw record
+        exists its balance_before is exact; otherwise back out of the current
+        balance. (Balances also change through paths that log nothing — manual
+        edits, seed data — so this keeps the timeline anchored to reality.)"""
+        evs = events.get((customer_id, ccy), [])
+        first_abs = next((i for i, ev in enumerate(evs) if ev[1] == "abs"), None)
+        if first_abs is not None:
+            return evs[first_abs][3] - sum(ev[2] for ev in evs[:first_abs] if ev[1] == "delta")
+        current = customers_by_id[customer_id].balances.get(ccy, 0.0) if customer_id in customers_by_id else 0.0
+        return current - sum(ev[2] for ev in evs)
+
+    def balance_at(customer_id: str, ccy: str, ts: str, exact: float | None = None) -> float:
+        if exact is not None:
+            return exact
+        limit = _norm_ts(ts)
+        state = initial_state(customer_id, ccy)
+        for ev_ts, kind, value, _before in events.get((customer_id, ccy), []):
+            if ev_ts > limit:
+                break
+            state = value if kind == "abs" else state + value
+        return state
+
+    def bal_cols(customer_id: str, ccy: str, ts: str, exact: float | None = None) -> list[str]:
+        return _balance_cells(balance_at(customer_id, ccy, ts, exact), ccy, True)
 
     def prefixed(row: list, customer_id: str) -> list:
         return ([customer_name_by_id.get(customer_id, customer_id)] + row) if show_customer_col else row
@@ -1079,9 +1136,9 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
             out_currency, out_amount = t.from_currency, t.amount
         detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — عبر {cash_source_label(vault_name=t.vault_name)}"
         if not currency or currency == in_currency:
-            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, f"{in_amount:,.2f}", "", in_currency, t.user], t.customer_id)))
+            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, f"{in_amount:,.2f}", "", in_currency, t.notes or ""] + bal_cols(t.customer_id, in_currency, t.timestamp) + [t.user], t.customer_id)))
         if not currency or currency == out_currency:
-            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, "", f"{out_amount:,.2f}", out_currency, t.user], t.customer_id)))
+            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, "", f"{out_amount:,.2f}", out_currency, t.notes or ""] + bal_cols(t.customer_id, out_currency, t.timestamp) + [t.user], t.customer_id)))
     trade_rows_with_ts.sort(key=lambda r: r[0])
     trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
 
@@ -1098,7 +1155,7 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
             # "تحويل من/إلى العميل X (id)", so it doubles as the detail text.
             detail = e.other_source or e.type
         entry, exit_ = entry_exit(e.amount, e.type in ("deposit", "transfer_in"))
-        row = prefixed([e.timestamp, detail, entry, exit_, e.currency, e.user], e.customer_id)
+        row = prefixed([e.timestamp, detail, entry, exit_, e.currency, e.notes or ""] + bal_cols(e.customer_id, e.currency, e.timestamp, exact=e.balance_after) + [e.user], e.customer_id)
         dw_rows_with_ts.append((e.timestamp, row))
     dw_rows_with_ts.sort(key=lambda r: r[0])
     dw_rows = [[str(i)] + row for i, (_, row) in enumerate(dw_rows_with_ts, start=1)]
@@ -1111,11 +1168,11 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     for d in debts:
         detail = f"تسجيل دين جديد — استحقاق {d.due_date} (سجل دفتري، دون حركة نقدية)"
         entry, exit_ = entry_exit(d.amount, False)
-        row = prefixed([d.start_date, detail, entry, exit_, d.currency, d.created_by or "—"], d.customer_id)
+        row = prefixed([d.start_date, detail, entry, exit_, d.currency, d.notes or ""] + bal_cols(d.customer_id, d.currency, d.start_date) + [d.created_by or "—"], d.customer_id)
         debt_items.append((d.start_date, d.currency, row))
     for p in debt_payments:
         entry, exit_ = entry_exit(p.amount, True)
-        row = prefixed([p.timestamp, "تسديد دفعة دين (سجل دفتري، دون حركة نقدية)", entry, exit_, p.currency, p.user], p.customer_id)
+        row = prefixed([p.timestamp, "تسديد دفعة دين (سجل دفتري، دون حركة نقدية)", entry, exit_, p.currency, p.notes or ""] + bal_cols(p.customer_id, p.currency, p.timestamp) + [p.user], p.customer_id)
         debt_items.append((p.timestamp, p.currency, row))
     debt_sections = _group_rows_by_currency("الديون", flow_headers, debt_items)
 
@@ -1124,12 +1181,12 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     for a in advances:
         detail = f"صرف سلفة — من {cash_source_label(a.vault_name, a.bank_account_name)}"
         entry, exit_ = entry_exit(a.amount, False)
-        row = prefixed([a.timestamp, detail, entry, exit_, a.currency, a.created_by], a.customer_id)
+        row = prefixed([a.timestamp, detail, entry, exit_, a.currency, a.notes or ""] + bal_cols(a.customer_id, a.currency, a.timestamp) + [a.created_by], a.customer_id)
         advance_items.append((a.timestamp, a.currency, row))
     for p in advance_payments:
         detail = f"تسديد دفعة سلفة — إلى {cash_source_label(p.vault_name, p.bank_account_name)}"
         entry, exit_ = entry_exit(p.amount, True)
-        row = prefixed([p.timestamp, detail, entry, exit_, p.currency, p.user], p.customer_id)
+        row = prefixed([p.timestamp, detail, entry, exit_, p.currency, p.notes or ""] + bal_cols(p.customer_id, p.currency, p.timestamp) + [p.user], p.customer_id)
         advance_items.append((p.timestamp, p.currency, row))
     advance_sections = _group_rows_by_currency("السلف", flow_headers, advance_items)
 
@@ -1147,11 +1204,11 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
                 if currency and ccy != currency:
                     continue
                 totals[ccy] = totals.get(ccy, 0.0) + amt
-        closing_line = "إجمالي أرصدة جميع العملاء: " + (", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in totals.items()) or "لا توجد أرصدة")
+        closing_line = "إجمالي أرصدة جميع العملاء: " + (" ، ".join(f"{abs(amt):,.2f} {ccy}" + (f" ({balance_side(amt)})" if balance_side(amt) else "") for ccy, amt in totals.items()) or "لا توجد أرصدة")
     else:
         customer = customers[0]
         balances = {currency: customer.balances.get(currency, 0.0)} if currency else customer.balances
-        closing_line = "الأرصدة الحالية: " + (", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in balances.items()) or "لا توجد أرصدة")
+        closing_line = "الأرصدة الحالية: " + (" ، ".join(f"{abs(amt):,.2f} {ccy}" + (f" ({balance_side(amt)})" if balance_side(amt) else "") for ccy, amt in balances.items()) or "لا توجد أرصدة")
     return sections, closing_line
 
 def _customer_statement_sections(db: Session, customer: Customer, date_from: str = "", date_to: str = "", currency: str = ""):
@@ -2207,7 +2264,7 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     for m in movements:
         groups[_categorize_movement_type(m.type)].append(m)
 
-    mv_headers = ["م", "الوقت", "النوع", "دخول", "خروج", "العملة", "الرصيد بعد", "بواسطة"]
+    mv_headers = ["المرجع", "الوقت", "النوع", "دخول", "خروج", "العملة", "الرصيد بعد", "ملاحظات", "بواسطة"]
 
     def mv_rows(items: list[Movement]) -> list[list]:
         rows = []
@@ -2215,7 +2272,7 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
             is_in = m.amount_in > 0
             entry = f"{m.amount_in:,.2f}" if is_in else ""
             exit_ = f"{m.amount_out:,.2f}" if not is_in else ""
-            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, f"{m.balance_after:,.2f}", m.user])
+            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user])
         return rows
 
     sections = [
@@ -2239,12 +2296,12 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     if date_to:
         transfers = [t for t in transfers if t.timestamp[:10] <= date_to]
 
-    tr_headers = ["م", "الوقت", "من", "إلى", "دخول", "خروج", "العملة", "بواسطة"]
+    tr_headers = ["المرجع", "الوقت", "من", "إلى", "دخول", "خروج", "العملة", "ملاحظات", "بواسطة"]
     tr_rows = []
     for i, t in enumerate(transfers, start=1):
         is_in = t.dest_id == entity_id
         entry, exit_ = (f"{t.amount:,.2f}", "") if is_in else ("", f"{t.amount:,.2f}")
-        tr_rows.append([str(i), t.timestamp, t.source_name, t.dest_name, entry, exit_, t.currency, t.requested_by])
+        tr_rows.append([str(i), t.timestamp, t.source_name, t.dest_name, entry, exit_, t.currency, t.notes or "", t.requested_by])
     sections.append(("التحويلات بين الحسابات", tr_headers, tr_rows))
 
     totals: dict[str, dict[str, float]] = {}
@@ -2319,7 +2376,7 @@ def send_bank_account_statement_whatsapp(account_id: str, date_from: str = "", d
 # ----------------- DAILY LEDGER (chronological, running-balance statement) -----------------
 # A different shape from the categorized statement above: one flat table in
 # date order with a running balance, matching the classic cash-book ledger
-# format (رقم المعاملة / التاريخ / اليوم / نوع العملية / البيان / مدين / دائن /
+# format (رقم المعاملة / التاريخ / اليوم / نوع العملية / التفاصيل / عليه / له /
 # الرصيد) rather than grouped by kind — every operation that ever touched
 # this vault/bank account, in the order it happened, carrying the balance
 # forward from an opening line.
@@ -2371,6 +2428,82 @@ def _pair_movements_by_operation(movements: list) -> list[tuple]:
         pairs.append((in_m, out_m))
     return pairs
 
+def _balance_cells(balance: float, currency: str, with_sides: bool) -> list[str]:
+    """The per-row balance columns: الرصيد بالأرقام, الرصيد بالحروف and — for
+    statements that name a side — له / عليه (the amount sits under the side it
+    belongs to: positive = له, negative = عليه). Vault/bank-of-the-company
+    statements skip the two side columns."""
+    if with_sides:
+        return [
+            f"{abs(balance):,.2f}", amount_in_words(balance, currency),
+            f"{balance:,.2f}" if balance > 0 else "", f"{abs(balance):,.2f}" if balance < 0 else "",
+        ]
+    words = amount_in_words(balance, currency)
+    return [f"{balance:,.2f}", (f"سالب {words}" if balance < 0 else words)]
+
+
+def _chain_ordered(movements: list) -> list:
+    """Movements of ONE entity+currency in time order. The timestamp only has
+    minute precision, so several movements in the same minute have no natural
+    order — within such a group, follow the balance chain (each row's
+    balance_before is the previous row's balance_after) instead of guessing."""
+    ordered: list = []
+    i = 0
+    while i < len(movements):
+        j = i
+        while j < len(movements) and movements[j].timestamp == movements[i].timestamp:
+            j += 1
+        group = list(movements[i:j])
+        while group:
+            anchor = ordered[-1].balance_after if ordered else None
+            if anchor is not None:
+                pick = next((m for m in group if abs(m.balance_before - anchor) < 0.005), None)
+            else:
+                pick = next((m for m in group if not any(o is not m and abs(m.balance_before - o.balance_after) < 0.005 for o in group)), None)
+            pick = pick or group[0]
+            group.remove(pick)
+            ordered.append(pick)
+        i = j
+    return ordered
+
+
+def _ledger_sequence(movements: list, opening: float | None = None) -> list[dict]:
+    """Ledger lines for one entity+currency. Where two consecutive movements
+    don't join up (balance_before != previous balance_after — a balance that
+    was changed by hand without being logged, in older data), an explicit
+    "تعديل رصيد يدوي" line bridges the gap, so the running balance never jumps
+    unexplained."""
+    items: list[dict] = []
+    prev_after = opening
+    for m in _chain_ordered(movements):
+        if prev_after is not None and abs(m.balance_before - prev_after) > 0.005:
+            delta = m.balance_before - prev_after
+            items.append({"m": None, "ts": m.timestamp, "in": delta if delta > 0 else 0.0, "out": -delta if delta < 0 else 0.0,
+                          "after": m.balance_before, "type": "تعديل رصيد يدوي (غير مسجَّل)", "currency": m.currency,
+                          "entity_name": m.entity_name, "notes": "فرق بين رصيدين متتاليين — تعديل يدوي على الرصيد", "user": "—"})
+        items.append({"m": m, "ts": m.timestamp, "in": m.amount_in, "out": m.amount_out, "after": m.balance_after, "type": m.type,
+                      "currency": m.currency, "entity_name": m.entity_name, "notes": None, "user": m.user})
+        prev_after = m.balance_after
+    return items
+
+
+def _merged_ledger(movements: list) -> list[dict]:
+    """Ledger lines for many entities/currencies together: each (entity, currency)
+    sequence is built on its own (its balance chain is its own), then merged by time."""
+    seqs: dict[tuple, list] = {}
+    for m in movements:
+        seqs.setdefault((m.entity_id, m.currency), []).append(m)
+    lines: list[dict] = []
+    for ms in seqs.values():
+        lines.extend(_ledger_sequence(ms))
+    lines.sort(key=lambda it: it["ts"])
+    return lines
+
+
+def _balance_headers(with_sides: bool) -> list[str]:
+    return ["الرصيد بالأرقام", "الرصيد بالحروف"] + (["له", "عليه"] if with_sides else [])
+
+
 def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, date_from: str, date_to: str, currency: str):
     query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id, Movement.currency == currency, _not_reversed_movement())
     opening_query = query
@@ -2380,22 +2513,30 @@ def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, dat
         opening_balance = opening_row.balance_after if opening_row else 0.0
         query = query.where(Movement.timestamp >= date_from)
     else:
-        opening_balance = 0.0
+        opening_balance = None
     if date_to:
         query = query.where(Movement.timestamp <= date_to + " 23:59:59")
     movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
+    lines = _ledger_sequence(movements, opening_balance)
+    if opening_balance is None:
+        # No earlier history in range: the opening balance is whatever the first movement started from.
+        opening_balance = movements[0].balance_before if movements else 0.0
 
-    headers = ["المرجع", "التاريخ", "اليوم", "نوع العملية", "البيان", "مدين (صرف)", "دائن (قبض)", "الرصيد بعد", "ملاحظات", "بواسطة"]
-    rows = [["-", date_from or (movements[0].timestamp[:10] if movements else ""), "", "رصيد سابق", "رصيد افتتاحي", "", "", f"{opening_balance:,.2f}", "", "-"]]
-    for m in movements:
-        date_part = m.timestamp[:10]
+    # A customer's own bank account names sides (له/عليه); the company's vaults
+    # and bank accounts don't need them.
+    owner = db.get(BankAccount, entity_id) if entity_kind == "bank_account" else None
+    with_sides = bool(owner and owner.customer_id)
+
+    headers = ["المرجع", "التاريخ", "اليوم", "التفاصيل", "دخول", "خروج", "ملاحظات"] + _balance_headers(with_sides) + ["بواسطة"]
+    rows = [["-", date_from or (movements[0].timestamp[:10] if movements else ""), "", "رصيد افتتاحي — رصيد سابق", "", "", ""] + _balance_cells(opening_balance, currency, with_sides) + ["-"]]
+    for i, it in enumerate(lines, start=1):
+        date_part = it["ts"][:10]
         rows.append([
-            m.id[-8:], date_part, _arabic_weekday(date_part),
-            "قبض" if m.amount_in > 0 else "صرف", m.type,
-            f"{m.amount_out:,.2f}" if m.amount_out else "",
-            f"{m.amount_in:,.2f}" if m.amount_in else "",
-            f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
-        ])
+            str(i), date_part, _arabic_weekday(date_part), it["type"],
+            f"{it['in']:,.2f}" if it["in"] else "",
+            f"{it['out']:,.2f}" if it["out"] else "",
+            it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"].reference_id),
+        ] + _balance_cells(it["after"], currency, with_sides) + [it["user"]])
     return headers, rows
 
 def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, entity_name: str, format: str, date_from: str, date_to: str, currency: str):
@@ -2415,8 +2556,9 @@ def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, e
 # share a single balance, so each row carries its own account label and that
 # account's own balance-after instead of one running total.
 def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to: str, currency: str):
-    # One row per movement, single amount in دخول or خروج.
-    headers = ["المرجع", "التاريخ", "اليوم", "الحساب", "البيان", "دخول", "خروج", "العملة", "الرصيد بعد", "ملاحظات", "بواسطة"]
+    # One row per movement; every row carries its account's balance after it
+    # in figures, in words, and under له / عليه.
+    headers = ["المرجع", "التاريخ", "اليوم", "الحساب", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + _balance_headers(True) + ["بواسطة"]
     accounts = db.scalars(select(BankAccount).where(BankAccount.customer_id.isnot(None))).all()
     accounts_by_id = {a.id: a for a in accounts}
     if not accounts_by_id:
@@ -2432,15 +2574,17 @@ def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to
     movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
 
     rows = []
-    for m in movements:
-        account = accounts_by_id.get(m.entity_id)
-        account_label = f"{account.bank_name} - {account.account_name}" if account else m.entity_name
-        date_part = m.timestamp[:10]
+    for i, it in enumerate(_merged_ledger(movements), start=1):
+        m = it["m"]
+        eid = m.entity_id if m else None
+        account = accounts_by_id.get(eid) if eid else None
+        account_label = f"{account.bank_name} - {account.account_name}" if account else it["entity_name"]
+        date_part = it["ts"][:10]
         rows.append([
-            m.id[-8:], date_part, _arabic_weekday(date_part), account_label, m.type,
-            f"{m.amount_in:,.2f}" if m.amount_in > 0 else "", f"{m.amount_out:,.2f}" if m.amount_out > 0 else "",
-            m.currency, f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
-        ])
+            str(i), date_part, _arabic_weekday(date_part), account_label, it["type"],
+            f"{it['in']:,.2f}" if it["in"] > 0 else "", f"{it['out']:,.2f}" if it["out"] > 0 else "",
+            it["currency"], it["notes"] if m is None else _movement_source_notes(db, m.reference_id),
+        ] + _balance_cells(it["after"], it["currency"], True) + [it["user"]])
     return headers, rows
 
 def _all_customer_bank_accounts_ledger_export(db: Session, format: str, date_from: str, date_to: str, currency: str):
@@ -2481,10 +2625,11 @@ def send_all_customer_bank_accounts_daily_ledger_whatsapp(date_from: str = "", d
 # page: the per-vault-per-currency exports above stay as-is for the treasury
 # and customer-bank-account pages.
 def _vaults_ledger_rows(db: Session, vault_ids: list[str], date_from: str, date_to: str, currency: str = ""):
-    # One row per movement, single amount in دخول or خروج. Shared by the
-    # closing statement (one day) and the all-vaults statement (any range);
-    # currency "" = every currency, otherwise only that currency's movements.
-    headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "البيان", "دخول", "خروج", "العملة", "الرصيد بعد", "ملاحظات", "بواسطة"]
+    # One row per movement, single amount in دخول or خروج, with the vault's
+    # balance after it in figures and in words. Shared by the closing
+    # statement (one day) and the all-vaults statement (any range); currency
+    # "" = every currency, otherwise only that currency's movements.
+    headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + _balance_headers(False) + ["بواسطة"]
     if not vault_ids:
         return headers, []
     query = select(Movement).where(Movement.entity_type == "vault", Movement.entity_id.in_(vault_ids), _not_reversed_movement())
@@ -2496,13 +2641,13 @@ def _vaults_ledger_rows(db: Session, vault_ids: list[str], date_from: str, date_
         query = query.where(Movement.currency == currency)
     movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
     rows = []
-    for m in movements:
-        date_part = m.timestamp[:10]
+    for i, it in enumerate(_merged_ledger(movements), start=1):
+        date_part = it["ts"][:10]
         rows.append([
-            m.id[-8:], date_part, _arabic_weekday(date_part), m.entity_name, m.type,
-            f"{m.amount_in:,.2f}" if m.amount_in > 0 else "", f"{m.amount_out:,.2f}" if m.amount_out > 0 else "",
-            m.currency, f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user,
-        ])
+            str(i), date_part, _arabic_weekday(date_part), it["entity_name"], it["type"],
+            f"{it['in']:,.2f}" if it["in"] > 0 else "", f"{it['out']:,.2f}" if it["out"] > 0 else "",
+            it["currency"], it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"].reference_id),
+        ] + _balance_cells(it["after"], it["currency"], False) + [it["user"]])
     return headers, rows
 
 def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str, currency: str = ""):

@@ -330,12 +330,33 @@ def update_vault(vault_id: str, data: VaultCreate, actor: User = Depends(require
     return success_response(data=vault_to_dict(vault))
 
 @router.patch("/vaults/{vault_id}/balances")
-def update_vault_balances(vault_id: str, data: VaultBalanceUpdate, db: Session = Depends(get_db)):
+def update_vault_balances(vault_id: str, data: VaultBalanceUpdate, actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    """Manual balance correction. Every currency whose balance actually changes
+    is logged as a Movement (so the vault's statement/ledger has no unexplained
+    jump) and in the audit log with who did it."""
     vault = db.get(Vault, vault_id)
     if not vault:
         raise APIError(code="NOT_FOUND", message_ar="الخزنة غير موجودة", message_en="Vault not found", status_code=404)
+    check_branch_access(actor, db, vault.branch)
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    old_balances = dict(vault.balances or {})
+    changes = []
+    for ccy, new_balance in data.balances.items():
+        before = old_balances.get(ccy, 0.0)
+        diff = round(new_balance - before, 6)
+        if abs(diff) < 1e-9:
+            continue
+        db.add(Movement(
+            id=new_id(f"m_adj_{vault_id}_{ccy}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id, entity_name=vault.name,
+            currency=ccy, type="تعديل رصيد يدوي", amount_in=diff if diff > 0 else 0.0, amount_out=-diff if diff < 0 else 0.0,
+            balance_before=before, balance_after=new_balance, reference_id=new_id("adj"), user=actor.name,
+        ))
+        changes.append(f"{ccy}: {before:,.2f} ← {new_balance:,.2f}")
     vault.balances = data.balances
-    vault.last_movement = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    vault.last_movement = timestamp
+    if changes:
+        create_audit_log(db, action=AuditAction.UPDATE, entity_type="Vault", entity_id=vault_id,
+                          description=f"تعديل أرصدة الخزنة {vault.name} يدوياً — " + " | ".join(changes), username=actor.username)
     db.commit()
     return success_response(data=vault_to_dict(vault))
 

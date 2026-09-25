@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 from pydantic import BaseModel
 
 from ..database import get_db
-from ..models import FleetVehicle, FleetTransaction, FleetDamageRecord, FleetAccount, ExchangeRate, AuditAction, User, Currency
+from ..models import FleetVehicle, FleetTransaction, FleetDamageRecord, FleetAccount, FleetWarehouse, ExchangeRate, AuditAction, User, Currency
 from ..tracking import create_audit_log
 from ..core.responses import success_response
 from ..core.errors import APIError
@@ -70,6 +70,7 @@ class FleetVehicleCreate(BaseModel):
     purchase_manual_bank: bool = False
     seller_name: str | None = None
     purchase_bank_details: str | None = None
+    warehouse_id: str | None = None
     currency: str
     notes: str | None = None
 
@@ -97,6 +98,7 @@ class FleetVehicleUpdate(BaseModel):
     purchase_manual_bank: bool = False
     seller_name: str | None = None
     purchase_bank_details: str | None = None
+    warehouse_id: str | None = None
 
 
 class FleetVehicleSell(BaseModel):
@@ -190,6 +192,8 @@ def vehicle_to_dict(v: FleetVehicle, balances: dict[str, float] | None = None, a
         "purchasePrice": v.purchase_price,
         "purchasePaymentMethod": v.purchase_payment_method,
         "purchaseAccountId": v.purchase_account_id,
+        "warehouseId": v.warehouse_id,
+        "warehouseName": (db.get(FleetWarehouse, v.warehouse_id).name if (db is not None and v.warehouse_id and db.get(FleetWarehouse, v.warehouse_id)) else None),
         "sellerName": v.seller_name,
         "purchaseBankDetails": v.purchase_bank_details,
         "purchaseManualBank": bool(v.purchase_payment_method == "bank" and not v.purchase_account_id),
@@ -406,6 +410,7 @@ def create_fleet_vehicle(data: FleetVehicleCreate, actor: User = Depends(fleet_a
         status=data.status, purchase_date=data.purchase_date, purchase_price=data.purchase_price,
         purchase_payment_method=data.purchase_payment_method if data.purchase_price > 0 else None,
         purchase_account_id=account.id if account else None,
+        warehouse_id=_valid_warehouse(db, company, data.warehouse_id),
         seller_name=(data.seller_name or "").strip() or None,
         purchase_bank_details=(data.purchase_bank_details or "").strip() or None if data.purchase_payment_method == "bank" else None,
         currency=data.currency, notes=data.notes, created_by=actor.name, timestamp=timestamp,
@@ -427,6 +432,15 @@ def create_fleet_vehicle(data: FleetVehicleCreate, actor: User = Depends(fleet_a
     db.commit()
     account_names = {account.id: account.name} if account else {}
     return success_response(data=vehicle_to_dict(v, {}, account_names), message_ar="تمت إضافة المركبة بنجاح")
+
+
+def _valid_warehouse(db: Session, company: str, warehouse_id: str | None) -> str | None:
+    if not warehouse_id:
+        return None
+    wh = db.get(FleetWarehouse, warehouse_id)
+    if not wh or wh.company != company:
+        raise APIError(code="WAREHOUSE_NOT_FOUND", message_ar="المخزن المحدد غير موجود", message_en="Warehouse not found", status_code=400)
+    return warehouse_id
 
 
 def _validate_bank_purchase(manual: bool, account_id: str | None, seller_name: str | None, details: str | None) -> None:
@@ -521,6 +535,7 @@ def update_fleet_vehicle(vehicle_id: str, data: FleetVehicleUpdate, actor: User 
     v.operator = (data.operator or "").strip() or None
     v.status = data.status
     v.notes = data.notes
+    v.warehouse_id = _valid_warehouse(db, v.company, data.warehouse_id)
     price_note = ""
     if data.purchase_price is not None:
         old_price = v.purchase_price or 0.0
@@ -654,6 +669,69 @@ def delete_fleet_vehicle(vehicle_id: str, actor: User = Depends(fleet_actor), db
     db.delete(v)
     create_audit_log(db, action=AuditAction.DELETE, entity_type="FleetVehicle", entity_id=vehicle_id,
                       description=f"تم حذف مركبة/معدة الأسطول: {v.name} وكل سجلاتها المالية وسجلات الأضرار", username=actor.username)
+    db.commit()
+    return success_response(data={"deleted": True})
+
+
+# ----------------- WAREHOUSES -----------------
+class FleetWarehouseIn(BaseModel):
+    name: str
+    notes: str | None = None
+
+
+def _warehouse_to_dict(w: FleetWarehouse, in_stock: int = 0, total: int = 0):
+    return {"id": w.id, "name": w.name, "notes": w.notes, "createdBy": w.created_by, "timestamp": w.timestamp, "inStockCount": in_stock, "vehicleCount": total}
+
+
+@router.get("/fleet/warehouses")
+def list_fleet_warehouses(company: str = Depends(get_company), db: Session = Depends(get_db)):
+    warehouses = db.scalars(select(FleetWarehouse).where(FleetWarehouse.company == company).order_by(FleetWarehouse.timestamp, FleetWarehouse.name)).all()
+    vehicles = db.scalars(select(FleetVehicle).where(FleetVehicle.company == company, FleetVehicle.warehouse_id.isnot(None))).all()
+    total: dict[str, int] = {}
+    in_stock: dict[str, int] = {}
+    for v in vehicles:
+        total[v.warehouse_id] = total.get(v.warehouse_id, 0) + 1
+        if v.sale_price is None:
+            in_stock[v.warehouse_id] = in_stock.get(v.warehouse_id, 0) + 1
+    return success_response(data=[_warehouse_to_dict(w, in_stock.get(w.id, 0), total.get(w.id, 0)) for w in warehouses])
+
+
+@router.post("/fleet/warehouses")
+def create_fleet_warehouse(data: FleetWarehouseIn, actor: User = Depends(fleet_actor), company: str = Depends(get_company), db: Session = Depends(get_db)):
+    name = data.name.strip()
+    if not name:
+        raise APIError(code="NAME_REQUIRED", message_ar="اسم المخزن مطلوب", message_en="Warehouse name is required", status_code=400)
+    w = FleetWarehouse(id=new_id("fleetwh"), company=company, name=name, notes=(data.notes or "").strip() or None,
+                       created_by=actor.name, timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"))
+    db.add(w)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="FleetWarehouse", entity_id=w.id, description=f"تمت إضافة مخزن سيارات لـ{COMPANY_NAMES[company]}: {name}", username=actor.username)
+    db.commit()
+    return success_response(data=_warehouse_to_dict(w), message_ar="تمت إضافة المخزن بنجاح")
+
+
+@router.put("/fleet/warehouses/{warehouse_id}")
+def update_fleet_warehouse(warehouse_id: str, data: FleetWarehouseIn, actor: User = Depends(fleet_actor), company: str = Depends(get_company), db: Session = Depends(get_db)):
+    w = db.get(FleetWarehouse, warehouse_id)
+    if not w or w.company != company:
+        raise APIError(code="NOT_FOUND", message_ar="المخزن غير موجود", message_en="Warehouse not found", status_code=404)
+    name = data.name.strip()
+    if not name:
+        raise APIError(code="NAME_REQUIRED", message_ar="اسم المخزن مطلوب", message_en="Warehouse name is required", status_code=400)
+    w.name, w.notes = name, (data.notes or "").strip() or None
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="FleetWarehouse", entity_id=w.id, description=f"تم تعديل مخزن السيارات: {name}", username=actor.username)
+    db.commit()
+    return success_response(data=_warehouse_to_dict(w), message_ar="تم تعديل المخزن بنجاح")
+
+
+@router.delete("/fleet/warehouses/{warehouse_id}")
+def delete_fleet_warehouse(warehouse_id: str, actor: User = Depends(fleet_actor), company: str = Depends(get_company), db: Session = Depends(get_db)):
+    w = db.get(FleetWarehouse, warehouse_id)
+    if not w or w.company != company:
+        raise APIError(code="NOT_FOUND", message_ar="المخزن غير موجود", message_en="Warehouse not found", status_code=404)
+    if db.scalar(select(FleetVehicle.id).where(FleetVehicle.warehouse_id == warehouse_id).limit(1)):
+        raise APIError(code="WAREHOUSE_IN_USE", message_ar="لا يمكن حذف مخزن مرتبط بسيارات — انقل السيارات إلى مخزن آخر أولاً", message_en="Warehouse still has vehicles", status_code=400)
+    db.delete(w)
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="FleetWarehouse", entity_id=warehouse_id, description=f"تم حذف مخزن السيارات: {w.name}", username=actor.username)
     db.commit()
     return success_response(data={"deleted": True})
 
@@ -860,7 +938,10 @@ def list_all_fleet_transactions(date_from: str = "", date_to: str = "", company:
     account_names = {a.id: a.name for a in db.scalars(select(FleetAccount).where(FleetAccount.company == company)).all()}
     query = _date_filtered(select(FleetTransaction).where(FleetTransaction.vehicle_id.in_(list(names))), FleetTransaction, date_from, date_to)
     res = db.scalars(query.order_by(FleetTransaction.date.desc(), FleetTransaction.timestamp.desc())).all()
-    return success_response(data=[{**transaction_to_dict(t, account_names.get(t.account_id) or _manual_account_label(t, vehicles_by_id.get(t.vehicle_id))), "vehicleName": names.get(t.vehicle_id, "—")} for t in res])
+    return success_response(data=[{**transaction_to_dict(t, account_names.get(t.account_id) or _manual_account_label(t, vehicles_by_id.get(t.vehicle_id))), "vehicleName": names.get(t.vehicle_id, "—"),
+                                 "vehicleChassis": (vehicles_by_id[t.vehicle_id].chassis_number if t.vehicle_id in vehicles_by_id else None),
+                                 "vehiclePurchasePrice": (vehicles_by_id[t.vehicle_id].purchase_price if t.vehicle_id in vehicles_by_id else None),
+                                 "vehiclePurchaseCurrency": (vehicles_by_id[t.vehicle_id].currency if t.vehicle_id in vehicles_by_id else None)} for t in res])
 
 
 def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company: str = "bayan", currency: str = ""):
@@ -878,7 +959,7 @@ def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company
     query = _date_filtered(select(FleetTransaction).where(FleetTransaction.vehicle_id.in_(list(names))), FleetTransaction, date_from, date_to)
     res = db.scalars(query.order_by(FleetTransaction.date, FleetTransaction.timestamp)).all()
 
-    headers = ["م", "التاريخ", "المركبة/المعدة", "التفاصيل", "دخول", "خروج", "العملة", "من", "إلى", "الرصيد بعد", "ملاحظات", "بواسطة"]
+    headers = ["المرجع", "التاريخ", "المركبة/المعدة", "رقم الهيكل", "سعر الشراء", "التفاصيل", "دخول", "خروج", "العملة", "من", "إلى", "الرصيد بعد", "ملاحظات", "بواسطة"]
     # One table per currency — a USD sale and a LYD purchase never share a table.
     rows_by_ccy: dict[str, list] = {}
     totals: dict[str, dict[str, float]] = {}
@@ -897,8 +978,10 @@ def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company
         linked_account = all_accounts.get(t.account_id)
         show_balance = t.balance_after is not None and not (linked_account and linked_account.account_type == "client")
         bucket = rows_by_ccy.setdefault(t.currency, [])
+        veh = vehicles_by_id.get(t.vehicle_id)
+        buy_price = f"{veh.purchase_price:,.2f} {veh.currency}" if veh and veh.purchase_price else "—"
         bucket.append([
-            len(bucket) + 1, t.date, names.get(t.vehicle_id, "—"), t.category,
+            len(bucket) + 1, t.date, names.get(t.vehicle_id, "—"), (veh.chassis_number if veh else None) or "—", buy_price, t.category,
             entry_str, exit_str,
             t.currency, from_label, to_label,
             f"{t.balance_after:,.2f}" if show_balance else "—",

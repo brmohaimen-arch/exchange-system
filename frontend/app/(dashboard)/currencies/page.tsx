@@ -8,6 +8,7 @@ import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
+import { NumberInput } from '@/components/ui/number-input'
 
 const tabs = [
   { key: 'currencies', label: 'العملات', icon: Coins },
@@ -490,8 +491,7 @@ function CurrenciesPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الخانات العشرية</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     max={4}
                     value={currencyForm.decimalPlaces}
@@ -563,8 +563,8 @@ function CurrenciesPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">سعر الشراء *</label>
-                  <input
-                    type="number" step="0.001"
+                  <NumberInput
+                    step="0.001"
                     value={rateForm.buyRate}
                     onChange={(e) => setRateForm({ ...rateForm, buyRate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -572,8 +572,8 @@ function CurrenciesPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">سعر البيع *</label>
-                  <input
-                    type="number" step="0.001"
+                  <NumberInput
+                    step="0.001"
                     value={rateForm.sellRate}
                     onChange={(e) => setRateForm({ ...rateForm, sellRate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -583,8 +583,8 @@ function CurrenciesPageInner() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الحد الأدنى المسموح</label>
-                  <input
-                    type="number" step="0.001"
+                  <NumberInput
+                    step="0.001"
                     value={rateForm.minRate}
                     onChange={(e) => setRateForm({ ...rateForm, minRate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -592,8 +592,8 @@ function CurrenciesPageInner() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الحد الأقصى المسموح</label>
-                  <input
-                    type="number" step="0.001"
+                  <NumberInput
+                    step="0.001"
                     value={rateForm.maxRate}
                     onChange={(e) => setRateForm({ ...rateForm, maxRate: e.target.value })}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
