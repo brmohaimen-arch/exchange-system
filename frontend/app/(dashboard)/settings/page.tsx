@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
 import { Save, User, Shield, Building2, Plus, Pencil, Trash2, X, Loader2, KeyRound, ShieldCheck, Percent, History, DatabaseBackup, ShieldAlert, CheckCircle2, Smartphone, XCircle, MessageCircle, Send, Bot, Link2 } from 'lucide-react'
-import { api, newId, ALL_PERMISSIONS, Currency, RoleDTO, UserDTO, CommissionRule, AuditLogEntry, LoginLogEntry, BackupEntry, API_BASE } from '@/lib/api-client'
+import { api, newId, uploadFile, ALL_PERMISSIONS, Currency, RoleDTO, UserDTO, CommissionRule, AuditLogEntry, LoginLogEntry, BackupEntry, FleetCompanyDef, API_BASE } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
+import { useBranding, refreshBranding } from '@/lib/branding'
 
 interface Branch { id: string; name: string; city: string }
 interface VaultLite { id: string; name: string }
@@ -43,6 +44,10 @@ export default function SettingsPage() {
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const branding = useBranding()
+  const [fleetCompanies, setFleetCompanies] = useState<FleetCompanyDef[]>([])
+  const [uploadingLogo, setUploadingLogo] = useState(false)
+  const [logoMsg, setLogoMsg] = useState('')
   const [saveMsg, setSaveMsg] = useState('')
 
   // General + system settings
@@ -141,6 +146,45 @@ export default function SettingsPage() {
   }
 
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { api.get<FleetCompanyDef[]>('/fleet_companies').then(setFleetCompanies).catch(() => {}) }, [])
+
+  // Every company created from the sidebar ("+ إضافة شركة") gets its own
+  // permission string that isn't in the fixed ALL_PERMISSIONS list — merge it
+  // in here so its checkbox actually shows up for role editing.
+  const permissionsList = useMemo(() => {
+    const dynamic = fleetCompanies.map((c) => c.permission).filter((p) => p && !(ALL_PERMISSIONS as readonly string[]).includes(p))
+    return [...ALL_PERMISSIONS, ...dynamic]
+  }, [fleetCompanies])
+
+  const uploadLogo = async (file: File) => {
+    setUploadingLogo(true)
+    setLogoMsg('')
+    setError('')
+    try {
+      await uploadFile('/branding/logo', file)
+      refreshBranding()
+      setLogoMsg('تم تحديث الشعار بنجاح')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر رفع الشعار')
+    } finally {
+      setUploadingLogo(false)
+    }
+  }
+
+  const resetLogo = async () => {
+    setUploadingLogo(true)
+    setLogoMsg('')
+    setError('')
+    try {
+      await api.delete('/branding/logo')
+      refreshBranding()
+      setLogoMsg('تمت إعادة الشعار الافتراضي')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر إعادة الشعار الافتراضي')
+    } finally {
+      setUploadingLogo(false)
+    }
+  }
 
   useEffect(() => {
     const r = roles.find((x) => x.name === selectedRole)
@@ -489,6 +533,23 @@ export default function SettingsPage() {
                 onChange={(e) => setField('companyName', e.target.value)}
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
               />
+              <p className="mt-1 text-xs text-muted-foreground">هذا الاسم يظهر في الشريط الجانبي، صفحة الدخول، الصفحة الرئيسية للموقع، وترويسة ملفات PDF — احفظ التغييرات بالأسفل لتفعيله.</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">شعار النظام</label>
+              <div className="flex items-center gap-4">
+                <img src={branding.logoUrl} alt="الشعار الحالي" className="h-14 w-14 rounded-lg border border-border object-contain bg-white" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className={`flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs font-medium hover:bg-muted transition-colors ${!canManageSettings || uploadingLogo ? 'pointer-events-none opacity-50' : ''}`}>
+                    {uploadingLogo ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} رفع شعار جديد
+                    <input type="file" accept=".png,.jpg,.jpeg,.svg" className="hidden" disabled={!canManageSettings || uploadingLogo} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadLogo(f); e.target.value = '' }} />
+                  </label>
+                  <button type="button" onClick={resetLogo} disabled={!canManageSettings || uploadingLogo} className="rounded-md border border-border px-3 py-2 text-xs font-medium hover:bg-muted transition-colors disabled:opacity-50">إعادة الشعار الافتراضي</button>
+                </div>
+              </div>
+              {logoMsg && <p className="mt-1 text-xs text-success">{logoMsg}</p>}
+              <p className="mt-1 text-xs text-muted-foreground">يظهر بجانب اسم المكتب في نفس الأماكن أعلاه. الصيغ المدعومة: PNG وJPG وSVG، حتى 3 ميغابايت.</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -739,7 +800,7 @@ export default function SettingsPage() {
               {currentRole ? (
                 <>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-6">
-                    {ALL_PERMISSIONS.map((perm) => (
+                    {permissionsList.map((perm) => (
                       <label key={perm} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50 text-sm cursor-pointer">
                         <input
                           type="checkbox"

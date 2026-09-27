@@ -505,3 +505,27 @@ def fix_fleet_warehouse_split(db: Session) -> None:
                 db.add(FleetWarehouse(id=new_id("fleetwh"), company=company, name=name, created_by="النظام", timestamp=ts))
     db.add(SystemSetting(key="fleet_warehouses_split_fix", value={"val": True}))
     db.commit()
+
+
+def seed_builtin_fleet_companies(db: Session) -> None:
+    """The sidebar's "الشركات" list and the role editor's permission checkboxes
+    both read every company from fleet_company_defs — so the 3 companies built
+    into the code (بيان الدولية / الامتياز / اتقن المحركات) need a row here too,
+    even though fleet.py's own company_name()/company_perm() never actually
+    query it for these 3 (their static dict always wins first). Runs once;
+    never overwrites a name/permission an admin may have touched since."""
+    from .models import FleetCompanyDef
+    from datetime import datetime
+    builtins = [
+        ("bayan", "بيان الدولية", "إدارة شركة بيان"),
+        ("imtiaz", "شركة الامتياز", "إدارة شركة الامتياز"),
+        ("itqan", "شركة اتقن المحركات", "إدارة شركة اتقن المحركات"),
+    ]
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    changed = False
+    for company_id, name, permission in builtins:
+        if not db.get(FleetCompanyDef, company_id):
+            db.add(FleetCompanyDef(id=company_id, name=name, permission=permission, icon="Truck", is_active=True, created_by="النظام", timestamp=ts))
+            changed = True
+    if changed:
+        db.commit()

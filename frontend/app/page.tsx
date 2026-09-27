@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
+import { useBranding } from '@/lib/branding'
 import {
   ArrowLeft, PlayCircle, CheckCircle2, Zap, ShieldCheck,
   Building2, TrendingUp, Users, FileBarChart, Wallet, Landmark,
@@ -28,6 +29,7 @@ const FEATURES = [
 
 export default function LandingPage() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const branding = useBranding()
 
   return (
     <div className="bg-white text-[#0f172a]" dir="rtl">
@@ -35,9 +37,9 @@ export default function LandingPage() {
       <header className="sticky top-0 z-50 border-b border-[#0f172a0f] bg-white/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-[1200px] items-center justify-between px-5 sm:px-8">
           <div className="flex items-center gap-2.5">
-            <Image src="/icon.png" alt="واكب" width={30} height={30} className="rounded-lg shrink-0" />
-            <span className="font-arabic text-base font-bold lg:hidden">واكب</span>
-            <span className="font-arabic hidden text-base font-bold lg:inline">شركة واكب للخدمات المالية</span>
+            <Image src={branding.logoUrl} alt={branding.name} width={30} height={30} unoptimized className="h-[30px] w-[30px] rounded-lg shrink-0 object-contain" />
+            <span className="font-arabic text-base font-bold lg:hidden">{branding.name.split(' ')[0]}</span>
+            <span className="font-arabic hidden text-base font-bold lg:inline">{branding.name}</span>
           </div>
 
           <nav className="hidden items-center gap-8 md:flex">
@@ -254,8 +256,8 @@ export default function LandingPage() {
           <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
             <div className="lg:col-span-2">
               <div className="flex items-center gap-2.5">
-                <Image src="/icon.png" alt="واكب" width={28} height={28} className="rounded-lg shrink-0" />
-                <span className="font-arabic text-base font-bold">شركة واكب للخدمات المالية</span>
+                <Image src={branding.logoUrl} alt={branding.name} width={28} height={28} unoptimized className="h-7 w-7 rounded-lg shrink-0 object-contain" />
+                <span className="font-arabic text-base font-bold">{branding.name}</span>
               </div>
               <p className="font-arabic mt-3 max-w-xs text-[13.5px] leading-relaxed text-[#94a3b8]">
                 نظام إدارة متكامل لمكاتب الصرافة الليبية — الخزائن، الفروع، العمليات، والتقارير في مكان واحد.
@@ -278,7 +280,7 @@ export default function LandingPage() {
             </div>
           </div>
           <div className="mt-14 flex flex-col items-center justify-between gap-4 border-t border-white/10 pt-6 sm:flex-row">
-            <p className="font-arabic text-xs text-[#64748b]">© {new Date().getFullYear()} شركة واكب للخدمات المالية. جميع الحقوق محفوظة.</p>
+            <p className="font-arabic text-xs text-[#64748b]">© {new Date().getFullYear()} {branding.name}. جميع الحقوق محفوظة.</p>
             <span className="font-arabic flex items-center gap-1.5 text-xs text-[#64748b]">
               <span className="h-1.5 w-1.5 rounded-full bg-[#10b981]" />
               جميع الأنظمة تعمل بشكل طبيعي

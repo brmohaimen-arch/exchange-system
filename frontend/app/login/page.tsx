@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { useAuth, ApiError, MfaRequiredError } from '@/lib/auth-provider'
 import { api } from '@/lib/api-client'
+import { useBranding } from '@/lib/branding'
 
 interface TrialStatus {
   expired: boolean
@@ -23,6 +24,7 @@ const FEATURES = [
 ]
 
 function BrandPanel() {
+  const branding = useBranding()
   return (
     <div className="relative hidden lg:flex lg:w-1/2 flex-col justify-between overflow-hidden bg-[#2743ff] px-12 py-10 text-white">
       <div
@@ -33,8 +35,8 @@ function BrandPanel() {
         }}
       />
       <div className="relative flex items-center gap-3">
-        <Image src="/logo.png" alt="واكب" width={56} height={56} className="rounded-xl" />
-        <span className="font-arabic text-lg font-bold leading-tight">شركة واكب للخدمات المالية</span>
+        <Image src={branding.logoUrl} alt={branding.name} width={56} height={56} unoptimized className="h-14 w-14 rounded-xl bg-white/10 object-contain" />
+        <span className="font-arabic text-lg font-bold leading-tight">{branding.name}</span>
       </div>
 
       <div className="relative space-y-5">
@@ -61,6 +63,16 @@ function BrandPanel() {
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function MobileBrand() {
+  const branding = useBranding()
+  return (
+    <div className="mb-8 flex flex-col items-center gap-2 text-center lg:hidden">
+      <Image src={branding.logoUrl} alt={branding.name} width={52} height={52} unoptimized className="h-[52px] w-[52px] rounded-lg object-contain" />
+      <span className="font-arabic text-base font-bold text-[#0d1220]">{branding.name}</span>
     </div>
   )
 }
@@ -185,10 +197,7 @@ export default function LoginPage() {
 
       <div className="flex flex-1 items-center justify-center bg-white px-4 py-12">
         <div className="w-full max-w-sm">
-          <div className="mb-8 flex flex-col items-center gap-2 text-center lg:hidden">
-            <Image src="/logo.png" alt="واكب" width={52} height={52} className="rounded-lg" />
-            <span className="font-arabic text-base font-bold text-[#0d1220]">شركة واكب للخدمات المالية</span>
-          </div>
+          <MobileBrand />
 
           <h2 className="font-arabic text-2xl font-bold text-[#0d1220]">مرحباً بعودتك</h2>
           <p className="mt-1 text-sm text-[#5b6478]">سجّل الدخول للمتابعة إلى نظام الصرافة</p>

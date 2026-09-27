@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import { AuthProvider } from '@/lib/auth-provider'
 import { ConfirmProvider } from '@/components/ConfirmProvider'
+import { BrandTitleSync } from '@/components/BrandTitleSync'
 
 export const metadata: Metadata = {
   title: 'شركة واكب | لوحة التحكم',
@@ -25,6 +26,7 @@ export default function RootLayout({
   return (
     <html lang="ar" dir="rtl" suppressHydrationWarning>
       <body className="font-sans antialiased bg-background text-foreground">
+          <BrandTitleSync />
           <AuthProvider>
             <ConfirmProvider>{children}</ConfirmProvider>
           </AuthProvider>

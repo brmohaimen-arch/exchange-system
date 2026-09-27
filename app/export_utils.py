@@ -35,6 +35,37 @@ _LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", 
 COMPANY_PHONES = ["+218915002525", "+218911252525", "+218917252525"]
 BRAND_COLOR = colors.HexColor("#2563EB")
 
+
+def _brand() -> tuple[str, str, str]:
+    """(name, phones line, logo path) for the PDF letterhead — reads the same
+    Settings > بيانات المكتب values (and the uploaded logo, if any) that
+    branding.py serves to the sidebar/login page, so a rename or a new logo
+    shows up on every export without editing a single call site here. Opens
+    its own DB session (this module gets no `db` from its many callers) and
+    falls back to the original defaults on any failure — a broken settings
+    row must never be the reason a statement fails to export."""
+    name, phone, logo_path = "شركة واكب للخدمات المالية", " | ".join(COMPANY_PHONES), _LOGO_PATH
+    try:
+        from .database import SessionLocal
+        from .models import SystemSetting
+        from .routers.branding import custom_logo_path
+        db = SessionLocal()
+        try:
+            company = db.get(SystemSetting, "companyName")
+            if company and company.value.get("val"):
+                name = company.value["val"]
+            phone_setting = db.get(SystemSetting, "phone")
+            if phone_setting and phone_setting.value.get("val"):
+                phone = phone_setting.value["val"]
+            custom = custom_logo_path()
+            if custom:
+                logo_path = custom
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return name, phone, logo_path
+
 _ARABIC_FONT_CANDIDATES = [
     os.environ.get("ARABIC_FONT_PATH", ""),
     # Bundled first and preferred: relying on whatever Arabic font happens to already be
@@ -160,7 +191,14 @@ _WIDE_COLUMN_FACTOR = 3.0
 # "من"/"إلى" which must match the whole header exactly — as a substring they'd
 # also catch "من عملة"/"إلى عملة" (a currency-code column, short content that
 # doesn't need the extra room).
-_MEDIUM_WIDE_COLUMN_KEYWORDS = ("بواسطة", "المركبة", "الحساب", "العميل", "الخزنة", "المصدر", "الوجهة")
+_MEDIUM_WIDE_COLUMN_KEYWORDS = (
+    "بواسطة", "المركبة", "الحساب", "العميل", "الخزنة", "المصدر", "الوجهة",
+    # Warehouse-statement free-text columns (vehicle name, driver, counterparty
+    # names, plate) — same reasoning as above, previously stuck at the default
+    # 1.0 weight next to single-character columns like "م", forcing "toyota
+    # camrey" / "1232131326548977" onto several wrapped lines.
+    "الاسم", "السائق", "البائع", "المشتري", "اللوحة",
+)
 _MEDIUM_WIDE_COLUMN_EXACT = ("من", "إلى")
 _MEDIUM_WIDE_COLUMN_FACTOR = 1.7
 
@@ -321,14 +359,15 @@ def build_statement_pdf(customer_name: str, customer_phone: str, customer_id_num
     info_style = ParagraphStyle("StatementInfo", fontName=font_name, fontSize=10, leading=14, alignment=1, spaceAfter=2)
     closing_style = ParagraphStyle("StatementClosing", fontName=font_name, fontSize=11, leading=15, alignment=1, spaceBefore=10)
 
+    brand_name, brand_phone, brand_logo = _brand()
     elements = []
-    if os.path.exists(_LOGO_PATH):
-        logo = Image(_LOGO_PATH, width=1.5 * cm, height=1.5 * cm)
+    if os.path.exists(brand_logo):
+        logo = Image(brand_logo, width=1.5 * cm, height=1.5 * cm)
         logo.hAlign = "CENTER"
         elements.append(logo)
         elements.append(Spacer(1, 0.1 * cm))
-    elements.append(Paragraph(shape_arabic("شركة واكب للخدمات المالية"), company_style))
-    elements.append(Paragraph(" | ".join(COMPANY_PHONES), contact_style))
+    elements.append(Paragraph(shape_arabic(brand_name), company_style))
+    elements.append(Paragraph(brand_phone, contact_style))
     elements.append(Spacer(1, 0.3 * cm))
 
     elements.append(Paragraph(shape_arabic(f"كشف حساب — {customer_name}"), info_style))
@@ -446,18 +485,20 @@ def build_sectioned_pdf(
     empty_style = ParagraphStyle("SectionedEmpty", fontName=font_name, fontSize=9, leading=12, alignment=1, textColor=colors.grey)
     closing_style = ParagraphStyle("SectionedClosing", fontName=font_name, fontSize=11, leading=15, alignment=1, spaceBefore=10)
 
+    brand_name, brand_phone, brand_logo = _brand()
+
     def draw_page_furniture(canvas, _doc):
         canvas.saveState()
-        if os.path.exists(_LOGO_PATH):
+        if os.path.exists(brand_logo):
             logo_size = 1.2 * cm
-            canvas.drawImage(_LOGO_PATH, (page_width - logo_size) / 2, page_height - 0.3 * cm - logo_size,
+            canvas.drawImage(brand_logo, (page_width - logo_size) / 2, page_height - 0.3 * cm - logo_size,
                               width=logo_size, height=logo_size, mask="auto", preserveAspectRatio=True)
         canvas.setFont(font_name, 13)
         canvas.setFillColor(BRAND_COLOR)
-        canvas.drawCentredString(page_width / 2, page_height - 1.85 * cm, get_display(arabic_reshaper.reshape("شركة واكب للخدمات المالية")))
+        canvas.drawCentredString(page_width / 2, page_height - 1.85 * cm, get_display(arabic_reshaper.reshape(brand_name)))
         canvas.setFont(font_name, 8)
         canvas.setFillColor(colors.grey)
-        canvas.drawCentredString(page_width / 2, page_height - 2.25 * cm, " | ".join(COMPANY_PHONES))
+        canvas.drawCentredString(page_width / 2, page_height - 2.25 * cm, brand_phone)
         canvas.drawCentredString(page_width / 2, 0.7 * cm, get_display(arabic_reshaper.reshape(f"صفحة {canvas.getPageNumber()}")))
         canvas.restoreState()
 
@@ -489,13 +530,17 @@ def build_sectioned_pdf(
         else:
             col_widths = _weighted_col_widths(headers, content_width)
             rev_widths = list(reversed(col_widths))
-            # Very wide statements (13+ columns) drop to a smaller font so amounts
-            # and dates stay on one line instead of wrapping mid-number.
-            fs = 7 if len(headers) >= 13 else 8
+            # Very wide statements (13+ columns) drop to a smaller font, and the
+            # warehouse statement's 17-19 columns need both a smaller font AND
+            # tighter padding (the 6pt reportlab default per side eats a lot of
+            # width once you're splitting a page 17+ ways) to keep names/chassis
+            # numbers on one line instead of wrapping into tall, hard-to-read rows.
+            fs = 6 if len(headers) >= 17 else 7 if len(headers) >= 13 else 8
+            pad = 2 if len(headers) >= 17 else 4 if len(headers) >= 13 else 6
             h_style, h_style_lat = ParagraphStyle("SH", parent=header_style, fontSize=fs), ParagraphStyle("SHL", parent=header_style_latin, fontSize=fs)
             c_style, c_style_lat = ParagraphStyle("SC", parent=cell_style, fontSize=fs), ParagraphStyle("SCL", parent=cell_style_latin, fontSize=fs)
-            display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 6, font_name, fs), _style_for(h, h_style, h_style_lat)) for i, h in enumerate(reversed(headers))]
-            display_rows = [[_cell_paragraph(cell, rev_widths[i] - 6, font_name, fs, c_style, c_style_lat) for i, cell in enumerate(reversed(row))] for row in rows]
+            display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - pad * 2, font_name, fs), _style_for(h, h_style, h_style_lat)) for i, h in enumerate(reversed(headers))]
+            display_rows = [[_cell_paragraph(cell, rev_widths[i] - pad * 2, font_name, fs, c_style, c_style_lat) for i, cell in enumerate(reversed(row))] for row in rows]
             table_data = [display_headers] + display_rows
             table = Table(table_data, repeatRows=1, colWidths=rev_widths)
             table.setStyle(TableStyle([
@@ -504,6 +549,10 @@ def build_sectioned_pdf(
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), pad),
+                ("RIGHTPADDING", (0, 0), (-1, -1), pad),
+                ("TOPPADDING", (0, 0), (-1, -1), pad),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
             ]))
             elements.append(table)
             elements.append(Spacer(1, 0.4 * cm))
@@ -533,14 +582,15 @@ def build_receipt_pdf(title: str, subtitle: str, fields: list[tuple[str, str]], 
     contact_style = ParagraphStyle("ReceiptContact", fontName=font_name, fontSize=9, leading=12, alignment=1, textColor=colors.grey, spaceAfter=0)
     footer_style = ParagraphStyle("ReceiptFooter", fontName=font_name, fontSize=8, leading=11, alignment=1, textColor=colors.grey)
 
+    brand_name, brand_phone, brand_logo = _brand()
     elements = []
-    if os.path.exists(_LOGO_PATH):
-        logo = Image(_LOGO_PATH, width=1.8 * cm, height=1.8 * cm)
+    if os.path.exists(brand_logo):
+        logo = Image(brand_logo, width=1.8 * cm, height=1.8 * cm)
         logo.hAlign = "CENTER"
         elements.append(logo)
         elements.append(Spacer(1, 0.15 * cm))
     elements.append(Paragraph(shape_arabic(subtitle), company_style))
-    elements.append(Paragraph(" | ".join(COMPANY_PHONES), contact_style))
+    elements.append(Paragraph(brand_phone, contact_style))
     elements.append(Spacer(1, 0.4 * cm))
 
     title_band_style = ParagraphStyle("ReceiptTitleBand", fontName=font_name, fontSize=13, alignment=1, textColor=colors.white)

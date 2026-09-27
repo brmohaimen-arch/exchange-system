@@ -340,6 +340,16 @@ export interface FleetTransactionWithVehicle extends FleetTransaction {
   vehiclePurchaseCurrency: string | null
 }
 
+export interface FleetCompanyDef {
+  id: string
+  name: string
+  permission: string
+  icon: string
+  isActive: boolean
+  createdBy: string
+  timestamp: string
+}
+
 export interface FleetWarehouse {
   id: string
   name: string

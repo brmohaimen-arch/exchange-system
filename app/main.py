@@ -16,9 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .scheduler import start_scheduler, stop_scheduler
 from .database import engine, Base, SessionLocal
 from .seed import seed_database
-from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings, seed_trial_start_date, grant_new_permissions_to_admin, backfill_fleet_vehicle_auto_numbers, rename_fleet_status_active_to_display, rename_fleet_wallets, backfill_manual_bank_balances, seed_fleet_warehouses, fix_fleet_warehouse_split
+from .migrations import run_startup_migrations, migrate_plaintext_passwords, seed_missing_system_settings, seed_trial_start_date, grant_new_permissions_to_admin, backfill_fleet_vehicle_auto_numbers, rename_fleet_status_active_to_display, rename_fleet_wallets, backfill_manual_bank_balances, seed_fleet_warehouses, fix_fleet_warehouse_split, seed_builtin_fleet_companies
 from .request_context import set_request_meta, extract_client_ip
-from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp, telegram, dollar_cards, currency_price_log, fleet, customer_balances
+from .routers import currencies, notifications, auth, operations, business, assets, accounting, reports, setup, compliance, whatsapp, telegram, dollar_cards, currency_price_log, fleet, customer_balances, fleet_companies, branding
 
 # Create any brand-new tables, then patch any new columns onto pre-existing tables
 Base.metadata.create_all(bind=engine)
@@ -40,6 +40,7 @@ try:
     backfill_manual_bank_balances(_startup_db)
     seed_fleet_warehouses(_startup_db)
     fix_fleet_warehouse_split(_startup_db)
+    seed_builtin_fleet_companies(_startup_db)
 finally:
     _startup_db.close()
 
@@ -88,9 +89,23 @@ app.include_router(dollar_cards.router, prefix="/api")
 app.include_router(currency_price_log.router, prefix="/api")
 app.include_router(fleet.router, prefix="/api")
 app.include_router(customer_balances.router, prefix="/api")
-# Same router, second mount: paths under /api/imtiaz/... are شركة الامتياز (see fleet.get_company).
+app.include_router(fleet_companies.router, prefix="/api")
+app.include_router(branding.router, prefix="/api")
+# Same router, second/third mount: paths under /api/imtiaz/... and /api/itqan/...
+# are شركة الامتياز / اتقن المحركات (see fleet.get_company) — the 3 companies
+# built into the code.
 app.include_router(fleet.router, prefix="/api/imtiaz")
 app.include_router(fleet.router, prefix="/api/itqan")
+
+# Companies created from the sidebar ("+ إضافة شركة") instead of a code change —
+# one router mount handles ALL of them, present and future: fleet.get_company()
+# already reads the id straight out of the URL (request.url.path), so a bare
+# path-parameter prefix routes any /api/co/<id>/... request through the same
+# fleet.py logic without FastAPI needing that id declared on every endpoint
+# function. Confirmed empirically (undeclared path params in a router prefix
+# don't error at include_router time, request time, or OpenAPI-schema time).
+# A brand-new company therefore works immediately on creation — no restart.
+app.include_router(fleet.router, prefix="/api/co/{company_id}")
 
 @app.get("/")
 def read_root():

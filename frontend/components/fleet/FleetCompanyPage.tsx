@@ -4,7 +4,7 @@ import { useEffect, useState, FormEvent } from 'react'
 import { Plus, X, Loader2, Trash2, Package, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag, ArrowUpRight, ArrowDownRight, CalendarRange } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from '@/components/ui/chart'
-import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, FleetWarehouse, Currency } from '@/lib/api-client'
+import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, FleetWarehouse, FleetCompanyDef, Currency } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
@@ -88,15 +88,38 @@ function balanceBadge(balances: Record<string, number>) {
 
 const MANUAL_ACCOUNT = '__manual__'
 
-export type FleetCompany = 'bayan' | 'imtiaz' | 'itqan'
-const COMPANY_META: Record<FleetCompany, { name: string; perm: string; base: string }> = {
+export type FleetCompany = string
+// The 3 companies built into the code resolve instantly and synchronously —
+// zero behavior change for them. Any other id was created from the sidebar
+// ("+ إضافة شركة") and its name/permission/API base are looked up from
+// /fleet_companies instead (its API mount is /api/co/<id>/... — see
+// fleet.get_company on the backend).
+const STATIC_COMPANY_META: Record<string, { name: string; perm: string; base: string }> = {
   bayan: { name: 'بيان الدولية', perm: 'إدارة شركة بيان', base: '' },
   imtiaz: { name: 'شركة الامتياز', perm: 'إدارة شركة الامتياز', base: '/imtiaz' },
   itqan: { name: 'شركة اتقن المحركات', perm: 'إدارة شركة اتقن المحركات', base: '/itqan' },
 }
 
+function useCompanyMeta(company: string) {
+  const [meta, setMeta] = useState(STATIC_COMPANY_META[company] ?? null)
+  useEffect(() => {
+    if (STATIC_COMPANY_META[company]) { setMeta(STATIC_COMPANY_META[company]); return }
+    let cancelled = false
+    api.get<FleetCompanyDef[]>('/fleet_companies').then((list) => {
+      if (cancelled) return
+      const c = list.find((x) => x.id === company)
+      setMeta(c ? { name: c.name, perm: c.permission, base: `/co/${c.id}` } : { name: company, perm: '', base: `/co/${company}` })
+    }).catch(() => { if (!cancelled) setMeta({ name: company, perm: '', base: `/co/${company}` }) })
+    return () => { cancelled = true }
+  }, [company])
+  return meta
+}
+
 export default function FleetCompanyPage({ company }: { company: FleetCompany }) {
-  const { name: companyName, perm, base } = COMPANY_META[company]
+  const meta = useCompanyMeta(company)
+  const companyName = meta?.name ?? ''
+  const perm = meta?.perm ?? ''
+  const base = meta?.base ?? null
   const { hasPermission } = useAuth()
   const confirmDialog = useConfirm()
   const canManage = hasPermission(perm)
@@ -107,7 +130,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const [error, setError] = useState('')
   const [page, setPage] = useState(1)
 
-  const [view, setView] = useState<'vehicles' | 'statement' | 'accounts' | 'warehouses'>('vehicles')
+  const [view, setView] = useState<'vehicles' | 'statement' | 'accounts' | 'warehouses' | 'warehouse_statement'>('vehicles')
   const [summary, setSummary] = useState<FleetSummary | null>(null)
   const [kpis, setKpis] = useState<FleetKpis | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(true)
@@ -123,6 +146,10 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const [showAccountModal, setShowAccountModal] = useState(false)
   const [wallets, setWallets] = useState<FleetAccount[]>([])
   const [warehouses, setWarehouses] = useState<FleetWarehouse[]>([])
+  const [warehouseStmtSelection, setWarehouseStmtSelection] = useState('') // '' = كل المخازن معاً
+  const [warehouseStmtSections, setWarehouseStmtSections] = useState<{ name: string; headers: string[]; rows: string[][] }[]>([])
+  const [warehouseStmtLoading, setWarehouseStmtLoading] = useState(false)
+  const [warehouseStmtExporting, setWarehouseStmtExporting] = useState<string | null>(null)
   const [whModal, setWhModal] = useState<{ id: string | null; name: string; notes: string } | null>(null)
   const [whError, setWhError] = useState('')
   const [savingWh, setSavingWh] = useState(false)
@@ -274,20 +301,55 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
     }
   }
 
+  const loadWarehouseStatement = async () => {
+    if (base === null) return
+    setWarehouseStmtLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (warehouseStmtSelection) params.set('warehouse_id', warehouseStmtSelection)
+      const res = await api.get<{ sections: { name: string; headers: string[]; rows: string[][] }[] }>(`${base}/fleet/warehouses/statement?${params.toString()}`)
+      setWarehouseStmtSections(res.sections)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف المخازن')
+    } finally {
+      setWarehouseStmtLoading(false)
+    }
+  }
+
+  const handleWarehouseStatementExport = async (format: 'pdf' | 'xlsx') => {
+    const key = `wh-${format}`
+    setWarehouseStmtExporting(key)
+    setError('')
+    try {
+      const params = new URLSearchParams({ format })
+      if (warehouseStmtSelection) params.set('warehouse_id', warehouseStmtSelection)
+      const path = `${base}/fleet/warehouses/statement/export?${params.toString()}`
+      if (format === 'pdf') await openFile(path)
+      else await downloadFile(path, `warehouse_statement_${company}.xlsx`)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل الملف')
+    } finally {
+      setWarehouseStmtExporting(null)
+    }
+  }
+
   useEffect(() => {
+    if (base === null) return
     load()
     loadSummary()
     loadAccounts()
     loadWarehouses()
     api.get<Currency[]>('/currencies').then(setCurrencies).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [base])
 
   useEffect(() => {
+    if (base === null) return
     loadSummary()
     if (view === 'statement') loadStatement()
+    if (view === 'warehouse_statement') loadWarehouseStatement()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statementDateFrom, statementDateTo, view])
+  }, [base, statementDateFrom, statementDateTo, view, warehouseStmtSelection])
 
   const openCreate = () => {
     setEditing(null)
@@ -597,6 +659,10 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const fAccounts = useTableFilters(accounts)
   const pagedStatement = paginate(fStatement.filtered, statementPage)
 
+  if (!meta) {
+    return <div className="flex h-64 items-center justify-center text-muted-foreground text-sm">جاري التحميل...</div>
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -698,6 +764,9 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         <button onClick={() => setView('warehouses')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'warehouses' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
           <Package className="h-3.5 w-3.5" /> المخازن
         </button>
+        <button onClick={() => setView('warehouse_statement')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'warehouse_statement' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+          <ListTree className="h-3.5 w-3.5" /> كشف المخازن
+        </button>
         <button onClick={() => setView('accounts')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'accounts' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
           <Landmark className="h-3.5 w-3.5" /> الحسابات
         </button>
@@ -735,7 +804,59 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         </div>
       )}
 
-      {view === 'warehouses' ? (
+      {view === 'warehouse_statement' && (
+        <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">المخزن</label>
+              <select value={warehouseStmtSelection} onChange={(e) => setWarehouseStmtSelection(e.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                <option value="">كل المخازن معاً (قسم لكل مخزن)</option>
+                {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => handleWarehouseStatementExport('pdf')} disabled={warehouseStmtExporting === 'wh-pdf'} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-60">
+                {warehouseStmtExporting === 'wh-pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />} فتح PDF
+              </button>
+              <button onClick={() => handleWarehouseStatementExport('xlsx')} disabled={warehouseStmtExporting === 'wh-xlsx'} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-60">
+                {warehouseStmtExporting === 'wh-xlsx' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} تحميل Excel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'warehouse_statement' ? (
+        <div className="space-y-4">
+          {warehouseStmtLoading ? (
+            <p className="rounded-xl border border-border bg-card py-8 text-center text-sm text-muted-foreground shadow-sm">جاري التحميل...</p>
+          ) : warehouseStmtSections.every((s) => s.rows.length === 0) ? (
+            <p className="rounded-xl border border-border bg-card py-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد بيانات</p>
+          ) : warehouseStmtSections.map((section) => (
+            <div key={section.name} className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+              <div className="border-b border-border bg-secondary/30 px-5 py-3"><h4 className="text-sm font-semibold text-foreground">{section.name}</h4></div>
+              {section.rows.length === 0 ? (
+                <p className="px-6 py-6 text-center text-sm text-muted-foreground">لا توجد مركبات في هذا المخزن</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full whitespace-nowrap text-right text-sm">
+                    <thead className="bg-secondary/50 text-xs uppercase text-muted-foreground">
+                      <tr>{section.headers.map((h) => <th key={h} className="px-3 py-2.5 font-medium">{h}</th>)}</tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {section.rows.map((row, i) => (
+                        <tr key={i} className="hover:bg-muted/50 transition-colors">
+                          {row.map((cell, j) => <td key={j} className="px-3 py-2">{cell}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : view === 'warehouses' ? (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
           <div className="flex items-center justify-between border-b border-border px-5 py-3">
             <h3 className="text-base font-semibold text-foreground">مخازن السيارات</h3>

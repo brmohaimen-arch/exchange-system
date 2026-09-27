@@ -263,7 +263,13 @@ def list_login_logs(db: Session = Depends(get_db)):
 
 # ----------------- SYSTEM SETTINGS -----------------
 @router.get("/settings")
-def list_settings(db: Session = Depends(get_db)):
+def list_settings(actor: User = Depends(require_permission("إدارة الإعدادات")), db: Session = Depends(get_db)):
+    # SECURITY FIX: this endpoint returns whatsappAccessToken, openwaApiKey,
+    # telegramBotToken, smsGatewayApiKey, etc. in plain text. It previously had
+    # NO auth dependency at all — anyone who knew the URL, logged in or not,
+    # could read every secret in the system. The public display name/logo a
+    # pre-login page needs now come from GET /branding instead, which exposes
+    # nothing sensitive.
     settings = db.scalars(select(SystemSetting)).all()
     res_dict = {}
     for s in settings:

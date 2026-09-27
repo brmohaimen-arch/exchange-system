@@ -832,3 +832,21 @@ class FleetWarehouse(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
     timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
+class FleetCompanyDef(Base):
+    """A sub-company created from the sidebar ("+ إضافة شركة") instead of by a
+    code change — it reuses the exact same fleet template (vehicles, warehouses,
+    accounts, statement, KPIs) that بيان الدولية/الامتياز/اتقن المحركات use.
+    id is also the URL/company key (fleet_vehicles.company etc. reference it).
+    A brand-new row here is NOT reachable over the API until the backend
+    restarts (its dedicated /api/co/<id>/... mount is only created at startup —
+    see main.py) — the create endpoint tells the caller so explicitly."""
+    __tablename__ = "fleet_company_defs"
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    permission: Mapped[str] = mapped_column(String(150), nullable=False, unique=True)
+    icon: Mapped[str] = mapped_column(String(30), default="Truck")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[str] = mapped_column(String(50), nullable=False)

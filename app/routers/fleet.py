@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 from pydantic import BaseModel
 
 from ..database import get_db
-from ..models import FleetVehicle, FleetTransaction, FleetDamageRecord, FleetAccount, FleetWarehouse, ExchangeRate, AuditAction, User, Currency
+from ..models import FleetVehicle, FleetTransaction, FleetDamageRecord, FleetAccount, FleetWarehouse, FleetCompanyDef, ExchangeRate, AuditAction, User, Currency
 from ..tracking import create_audit_log
 from ..core.responses import success_response
 from ..core.errors import APIError
@@ -25,6 +25,25 @@ COMPANY_PERMS = {"bayan": "إدارة شركة بيان", "imtiaz": "إدارة 
 COMPANY_NAMES = {"bayan": "بيان الدولية", "imtiaz": "شركة الامتياز", "itqan": "شركة اتقن المحركات"}
 
 
+def company_name(db: Session, company: str) -> str:
+    """Display name for a company key — the 3 built-in ones are a fixed dict;
+    anything else was created from the sidebar and looked up from the DB."""
+    if company in COMPANY_NAMES:
+        return COMPANY_NAMES[company]
+    row = db.get(FleetCompanyDef, company)
+    return row.name if row else company
+
+
+def company_perm(db: Session, company: str) -> str:
+    """Permission string required to manage this company — same split as company_name."""
+    if company in COMPANY_PERMS:
+        return COMPANY_PERMS[company]
+    row = db.get(FleetCompanyDef, company)
+    if not row:
+        raise APIError(code="COMPANY_NOT_FOUND", message_ar="شركة غير معروفة", message_en="Unknown company", status_code=404)
+    return row.permission
+
+
 def get_company(request: Request) -> str:
     """This router is mounted twice (/api and /api/imtiaz); the mount decides
     which sub-company a request belongs to, so both share identical logic."""
@@ -33,11 +52,16 @@ def get_company(request: Request) -> str:
         return "imtiaz"
     if path.startswith("/api/itqan/"):
         return "itqan"
+    # A company created from the sidebar is mounted once per key at startup —
+    # see main.py's include_router loop over FleetCompanyDef — as /api/co/<id>/...
+    if path.startswith("/api/co/"):
+        rest = path[len("/api/co/"):]
+        return rest.split("/", 1)[0]
     return "bayan"
 
 
 def fleet_actor(company: str = Depends(get_company), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
-    perm = COMPANY_PERMS[company]
+    perm = company_perm(db, company)
     role = db.get(Role, current_user.role)
     if perm not in (role.permissions if role else []):
         raise APIError(code="FORBIDDEN", message_ar=f"لا تملك صلاحية تنفيذ هذا الإجراء: {perm}", message_en=f"Missing required permission: {perm}", status_code=403)
@@ -291,7 +315,7 @@ def _get_cash_wallet(db: Session, currency: str, company: str = "bayan") -> Flee
     wallet = db.scalar(select(FleetAccount).where(FleetAccount.account_type == "wallet", FleetAccount.currency == currency, FleetAccount.company == company))
     if not wallet:
         wallet = FleetAccount(
-            id=new_id("fleetacc"), name=f"محفظة {COMPANY_NAMES[company]} النقدية ({currency})", currency=currency, account_type="wallet", company=company,
+            id=new_id("fleetacc"), name=f"محفظة {company_name(db, company)} النقدية ({currency})", currency=currency, account_type="wallet", company=company,
             balance=0.0, created_by="النظام", timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
         )
         db.add(wallet)
@@ -704,7 +728,7 @@ def create_fleet_warehouse(data: FleetWarehouseIn, actor: User = Depends(fleet_a
     w = FleetWarehouse(id=new_id("fleetwh"), company=company, name=name, notes=(data.notes or "").strip() or None,
                        created_by=actor.name, timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"))
     db.add(w)
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="FleetWarehouse", entity_id=w.id, description=f"تمت إضافة مخزن سيارات لـ{COMPANY_NAMES[company]}: {name}", username=actor.username)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="FleetWarehouse", entity_id=w.id, description=f"تمت إضافة مخزن سيارات لـ{company_name(db, company)}: {name}", username=actor.username)
     db.commit()
     return success_response(data=_warehouse_to_dict(w), message_ar="تمت إضافة المخزن بنجاح")
 
@@ -734,6 +758,88 @@ def delete_fleet_warehouse(warehouse_id: str, actor: User = Depends(fleet_actor)
     create_audit_log(db, action=AuditAction.DELETE, entity_type="FleetWarehouse", entity_id=warehouse_id, description=f"تم حذف مخزن السيارات: {w.name}", username=actor.username)
     db.commit()
     return success_response(data={"deleted": True})
+
+
+# ----------------- WAREHOUSE / STORAGE STATEMENT -----------------
+# Full per-vehicle record (not just the summary the vehicles table shows) —
+# either every warehouse of this company at once (one section each, plus an
+# "unassigned" section for cars with no warehouse yet) or one specific
+# warehouse. Same shape for all 3+ companies, since they share this template.
+_WAREHOUSE_STMT_HEADERS = [
+    "م", "الرقم", "الاسم", "النوع", "اللوحة", "رقم الهيكل", "اللون", "تاريخ الصنع", "السائق/المشغّل", "الحالة",
+    "تاريخ الشراء", "سعر الشراء", "طريقة الشراء", "البائع",
+    "تاريخ البيع", "المشتري", "سعر البيع", "الربح", "ملاحظات",
+]
+# The currency column was folded into the two price cells themselves
+# ("100,000.00 LYD") instead of getting its own column — one fewer of the 20
+# columns this statement started with, which were forcing every text cell
+# (names, chassis numbers) onto 2-3 wrapped lines on a landscape page.
+
+
+def _warehouse_stmt_row(db: Session, v: FleetVehicle, i: int) -> list:
+    # A vehicle can be sold in a different currency than it was bought in
+    # (sale_currency) — same rule vehicle_to_dict() uses elsewhere, so the
+    # profit here has to compare LYD equivalents rather than subtracting two
+    # amounts in different currencies as if they were the same.
+    sale_ccy = v.sale_currency or v.currency
+    profit, profit_ccy = None, v.currency
+    if v.sale_price is not None:
+        if sale_ccy == v.currency:
+            profit = v.sale_price - v.purchase_price
+        else:
+            profit = _to_lyd(db, sale_ccy, v.sale_price) - _to_lyd(db, v.currency, v.purchase_price)
+            profit_ccy = "LYD"
+    return [
+        str(i), f"#{v.auto_number:03d}", v.name, v.type, v.serial_number or "—", v.chassis_number or "—", v.color or "—",
+        v.manufacture_date or "—", v.operator or "—", v.status,
+        v.purchase_date or "—", f"{v.purchase_price:,.2f} {v.currency}" if v.purchase_price else f"0.00 {v.currency}",
+        {"cash": "نقدي", "bank": "بنك"}.get(v.purchase_payment_method or "", "—"), v.seller_name or "—",
+        v.sale_date or "—", v.buyer_name or "—",
+        f"{v.sale_price:,.2f} {sale_ccy}" if v.sale_price is not None else "—",
+        (f"{profit:,.2f} {profit_ccy}" if profit is not None else "—"),
+        v.notes or "—",
+    ]
+
+
+def _warehouse_statement_sections(db: Session, company: str, warehouse_id: str):
+    vehicles = db.scalars(select(FleetVehicle).where(FleetVehicle.company == company).order_by(FleetVehicle.auto_number)).all()
+    if warehouse_id and warehouse_id != "all":
+        wh = db.get(FleetWarehouse, warehouse_id)
+        if not wh or wh.company != company:
+            raise APIError(code="NOT_FOUND", message_ar="المخزن غير موجود", message_en="Warehouse not found", status_code=404)
+        rows = [_warehouse_stmt_row(db, v, i) for i, v in enumerate([v for v in vehicles if v.warehouse_id == warehouse_id], 1)]
+        return [(f"مخزن {wh.name} ({len(rows)} مركبة)", _WAREHOUSE_STMT_HEADERS, rows)]
+
+    warehouses = db.scalars(select(FleetWarehouse).where(FleetWarehouse.company == company).order_by(FleetWarehouse.name)).all()
+    sections = []
+    for wh in warehouses:
+        rows = [_warehouse_stmt_row(db, v, i) for i, v in enumerate([v for v in vehicles if v.warehouse_id == wh.id], 1)]
+        sections.append((f"مخزن {wh.name} ({len(rows)} مركبة)", _WAREHOUSE_STMT_HEADERS, rows))
+    unassigned = [v for v in vehicles if not v.warehouse_id]
+    if unassigned:
+        sections.append((f"بدون مخزن محدد ({len(unassigned)} مركبة)", _WAREHOUSE_STMT_HEADERS, [_warehouse_stmt_row(db, v, i) for i, v in enumerate(unassigned, 1)]))
+    if not sections:
+        sections.append(("لا توجد بيانات", _WAREHOUSE_STMT_HEADERS, []))
+    return sections
+
+
+@router.get("/fleet/warehouses/statement")
+def get_warehouse_statement(warehouse_id: str = "", company: str = Depends(get_company), db: Session = Depends(get_db)):
+    sections = _warehouse_statement_sections(db, company, warehouse_id)
+    return success_response(data={"sections": [{"name": n, "headers": h, "rows": r} for n, h, r in sections]})
+
+
+@router.get("/fleet/warehouses/statement/export")
+def export_warehouse_statement(format: str = "pdf", warehouse_id: str = "", actor: User = Depends(fleet_actor), company: str = Depends(get_company), db: Session = Depends(get_db)):
+    sections = _warehouse_statement_sections(db, company, warehouse_id)
+    title = f"كشف المخازن — {company_name(db, company)}"
+    if format == "xlsx":
+        return StreamingResponse(build_sectioned_excel(sections), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="warehouse_statement.xlsx"'})
+    try:
+        buf = build_sectioned_pdf(title, sections)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء الكشف: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'inline; filename="warehouse_statement.pdf"'})
 
 
 # ----------------- ACCOUNTS (real money-holding accounts for بيان) -----------------
@@ -991,8 +1097,8 @@ def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company
         ", ".join(f"{ccy} — دخول {v['in']:,.2f} / خروج {v['out']:,.2f}" for ccy, v in totals.items())
         or "لا توجد حركات في هذه الفترة"
     )
-    sections = [(f"كشف حركات {COMPANY_NAMES[company]} — {ccy}", headers, rows) for ccy, rows in rows_by_ccy.items()]
-    return sections or [(f"كشف حركات {COMPANY_NAMES[company]}", headers, [])], closing_line
+    sections = [(f"كشف حركات {company_name(db, company)} — {ccy}", headers, rows) for ccy, rows in rows_by_ccy.items()]
+    return sections or [(f"كشف حركات {company_name(db, company)}", headers, [])], closing_line
 
 
 @router.get("/fleet/statement")
@@ -1011,7 +1117,7 @@ def export_fleet_statement(format: str = "pdf", date_from: str = "", date_to: st
         buf = build_sectioned_excel(sections)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="statement_{company}.xlsx"'})
     try:
-        buf = build_sectioned_pdf(f"كشف حركات {COMPANY_NAMES[company]}", sections, closing_line)
+        buf = build_sectioned_pdf(f"كشف حركات {company_name(db, company)}", sections, closing_line)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="statement_{company}.pdf"'})
