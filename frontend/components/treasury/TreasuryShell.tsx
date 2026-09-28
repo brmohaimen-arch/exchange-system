@@ -12,6 +12,8 @@ import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
 
+interface StatementSection { name: string; headers: string[]; rows: string[][] }
+
 interface TransferRow {
   id: string
   sourceType: string
@@ -207,6 +209,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   // ---------------- Vault / Bank Account Statement ----------------
   const [statementTarget, setStatementTarget] = useState<{ kind: 'vault' | 'bank_account'; id: string; name: string } | null>(null)
   const [statementItems, setStatementItems] = useState<Movement[]>([])
+  const [statementSections, setStatementSections] = useState<StatementSection[]>([])
   const [statementLoading, setStatementLoading] = useState(false)
   const [statementDateFrom, setStatementDateFrom] = useState('')
   const [statementDateTo, setStatementDateTo] = useState('')
@@ -299,8 +302,12 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       const params = new URLSearchParams({ entity_type: statementTarget.kind, entity_id: statementTarget.id })
       if (statementDateFrom) params.set('date_from', statementDateFrom)
       if (statementDateTo) params.set('date_to', statementDateTo)
-      const res = await api.get<Movement[]>(`/movements?${params.toString()}`)
+      const [res, sectioned] = await Promise.all([
+        api.get<Movement[]>(`/movements?${params.toString()}`),
+        api.get<{ sections: StatementSection[]; closingLine: string }>(`${statementBasePath()}/statement?${statementQuery()}`),
+      ])
       setStatementItems(res)
+      setStatementSections(sectioned.sections)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحساب')
     } finally {
@@ -450,29 +457,10 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     }
   }
 
-  // Categorizes a Movement's free-text type into the sections the statement
-  // separates — debts never touch a vault/bank balance (they're a pure paper
-  // record), so only cash-moving activity ever shows up here.
-  const categorizeMovement = (type: string): 'trade' | 'customer' | 'advance' | 'manual' | 'interest' | 'transfer' | 'other' => {
-    if (type.includes('سلفة')) return 'advance'
-    if (type.startsWith('قيد يدوي')) return 'manual'
-    if (type.includes('فائدة وديعة')) return 'interest'
-    if (type.includes('حساب عميل')) return 'customer'
-    if (type.includes('إلى بنك') || type.includes('من بنك') || type.includes('حساب بنكي')) return 'transfer'
-    if (type.includes('عملة ورقية') || type.includes('تبديل عملة') || type.includes('مقبوضات صرافة') || type.includes('مدفوعات صرافة') || type.startsWith('عكس عملية')) return 'trade'
-    return 'other'
-  }
-
   const statementFiltered = useMemo(
     () => statementItems.filter((m) => !statementCcy || m.currency === statementCcy),
     [statementItems, statementCcy]
   )
-
-  const statementByCategory = useMemo(() => {
-    const groups: Record<string, Movement[]> = { trade: [], customer: [], advance: [], manual: [], interest: [], transfer: [], other: [] }
-    for (const m of statementFiltered) groups[categorizeMovement(m.type)].push(m)
-    return groups
-  }, [statementFiltered])
 
   const statementTransfers = useMemo(() => {
     if (!statementTarget) return []
@@ -1401,9 +1389,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-2xl font-bold text-foreground">{pageTitle}</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 [&_button]:whitespace-nowrap">
           {tab === 'vaults' && (
             <>
               <button onClick={() => setAllVaultsOpen(true)} className="flex items-center gap-2 rounded-md border border-primary/30 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10 transition-colors">
@@ -2013,7 +2001,6 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                                     </td>
                                     <td className={`px-6 py-4 font-bold ${ba.balance < 0 ? 'text-danger' : ''}`} dir="ltr">
                                       {ba.balance.toLocaleString()}
-                                      {ba.balance < 0 && <span className="mr-1.5 rounded-full bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium">سلفة</span>}
                                     </td>
                                     <td className="px-6 py-4">
                                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
@@ -3345,45 +3332,42 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 <p className="text-center text-sm text-muted-foreground py-8">جاري التحميل...</p>
               ) : (
                 <>
-                  {([
-                    ['trade', 'معاملات الصرافة'],
-                    ['customer', 'إيداع وسحب العملاء'],
-                    ['advance', 'السلف'],
-                    ['interest', 'فوائد بنكية'],
-                    ['manual', 'قيود يدوية'],
-                    ['other', 'أخرى'],
-                  ] as const).map(([key, label]) => {
-                    const rows = statementByCategory[key]
-                    if (rows.length === 0) return null
+                  {/* Same column structure and red-negative rule as a customer statement
+                      (frontend/app/(dashboard)/customers/statement/page.tsx) — المرجع/
+                      التاريخ/التفاصيل/دخول/خروج/العملة/ملاحظات/الرصيد بالأرقام+بالحروف/بواسطة,
+                      with a negative "الرصيد بالأرقام" cell drawn in red (no سلفة wording:
+                      that's only meaningful for a customer's own balance, not a company
+                      vault/bank account). */}
+                  {statementSections.filter((s) => s.rows.length > 0).map((section) => {
+                    const entryIdx = section.headers.indexOf('دخول')
+                    const exitIdx = section.headers.indexOf('خروج')
+                    const hasFlow = entryIdx !== -1 && exitIdx !== -1
                     return (
-                      <div key={key}>
-                        <p className="text-sm font-medium text-foreground mb-2">{label}</p>
+                      <div key={section.name}>
+                        <p className="text-sm font-medium text-foreground mb-2">{section.name}</p>
                         <div className="rounded-md border border-border overflow-x-auto">
                           <table className="w-full text-xs text-right">
                             <thead className="bg-secondary/50 text-muted-foreground">
-                              <tr>
-                                <th className="px-3 py-2 font-medium">الوقت</th>
-                                <th className="px-3 py-2 font-medium">النوع</th>
-                                <th className="px-3 py-2 font-medium">المبلغ</th>
-                                <th className="px-3 py-2 font-medium">الرصيد بعد</th>
-                                <th className="px-3 py-2 font-medium">بواسطة</th>
-                              </tr>
+                              <tr>{section.headers.map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}</tr>
                             </thead>
                             <tbody className="divide-y divide-border">
-                              {rows.map((m) => {
-                                const isIn = m.amountIn > 0
-                                return (
-                                  <tr key={m.id}>
-                                    <td className="px-3 py-2 text-muted-foreground">{m.timestamp}</td>
-                                    <td className="px-3 py-2">{m.type}</td>
-                                    <td className={`px-3 py-2 font-bold ${isIn ? 'text-success' : 'text-danger'}`} dir="ltr">
-                                      {isIn ? '+' : '-'}{(isIn ? m.amountIn : m.amountOut).toLocaleString()} {m.currency}
-                                    </td>
-                                    <td className="px-3 py-2">{m.balanceAfter.toLocaleString()}</td>
-                                    <td className="px-3 py-2 text-muted-foreground">{m.user}</td>
-                                  </tr>
-                                )
-                              })}
+                              {section.rows.map((row, i) => (
+                                <tr key={i}>
+                                  {row.map((cell, j) => {
+                                    const isEntry = hasFlow && j === entryIdx && cell !== ''
+                                    const isExit = hasFlow && j === exitIdx && cell !== ''
+                                    return (
+                                      <td
+                                        key={j}
+                                        dir={isEntry || isExit || /^-?\s?\d[\d,]*\.\d+$/.test(cell) ? 'ltr' : undefined}
+                                        className={`px-3 py-2 ${isEntry ? 'font-bold text-success' : isExit ? 'font-bold text-danger' : /^-\s?\d/.test(cell) ? 'font-bold text-danger' : 'text-muted-foreground'}`}
+                                      >
+                                        {isEntry ? `+${cell}` : isExit ? `-${cell}` : cell}
+                                      </td>
+                                    )
+                                  })}
+                                </tr>
+                              ))}
                             </tbody>
                           </table>
                         </div>

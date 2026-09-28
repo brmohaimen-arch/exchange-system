@@ -268,19 +268,19 @@ def movement_to_dict(m: Movement):
 
 # ----------------- BANKS -----------------
 @router.get("/banks")
-def list_banks(db: Session = Depends(get_db)):
+def list_banks(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(Bank)).all()
     return success_response(data=[bank_to_dict(b) for b in res])
 
 @router.post("/banks")
-def create_bank(data: BankCreate, db: Session = Depends(get_db)):
+def create_bank(data: BankCreate, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     bank = Bank(**data.model_dump())
     db.add(bank)
     db.commit()
     return success_response(data=bank_to_dict(bank))
 
 @router.put("/banks/{bank_id}")
-def update_bank(bank_id: str, data: BankCreate, db: Session = Depends(get_db)):
+def update_bank(bank_id: str, data: BankCreate, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     bank = db.get(Bank, bank_id)
     if not bank:
         raise APIError(code="NOT_FOUND", message_ar="البنك غير موجود", message_en="Bank not found", status_code=404)
@@ -290,7 +290,7 @@ def update_bank(bank_id: str, data: BankCreate, db: Session = Depends(get_db)):
     return success_response(data=bank_to_dict(bank))
 
 @router.delete("/banks/{bank_id}")
-def delete_bank(bank_id: str, db: Session = Depends(get_db)):
+def delete_bank(bank_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     bank = db.get(Bank, bank_id)
     if not bank:
         raise APIError(code="NOT_FOUND", message_ar="البنك غير موجود", message_en="Bank not found", status_code=404)
@@ -300,19 +300,19 @@ def delete_bank(bank_id: str, db: Session = Depends(get_db)):
     return success_response(data={"deleted": True})
 
 @router.get("/bank_branches")
-def list_bank_branches(db: Session = Depends(get_db)):
+def list_bank_branches(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(BankBranch)).all()
     return success_response(data=[bank_branch_to_dict(bb) for bb in res])
 
 @router.post("/bank_branches")
-def create_bank_branch(data: BankBranchCreate, db: Session = Depends(get_db)):
+def create_bank_branch(data: BankBranchCreate, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     branch = BankBranch(**data.model_dump())
     db.add(branch)
     db.commit()
     return success_response(data=bank_branch_to_dict(branch))
 
 @router.put("/bank_branches/{branch_id}")
-def update_bank_branch(branch_id: str, data: BankBranchCreate, db: Session = Depends(get_db)):
+def update_bank_branch(branch_id: str, data: BankBranchCreate, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     branch = db.get(BankBranch, branch_id)
     if not branch:
         raise APIError(code="NOT_FOUND", message_ar="فرع البنك غير موجود", message_en="Bank branch not found", status_code=404)
@@ -322,7 +322,7 @@ def update_bank_branch(branch_id: str, data: BankBranchCreate, db: Session = Dep
     return success_response(data=bank_branch_to_dict(branch))
 
 @router.delete("/bank_branches/{branch_id}")
-def delete_bank_branch(branch_id: str, db: Session = Depends(get_db)):
+def delete_bank_branch(branch_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     branch = db.get(BankBranch, branch_id)
     if not branch:
         raise APIError(code="NOT_FOUND", message_ar="فرع البنك غير موجود", message_en="Bank branch not found", status_code=404)
@@ -332,7 +332,7 @@ def delete_bank_branch(branch_id: str, db: Session = Depends(get_db)):
     return success_response(data={"deleted": True})
 
 @router.get("/bank_accounts")
-def list_bank_accounts(db: Session = Depends(get_db)):
+def list_bank_accounts(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(BankAccount)).all()
     return success_response(data=[bank_account_to_dict(ba) for ba in res])
 
@@ -372,7 +372,7 @@ def _resolve_bank_account_payload(db: Session, data: "BankAccountCreate") -> dic
     return payload
 
 @router.post("/bank_accounts")
-def create_bank_account(data: BankAccountCreate, db: Session = Depends(get_db)):
+def create_bank_account(data: BankAccountCreate, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     _validate_bank_account_customer(db, data.customer_id)
     ac = BankAccount(**_resolve_bank_account_payload(db, data))
     db.add(ac)
@@ -380,7 +380,7 @@ def create_bank_account(data: BankAccountCreate, db: Session = Depends(get_db)):
     return success_response(data=bank_account_to_dict(ac))
 
 @router.put("/bank_accounts/{account_id}")
-def update_bank_account(account_id: str, data: BankAccountCreate, db: Session = Depends(get_db)):
+def update_bank_account(account_id: str, data: BankAccountCreate, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     account = db.get(BankAccount, account_id)
     if not account:
         raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
@@ -397,7 +397,7 @@ class BankDepositCreate(BaseModel):
     notes: str | None = None
 
 @router.get("/bank_accounts/{account_id}/deposits")
-def list_bank_deposits(account_id: str, db: Session = Depends(get_db)):
+def list_bank_deposits(account_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     res = db.scalars(select(BankDeposit).where(BankDeposit.bank_account_id == account_id).order_by(BankDeposit.deposit_date.desc())).all()
     return success_response(data=[bank_deposit_to_dict(d) for d in res])
 
@@ -491,7 +491,7 @@ def credit_bank_deposit_interest(deposit_id: str, actor: User = Depends(require_
     return success_response(data=bank_account_to_dict(account), message_ar=f"تم إضافة {interest_amount:.2f} {account.currency} لرصيد الحساب")
 
 @router.delete("/bank_accounts/{account_id}")
-def delete_bank_account(account_id: str, db: Session = Depends(get_db)):
+def delete_bank_account(account_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     account = db.get(BankAccount, account_id)
     if not account:
         raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
@@ -550,12 +550,12 @@ def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str 
 
 # ----------------- CUSTOMERS -----------------
 @router.get("/customers")
-def list_customers(db: Session = Depends(get_db)):
+def list_customers(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(Customer)).all()
     return success_response(data=[customer_to_dict(c) for c in res])
 
 @router.get("/customers/next_code")
-def next_customer_code(db: Session = Depends(get_db)):
+def next_customer_code(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Suggests the next sequential customer code (001, 002, ...) for the "new
     customer" form to pre-fill. Looks only at existing ids that are purely
     numeric — an older or manually-typed id like "C-1024" doesn't participate
@@ -721,10 +721,10 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         if source_increases:
             source_after = source_before + data.amount
         else:
-            # A customer's own bank account is allowed to go negative here too
-            # (same سلفة-style trust relationship as their wallet) — only a
-            # real vault or company bank account must stay non-negative.
-            if not is_own_account_transfer and source_before < data.amount:
+            # A vault is real physical cash and can never go negative. A bank
+            # account — the customer's own, or the company's — is allowed to
+            # (same سلفة-style trust relationship as the customer's wallet).
+            if vault is not None and source_before < data.amount:
                 raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ ({source_before} {data.currency})", message_en="Insufficient balance", status_code=400)
             source_after = source_before - data.amount
 
@@ -948,7 +948,7 @@ def transfer_between_customers(customer_id: str, data: CustomerTransferOp, actor
     )
 
 @router.get("/customer_account_entries")
-def list_customer_account_entries(db: Session = Depends(get_db)):
+def list_customer_account_entries(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(select(CustomerAccountEntry).where(CustomerAccountEntry.id.not_in(_reversed_journal_refs())).order_by(CustomerAccountEntry.timestamp.desc())).all()
     return success_response(data=[customer_account_entry_to_dict(e) for e in res])
 
@@ -1348,16 +1348,10 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
         if vault is not None:
             vault_after = vault_before - data.amount  # cash leaves the drawer, goes to the bank
     else:
-        # A vault-backed withdrawal from a company-owned account must stay
-        # non-negative — that balance is real cash whose sufficiency the vault
-        # side can't make up for. A withdrawal with no vault at all is, by
-        # definition, not cash-backed — its entire purpose is to let the
-        # balance go negative to record "money is owed back" (the same
-        # سلفة-style trust relationship already allowed on a customer's own
-        # bank account), so it's allowed to go negative regardless of who
-        # owns the account.
-        if vault is not None and not account.customer_id and account_before < data.amount:
-            raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الحساب البنكي غير كافٍ ({account_before} {account.currency})", message_en="Insufficient bank account balance", status_code=400)
+        # No balance floor on withdrawal — a bank account (company- or
+        # customer-owned) is allowed to go negative, same سلفة-style trust
+        # relationship as a customer's own wallet: the account just records
+        # that money is owed back.
         account_after = account_before - data.amount
         if vault is not None:
             vault_after = vault_before + data.amount  # cash comes out of the bank, into the drawer
@@ -1448,7 +1442,7 @@ def customer_document_to_dict(d: CustomerDocument):
     }
 
 @router.get("/customer_documents")
-def list_customer_documents(db: Session = Depends(get_db)):
+def list_customer_documents(actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
     res = db.scalars(select(CustomerDocument)).all()
     return success_response(data=[customer_document_to_dict(d) for d in res])
 
@@ -1578,7 +1572,7 @@ def import_customers(data: CustomerImportRequest, actor: User = Depends(require_
 
 # ----------------- DEBTS -----------------
 @router.get("/debts")
-def list_debts(db: Session = Depends(get_db)):
+def list_debts(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(select(Debt)).all()
     return success_response(data=[debt_to_dict(d) for d in res])
 
@@ -1651,7 +1645,7 @@ def debt_payment_to_dict(p: DebtPaymentRecord):
     }
 
 @router.get("/debt_payments")
-def list_debt_payments(db: Session = Depends(get_db)):
+def list_debt_payments(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(select(DebtPaymentRecord).order_by(DebtPaymentRecord.timestamp.desc())).all()
     return success_response(data=[debt_payment_to_dict(p) for p in res])
 
@@ -1731,7 +1725,7 @@ def _apply_source_delta(source_kind: str, source_obj, currency: str, delta: floa
     return after
 
 @router.get("/advances")
-def list_advances(db: Session = Depends(get_db)):
+def list_advances(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(select(Advance).order_by(Advance.timestamp.desc())).all()
     return success_response(data=[advance_to_dict(a) for a in res])
 
@@ -1743,7 +1737,9 @@ def create_advance(data: AdvanceCreate, actor: User = Depends(require_permission
     if not customer:
         raise APIError(code="CUSTOMER_NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
     source_kind, source_obj, source_label, source_before = _resolve_advance_source(db, data.vault_id, data.bank_account_id, data.currency)
-    if source_before < data.amount:
+    # A vault (physical cash) can't fund more than it holds; a bank account is
+    # allowed to go negative funding a سلفة, same as everywhere else.
+    if source_kind == "vault" and source_before < data.amount:
         raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح في {source_label} غير كافٍ ({source_before} {data.currency})", message_en="Insufficient balance", status_code=400)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
@@ -1853,7 +1849,7 @@ def advance_payment_to_dict(p: AdvancePaymentRecord):
     }
 
 @router.get("/advance_payments")
-def list_advance_payments(db: Session = Depends(get_db)):
+def list_advance_payments(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(select(AdvancePaymentRecord).order_by(AdvancePaymentRecord.timestamp.desc())).all()
     return success_response(data=[advance_payment_to_dict(p) for p in res])
 
@@ -1929,7 +1925,7 @@ def commission_rule_to_dict(r: CommissionRule):
     }
 
 @router.get("/commission_rules")
-def list_commission_rules(db: Session = Depends(get_db)):
+def list_commission_rules(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(CommissionRule).order_by(CommissionRule.priority.desc())).all()
     return success_response(data=[commission_rule_to_dict(r) for r in res])
 
@@ -1966,7 +1962,7 @@ def delete_commission_rule(rule_id: str, actor: User = Depends(require_permissio
 
 # ----------------- POS OPERATIONS & TRANSACTIONS -----------------
 @router.get("/transactions")
-def list_transactions(db: Session = Depends(get_db)):
+def list_transactions(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(select(Transaction)).all()
     return success_response(data=[transaction_to_dict(t) for t in res])
 
@@ -2142,7 +2138,7 @@ def send_debt_receipt_whatsapp(debt_id: str, actor: User = Depends(get_current_u
     return success_response(data={"sent": True}, message_ar="تم إرسال الإيصال عبر واتساب بنجاح")
 
 @router.get("/movements")
-def list_movements(vault_id: str = "", entity_type: str = "vault", entity_id: str = "", date_from: str = "", date_to: str = "", include_reversed: bool = False, db: Session = Depends(get_db)):
+def list_movements(vault_id: str = "", entity_type: str = "vault", entity_id: str = "", date_from: str = "", date_to: str = "", include_reversed: bool = False, actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     """entity_type defaults to "vault" for backward compatibility with the existing
     vault movements tab; pass entity_type="bank_account" (+ entity_id, or the legacy
     vault_id param) to get the same feed for a bank account instead."""
@@ -2179,7 +2175,9 @@ def _apply_manual_entry(db: Session, entity_kind: str, entity_obj, entity_label:
         raise APIError(code="INVALID_DESCRIPTION", message_ar="وصف العملية مطلوب", message_en="Description is required", status_code=400)
 
     before = entity_obj.balances.get(data.currency, 0.0) if entity_kind == "vault" else entity_obj.balance
-    if data.direction == "out" and before < data.amount:
+    # A vault is real physical cash and can never go negative; a bank account
+    # is allowed to (same سلفة-style trust relationship used everywhere else).
+    if entity_kind == "vault" and data.direction == "out" and before < data.amount:
         raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح غير كافٍ ({before} {data.currency})", message_en="Insufficient balance", status_code=400)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
@@ -2264,7 +2262,14 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     for m in movements:
         groups[_categorize_movement_type(m.type)].append(m)
 
-    mv_headers = ["المرجع", "الوقت", "النوع", "دخول", "خروج", "العملة", "الرصيد بعد", "ملاحظات", "بواسطة"]
+    # Same column shape as a customer statement (_customers_statement_sections):
+    # المرجع/التاريخ/التفاصيل/دخول/خروج/العملة/ملاحظات, then the balance columns,
+    # then بواسطة — with_sides=False (no له/عليه split: a company vault/bank
+    # account isn't "owed" anything the way a customer can be) still gives the
+    # بالأرقام + بالحروف pair, and a negative بالأرقام cell ("-500.00") is
+    # already drawn in red by the same generic rule every other statement uses
+    # (export_utils._is_negative_amount) — no سلفة wording, just "سالب <words>".
+    mv_headers = ["المرجع", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + _balance_headers(False) + ["بواسطة"]
 
     def mv_rows(items: list[Movement]) -> list[list]:
         rows = []
@@ -2272,7 +2277,8 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
             is_in = m.amount_in > 0
             entry = f"{m.amount_in:,.2f}" if is_in else ""
             exit_ = f"{m.amount_out:,.2f}" if not is_in else ""
-            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, f"{m.balance_after:,.2f}", _movement_source_notes(db, m.reference_id), m.user])
+            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, _movement_source_notes(db, m.reference_id)]
+                        + _balance_cells(m.balance_after, m.currency, False) + [m.user])
         return rows
 
     sections = [
@@ -2325,6 +2331,33 @@ def _entity_statement_export(db: Session, entity_kind: str, entity_id: str, enti
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return buf.read(), "pdf"
+
+@router.get("/vaults/{vault_id}/statement")
+def get_vault_statement(vault_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
+    """JSON version of the statement sections for an on-screen filterable view —
+    same shape (and same column structure) as get_customer_statement, so the
+    frontend can render both with one generic table renderer."""
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    sections, closing_line = _entity_statement_sections(db, "vault", vault_id, date_from, date_to, currency)
+    return success_response(data={
+        "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
+        "closingLine": closing_line,
+    })
+
+@router.get("/bank_accounts/{account_id}/statement")
+def get_bank_account_statement(account_id: str, date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    """Same as get_vault_statement, for a bank account (company-owned or
+    customer-owned — both are BankAccount rows, this endpoint doesn't care which)."""
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+    sections, closing_line = _entity_statement_sections(db, "bank_account", account_id, date_from, date_to, currency)
+    return success_response(data={
+        "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
+        "closingLine": closing_line,
+    })
 
 @router.get("/vaults/{vault_id}/statement/export")
 def export_vault_statement(vault_id: str, format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("إدارة الخزنات")), db: Session = Depends(get_db)):
@@ -2824,19 +2857,15 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
                 status_code=400
             )
 
-    # Check bank account balance if bank payout
+    # Bank payout — no balance floor: a bank account is allowed to go negative
+    # (same سلفة-style trust relationship as everywhere else a bank account's
+    # balance is checked), so paying out more than the account currently holds
+    # just leaves it negative instead of blocking the operation.
     bank_acc = None
     if data.paymentMethod == "bank_account" and data.bankAccountId:
         bank_acc = db.get(BankAccount, data.bankAccountId)
         if not bank_acc:
             raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب المصرفي المحدد غير موجود", message_en="Bank account not found", status_code=400)
-        if is_buy and bank_acc.balance < cashier_pay_amount:
-            raise APIError(
-                code="INSUFFICIENT_BANK_BALANCE",
-                message_ar=f"رصيد الحساب البنكي غير كافي! الرصيد المتاح: {bank_acc.balance} {bank_acc.currency}",
-                message_en=f"Insufficient bank account balance! Available: {bank_acc.balance} {bank_acc.currency}",
-                status_code=400
-            )
 
     # Check the customer has enough account balance to cover what they're paying for
     # this operation FROM their own account balance — this only applies to a sell
@@ -3412,8 +3441,8 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
         if pay_bal < cashier_pay_amount:
             raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح في الخزنة ({pay_bal} {cashier_pay_currency}) غير كافٍ لتسديد القيمة الجديدة ({cashier_pay_amount} {cashier_pay_currency})", message_en="Insufficient vault balance for the edited amount", status_code=400)
 
-    if tx.payment_method == "bank_account" and is_buy and bank_acc.balance < cashier_pay_amount:
-        raise APIError(code="INSUFFICIENT_BANK_BALANCE", message_ar=f"رصيد الحساب البنكي غير كافٍ! الرصيد المتاح: {bank_acc.balance} {bank_acc.currency}", message_en="Insufficient bank account balance for the edited amount", status_code=400)
+    # Bank payout has no balance floor here either — see create_transaction's
+    # matching comment; the account is allowed to go negative.
 
     if tx.payment_method == "customer_account" and is_sell:
         cust_bal = customer.balances.get(cashier_receive_currency, 0.0)

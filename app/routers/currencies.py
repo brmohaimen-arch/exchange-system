@@ -6,7 +6,7 @@ from ..models import Currency, Transaction, Vault, AuditAction, ExchangeRate, Ra
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
-from ..auth_deps import require_permission
+from ..auth_deps import require_permission, get_current_user
 from ..id_gen import new_id
 from pydantic import BaseModel
 from datetime import datetime
@@ -52,7 +52,7 @@ class RateHistoryDTO(BaseModel):
     notes: str | None = None
 
 @router.get("")
-def list_currencies(db: Session = Depends(get_db)):
+def list_currencies(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     currencies = db.scalars(select(Currency)).all()
     res = []
     for c in currencies:
@@ -70,7 +70,7 @@ def list_currencies(db: Session = Depends(get_db)):
     return success_response(data=res)
 
 @router.get("/rates")
-def list_rates(db: Session = Depends(get_db)):
+def list_rates(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rates = db.scalars(select(ExchangeRate)).all()
     res_list = []
     for r in rates:
@@ -92,7 +92,7 @@ def list_rates(db: Session = Depends(get_db)):
     return success_response(data=res_list)
 
 @router.get("/rate_histories")
-def list_histories(db: Session = Depends(get_db)):
+def list_histories(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     histories = db.scalars(select(RateHistory).order_by(RateHistory.timestamp.desc())).all()
     res_list = []
     for h in histories:
@@ -110,7 +110,7 @@ def list_histories(db: Session = Depends(get_db)):
     return success_response(data=res_list)
 
 @router.get("/{code}")
-def get_currency(code: str, db: Session = Depends(get_db)):
+def get_currency(code: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     c = db.get(Currency, code.upper())
     if not c:
         raise APIError(code="NOT_FOUND", message_ar="العملة غير موجودة", message_en="Currency not found", status_code=404)
@@ -324,7 +324,7 @@ class DenominationSetRequest(BaseModel):
     values: list[float]
 
 @router.get("/{code}/denominations")
-def list_denominations(code: str, db: Session = Depends(get_db)):
+def list_denominations(code: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(CurrencyDenomination).where(CurrencyDenomination.currency == code.upper())).all()
     values = sorted((r.value for r in rows), reverse=True)
     return success_response(data=values)
@@ -343,7 +343,7 @@ def set_denominations(code: str, data: DenominationSetRequest, actor: User = Dep
     return success_response(data=sorted(data.values, reverse=True), message_ar="تم تحديث الفئات النقدية بنجاح")
 
 @router.post("/rate_histories")
-def create_rate_history(data: RateHistoryDTO, db: Session = Depends(get_db)):
+def create_rate_history(data: RateHistoryDTO, actor: User = Depends(require_permission("تعديل أسعار الصرف")), db: Session = Depends(get_db)):
     history = RateHistory(
         id=data.id,
         pair=data.pair,

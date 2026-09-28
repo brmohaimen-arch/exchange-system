@@ -383,3 +383,51 @@
   background: linear-gradient(to bottom right, color-mix(in oklch, var(--primary) 5%, transparent), transparent);
   pointer-events: none;
 }
+
+/* Every wide table/tab-row on a narrow screen sits inside an
+   `overflow-x-auto` strip with nothing telling the user there's more to
+   swipe to — it just looks cut off. This is the classic scroll-shadow
+   trick (four background layers: two that fade the content into the
+   container's own background right at each edge, scrolling WITH the
+   content, and two shadow hints fixed to the viewport) — it needs no JS
+   and self-cancels once you've scrolled all the way to an edge, or if the
+   content never overflowed in the first place. Applies to every existing
+   `overflow-x-auto` table/button-row across the app at once. */
+.overflow-x-auto {
+  background-repeat: no-repeat;
+  background-color: var(--card);
+  background-image:
+    linear-gradient(to right, var(--card) 40%, transparent),
+    linear-gradient(to left, var(--card) 40%, transparent),
+    linear-gradient(to right, color-mix(in oklch, var(--foreground) 18%, transparent), transparent),
+    linear-gradient(to left, color-mix(in oklch, var(--foreground) 18%, transparent), transparent);
+  background-position: left center, right center, left center, right center;
+  background-size: 24px 100%, 24px 100%, 10px 100%, 10px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/* Phone-width layout hardening (dashboard pages live inside <main>):
+   - a "title + action buttons" row wraps instead of squeezing every button
+     to 3-4 wrapped lines;
+   - icon action buttons/links keep their label on one line;
+   - a row of tab buttons scrolls sideways instead of spilling out of its card. */
+main .flex.items-center.justify-between {
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
+}
+main :is(button, a):has(> svg) {
+  white-space: nowrap;
+}
+main div.flex.border-b:has(> button) {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+main div.flex.border-b:has(> button) > button {
+  flex-shrink: 0;
+}
+main :is(p, h2, h3, h4) {
+  overflow-wrap: break-word;
+}
+main button.flex.w-full div {
+  min-width: 0;
+}

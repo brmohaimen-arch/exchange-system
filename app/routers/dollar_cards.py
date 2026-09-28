@@ -207,7 +207,7 @@ def delete_dollar_card(recipient_id: str, actor: User = Depends(require_permissi
 
 
 @router.get("/dollar_cards/{recipient_id}/documents")
-def list_dollar_card_documents(recipient_id: str, db: Session = Depends(get_db)):
+def list_dollar_card_documents(recipient_id: str, actor: User = Depends(require_permission("إدارة بطاقات الدولار")), db: Session = Depends(get_db)):
     docs = db.scalars(select(DollarCardDocument).where(DollarCardDocument.recipient_id == recipient_id)).all()
     return success_response(data=[document_to_dict(d) for d in docs])
 

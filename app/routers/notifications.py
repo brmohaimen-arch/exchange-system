@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
-from ..models import Notification, NotificationStatus, NotificationType
+from ..models import Notification, NotificationStatus, NotificationType, User
+from ..auth_deps import get_current_user
 from ..core.responses import success_response
 from ..core.errors import APIError
 
@@ -33,14 +34,14 @@ def notification_to_dict(n: Notification):
     }
 
 @router.get("")
-def list_notifications(db: Session = Depends(get_db)):
+def list_notifications(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     notifications = db.scalars(
         select(Notification).order_by(Notification.created_at.desc())
     ).all()
     return success_response(data=[notification_to_dict(n) for n in notifications])
 
 @router.get("/unread")
-def unread_notifications(db: Session = Depends(get_db)):
+def unread_notifications(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     notifications = db.scalars(
         select(Notification)
         .where(Notification.status == NotificationStatus.UNREAD)
@@ -49,7 +50,7 @@ def unread_notifications(db: Session = Depends(get_db)):
     return success_response(data=[notification_to_dict(n) for n in notifications])
 
 @router.patch("/read-all")
-def mark_all_notifications_read(db: Session = Depends(get_db)):
+def mark_all_notifications_read(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     notifications = db.scalars(
         select(Notification).where(Notification.status == NotificationStatus.UNREAD)
     ).all()
@@ -61,7 +62,7 @@ def mark_all_notifications_read(db: Session = Depends(get_db)):
     return success_response(message_ar=f"تم تحديد {len(notifications)} تنبيه كمقروء")
 
 @router.patch("/{notification_id}/read")
-def mark_notification_read(notification_id: int, db: Session = Depends(get_db)):
+def mark_notification_read(notification_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     notification = db.get(Notification, notification_id)
     if not notification:
         raise APIError(code="NOT_FOUND", message_ar="التنبيه غير موجود", message_en="Notification not found", status_code=404)
@@ -71,7 +72,7 @@ def mark_notification_read(notification_id: int, db: Session = Depends(get_db)):
     return success_response(data=notification_to_dict(notification))
 
 @router.patch("/{notification_id}/dismiss")
-def dismiss_notification(notification_id: int, db: Session = Depends(get_db)):
+def dismiss_notification(notification_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     notification = db.get(Notification, notification_id)
     if not notification:
         raise APIError(code="NOT_FOUND", message_ar="التنبيه غير موجود", message_en="Notification not found", status_code=404)

@@ -996,7 +996,7 @@ export default function SettingsPage() {
             <div className="overflow-x-auto max-h-96 overflow-y-auto">
               {fLoginLogs.filterBar}
               <table className="w-full text-sm text-right">
-                <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase sticky top-0">
+                <thead className="bg-secondary text-muted-foreground text-xs uppercase sticky top-0 z-10">
                   <tr>
                     <th className="px-6 py-3 font-medium">المستخدم</th>
                     <th className="px-6 py-3 font-medium">الوقت</th>

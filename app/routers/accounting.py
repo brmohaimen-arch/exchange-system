@@ -85,7 +85,7 @@ def backup_to_dict(b: Backup):
 
 # ----------------- JOURNAL ENTRIES -----------------
 @router.get("/journal_entries")
-def list_journal_entries(db: Session = Depends(get_db)):
+def list_journal_entries(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(select(JournalEntry)).all()
     return success_response(data=[jv_to_dict(jv) for jv in res])
 
@@ -248,14 +248,14 @@ def verify_audit_logs(actor: User = Depends(require_permission("رؤية سجل 
     return success_response(data=result, message_ar="السجل سليم ولم يتم التلاعب به" if result["valid"] else "تنبيه: تم اكتشاف كسر في سلسلة سجل التدقيق")
 
 @router.get("/audit_logs")
-def list_audit_logs(db: Session = Depends(get_db)):
+def list_audit_logs(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(
         select(AuditLog).order_by(AuditLog.created_at.desc())
     ).all()
     return success_response(data=[audit_to_dict(log) for log in res])
 
 @router.get("/login_logs")
-def list_login_logs(db: Session = Depends(get_db)):
+def list_login_logs(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     res = db.scalars(
         select(LoginLog).order_by(LoginLog.login_time.desc())
     ).all()
@@ -292,7 +292,7 @@ def update_settings(data: SettingsUpdate, actor: User = Depends(require_permissi
 
 # ----------------- DATABASE BACKUPS -----------------
 @router.get("/backups")
-def list_backups(db: Session = Depends(get_db)):
+def list_backups(actor: User = Depends(require_permission("إدارة الإعدادات")), db: Session = Depends(get_db)):
     res = db.scalars(select(Backup).order_by(Backup.timestamp.desc())).all()
     return success_response(data=[backup_to_dict(b) for b in res])
 

@@ -202,23 +202,23 @@ def daily_expense_to_dict(e: DailyExpense):
 
 # ----------------- BRANCHES -----------------
 @router.get("/branches")
-def list_branches(db: Session = Depends(get_db)):
+def list_branches(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(Branch)).all()
     return success_response(data=[branch_to_dict(b) for b in res])
 
 @router.post("/branches")
-def create_branch(data: BranchCreate, db: Session = Depends(get_db)):
+def create_branch(data: BranchCreate, actor: User = Depends(require_permission("إدارة الفروع")), db: Session = Depends(get_db)):
     existing = db.get(Branch, data.id)
     if existing:
         raise APIError(code="EXISTS", message_ar="الفرع موجود بالفعل", message_en="Branch already exists", status_code=400)
     branch = Branch(**data.model_dump())
     db.add(branch)
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="Branch", entity_id=data.id, description=f"تم إنشاء فرع جديد: {data.name}")
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="Branch", entity_id=data.id, description=f"تم إنشاء فرع جديد: {data.name}", username=actor.username)
     db.commit()
     return success_response(data=branch_to_dict(branch))
 
 @router.put("/branches/{branch_id}")
-def update_branch(branch_id: str, data: BranchCreate, db: Session = Depends(get_db)):
+def update_branch(branch_id: str, data: BranchCreate, actor: User = Depends(require_permission("إدارة الفروع")), db: Session = Depends(get_db)):
     branch = db.get(Branch, branch_id)
     if not branch:
         raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
@@ -261,7 +261,7 @@ def transfer_all_branch_data(branch_id: str, data: BranchTransferAll, actor: Use
     return success_response(data={"moved": moved}, message_ar=f"تم نقل جميع بيانات الفرع إلى {to_branch.name} بنجاح")
 
 @router.delete("/branches/{branch_id}")
-def delete_branch(branch_id: str, db: Session = Depends(get_db)):
+def delete_branch(branch_id: str, actor: User = Depends(require_permission("إدارة الفروع")), db: Session = Depends(get_db)):
     branch = db.get(Branch, branch_id)
     if not branch:
         raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
@@ -296,13 +296,13 @@ def delete_branch(branch_id: str, db: Session = Depends(get_db)):
         )
 
     db.delete(branch)
-    create_audit_log(db, action=AuditAction.DELETE, entity_type="Branch", entity_id=branch_id, description=f"تم حذف الفرع: {branch.name}")
+    create_audit_log(db, action=AuditAction.DELETE, entity_type="Branch", entity_id=branch_id, description=f"تم حذف الفرع: {branch.name}", username=actor.username)
     db.commit()
     return success_response(data={"deleted": True})
 
 # ----------------- VAULTS -----------------
 @router.get("/vaults")
-def list_vaults(db: Session = Depends(get_db)):
+def list_vaults(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(Vault)).all()
     return success_response(data=[vault_to_dict(v) for v in res])
 
@@ -406,7 +406,7 @@ def delete_vault(vault_id: str, actor: User = Depends(require_permission("إدا
 
 # ----------------- SHIFTS -----------------
 @router.get("/shifts")
-def list_shifts(db: Session = Depends(get_db)):
+def list_shifts(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(Shift)).all()
     return success_response(data=[shift_to_dict(s) for s in res])
 
@@ -578,7 +578,7 @@ def approve_shift(shift_id: str, actor: User = Depends(require_permission("اع�
 
 # ----------------- TRANSFERS & APPROVALS -----------------
 @router.get("/transfers")
-def list_transfers(db: Session = Depends(get_db)):
+def list_transfers(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(Transfer)).all()
     return success_response(data=[transfer_to_dict(t) for t in res])
 
@@ -635,7 +635,7 @@ def create_transfer(data: TransferCreate, actor: User = Depends(require_permissi
     return success_response(data=transfer_to_dict(transfer))
 
 @router.get("/approvals")
-def list_approvals(db: Session = Depends(get_db)):
+def list_approvals(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(ApprovalRequest)).all()
     return success_response(data=[approval_to_dict(a) for a in res])
 
@@ -720,14 +720,18 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                         status_code=400
                     )
 
-                src_balance = _party_balance(transfer.source_type, src)
-                if src_balance < transfer.amount:
-                    raise APIError(
-                        code="INSUFFICIENT_BALANCE",
-                        message_ar=f"الرصيد المتاح في {transfer.source_name} ({src_balance} {transfer.currency}) غير كافٍ لتنفيذ التحويل بقيمة ({transfer.amount} {transfer.currency})",
-                        message_en=f"Insufficient balance in {transfer.source_name} for this transfer",
-                        status_code=400
-                    )
+                # A vault (physical cash) can't fund more than it holds; a bank
+                # account is allowed to go negative funding a transfer, same as
+                # everywhere else a bank account's balance is checked.
+                if transfer.source_type != "bank_account":
+                    src_balance = _party_balance(transfer.source_type, src)
+                    if src_balance < transfer.amount:
+                        raise APIError(
+                            code="INSUFFICIENT_BALANCE",
+                            message_ar=f"الرصيد المتاح في {transfer.source_name} ({src_balance} {transfer.currency}) غير كافٍ لتنفيذ التحويل بقيمة ({transfer.amount} {transfer.currency})",
+                            message_en=f"Insufficient balance in {transfer.source_name} for this transfer",
+                            status_code=400
+                        )
 
                 approval.status = "approved"
                 transfer.status = "approved"
@@ -861,7 +865,7 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
 
 # ----------------- INVENTORY COUNTS -----------------
 @router.get("/inventory_counts")
-def list_inventory_counts(db: Session = Depends(get_db)):
+def list_inventory_counts(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(InventoryCount)).all()
     return success_response(data=[inventory_to_dict(ic) for ic in res])
 
@@ -915,12 +919,12 @@ def submit_inventory_count(data: InventoryCountCreate, actor: User = Depends(get
     return success_response(data=inventory_to_dict(ic))
 
 @router.post("/inventory_counts/{ic_id}/approve")
-def approve_inventory_count(ic_id: str, db: Session = Depends(get_db)):
+def approve_inventory_count(ic_id: str, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
     ic = db.get(InventoryCount, ic_id)
     if not ic:
          raise APIError(code="NOT_FOUND", message_ar="الجرد غير موجود", message_en="Count not found", status_code=404)
     ic.status = "approved"
-    
+
     vault = db.get(Vault, ic.vault_id)
     if vault:
         bals = vault.balances.copy()
@@ -931,12 +935,14 @@ def approve_inventory_count(ic_id: str, db: Session = Depends(get_db)):
     if appr:
         appr.status = "approved"
 
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="InventoryCount", entity_id=ic.id,
+                      description=f"تم اعتماد الجرد وتحديث رصيد الخزنة {ic.vault_id} ({ic.currency}) إلى {ic.actual_balance}", username=actor.username)
     db.commit()
     return success_response(data=inventory_to_dict(ic))
 
 # ----------------- DAILY EXPENSES -----------------
 @router.get("/daily-expenses")
-def list_daily_expenses(db: Session = Depends(get_db)):
+def list_daily_expenses(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(DailyExpense).order_by(DailyExpense.timestamp.desc())).all()
     return success_response(data=[daily_expense_to_dict(e) for e in res])
 
@@ -991,7 +997,7 @@ def daily_closing_to_dict(d: DailyClosing):
     }
 
 @router.get("/daily_closings")
-def list_daily_closings(db: Session = Depends(get_db)):
+def list_daily_closings(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(DailyClosing).order_by(DailyClosing.closed_at.desc())).all()
     return success_response(data=[daily_closing_to_dict(d) for d in res])
 

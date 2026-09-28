@@ -10,7 +10,7 @@ from ..models import CurrencyPriceLog, AuditAction, User
 from ..tracking import create_audit_log
 from ..core.responses import success_response
 from ..core.errors import APIError
-from ..auth_deps import require_permission
+from ..auth_deps import require_permission, get_current_user
 from ..id_gen import new_id
 
 router = APIRouter(tags=["Currency Price History (manual daily log)"])
@@ -38,7 +38,7 @@ def log_to_dict(p: CurrencyPriceLog):
 
 
 @router.get("/currency_price_log")
-def list_currency_price_log(currency: str = "", date_from: str = "", date_to: str = "", db: Session = Depends(get_db)):
+def list_currency_price_log(currency: str = "", date_from: str = "", date_to: str = "", actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     query = select(CurrencyPriceLog)
     if currency:
         query = query.where(CurrencyPriceLog.currency == currency)

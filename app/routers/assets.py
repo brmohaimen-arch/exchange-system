@@ -12,7 +12,7 @@ from ..models import (
 from ..tracking import create_audit_log
 from ..core.responses import success_response, error_response
 from ..core.errors import APIError
-from ..auth_deps import get_current_user
+from ..auth_deps import get_current_user, require_permission
 from ..file_storage import save_upload, resolve_path
 from pydantic import BaseModel
 from datetime import datetime
@@ -177,12 +177,12 @@ def document_to_dict(doc: AssetDocument):
 
 # ----------------- ASSETS CRUD -----------------
 @router.get("/assets")
-def list_assets(db: Session = Depends(get_db)):
+def list_assets(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     assets = db.scalars(select(FixedAsset)).all()
     return success_response(data=[asset_to_dict(a) for a in assets])
 
 @router.post("/assets")
-def create_asset(data: FixedAssetCreate, db: Session = Depends(get_db)):
+def create_asset(data: FixedAssetCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     asset = FixedAsset(**data.model_dump())
     db.add(asset)
     
@@ -202,12 +202,12 @@ def create_asset(data: FixedAssetCreate, db: Session = Depends(get_db)):
     )
     db.add(dep)
 
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="FixedAsset", entity_id=data.id, description=f"تم تسجيل أصل ثابت جديد: {data.name}")
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="FixedAsset", entity_id=data.id, description=f"تم تسجيل أصل ثابت جديد: {data.name}", username=actor.username)
     db.commit()
     return success_response(data=asset_to_dict(asset))
 
 @router.put("/assets/{asset_id}")
-def update_asset(asset_id: str, data: FixedAssetCreate, db: Session = Depends(get_db)):
+def update_asset(asset_id: str, data: FixedAssetCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     asset = db.get(FixedAsset, asset_id)
     if not asset:
         raise APIError(code="NOT_FOUND", message_ar="الأصل غير موجود", message_en="Asset not found", status_code=404)
@@ -217,21 +217,21 @@ def update_asset(asset_id: str, data: FixedAssetCreate, db: Session = Depends(ge
     return success_response(data=asset_to_dict(asset))
 
 @router.post("/assets/{asset_id}/sell")
-def sell_asset(asset_id: str, data: AssetSell, db: Session = Depends(get_db)):
+def sell_asset(asset_id: str, data: AssetSell, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     asset = db.get(FixedAsset, asset_id)
     if not asset:
         raise APIError(code="NOT_FOUND", message_ar="الأصل غير موجود", message_en="Asset not found", status_code=404)
-    
+
     asset.status = "تم البيع"
     asset.current_value = 0.0
     asset.notes = f"تم البيع للمشتري {data.buyer} بقيمة {data.price} {data.currency} — {data.notes or ''}"
 
-    create_audit_log(db, action=AuditAction.UPDATE, entity_type="FixedAsset", entity_id=asset.id, description=f"تم بيع الأصل الثابت: {asset.name} للمشتري {data.buyer}")
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="FixedAsset", entity_id=asset.id, description=f"تم بيع الأصل الثابت: {asset.name} للمشتري {data.buyer}", username=actor.username)
     db.commit()
     return success_response(data=asset_to_dict(asset))
 
 @router.post("/assets/{asset_id}/transfer")
-def transfer_asset(asset_id: str, data: AssetTransfer, db: Session = Depends(get_db)):
+def transfer_asset(asset_id: str, data: AssetTransfer, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     asset = db.get(FixedAsset, asset_id)
     if not asset:
          raise APIError(code="NOT_FOUND", message_ar="الأصل غير موجود", message_en="Asset not found", status_code=404)
@@ -241,7 +241,7 @@ def transfer_asset(asset_id: str, data: AssetTransfer, db: Session = Depends(get
     asset.location = data.to_location
     asset.responsible = data.responsible
 
-    create_audit_log(db, action=AuditAction.UPDATE, entity_type="FixedAsset", entity_id=asset.id, description=f"نقل عهدة الأصل {asset.name} من فرع {old_branch} إلى {data.to_branch}")
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="FixedAsset", entity_id=asset.id, description=f"نقل عهدة الأصل {asset.name} من فرع {old_branch} إلى {data.to_branch}", username=actor.username)
     db.commit()
     return success_response(data=asset_to_dict(asset))
 
@@ -282,12 +282,12 @@ def delete_asset(asset_id: str, actor: User = Depends(get_current_user), db: Ses
 
 # ----------------- VEHICLES & REAL ESTATE LISTS -----------------
 @router.get("/vehicles")
-def list_vehicles(db: Session = Depends(get_db)):
+def list_vehicles(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(Vehicle)).all()
     return success_response(data=[vehicle_to_dict(v) for v in res])
 
 @router.get("/vehicles/by_barcode/{barcode}")
-def get_vehicle_by_barcode(barcode: str, db: Session = Depends(get_db)):
+def get_vehicle_by_barcode(barcode: str, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Looks a vehicle up by its (manually entered) barcode — used by the camera-scan
     search on the vehicles list. Never generates a barcode; only reads one back."""
     v = db.scalar(select(Vehicle).where(Vehicle.barcode == barcode))
@@ -296,18 +296,18 @@ def get_vehicle_by_barcode(barcode: str, db: Session = Depends(get_db)):
     return success_response(data=vehicle_to_dict(v))
 
 @router.get("/real_estates")
-def list_real_estates(db: Session = Depends(get_db)):
+def list_real_estates(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(RealEstate)).all()
     return success_response(data=[estate_to_dict(r) for r in res])
 
 # ----------------- MAINTENANCE RECORDS -----------------
 @router.get("/maintenance_records")
-def list_maintenance_records(db: Session = Depends(get_db)):
+def list_maintenance_records(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(MaintenanceRecord)).all()
     return success_response(data=[maintenance_to_dict(m) for m in res])
 
 @router.post("/maintenance_records")
-def add_maintenance_record(record: FixedAssetCreate, db: Session = Depends(get_db)):
+def add_maintenance_record(record: FixedAssetCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     m = MaintenanceRecord(
         id=record.id,
         asset_id=record.category,
@@ -326,7 +326,7 @@ def add_maintenance_record(record: FixedAssetCreate, db: Session = Depends(get_d
     return success_response(data=maintenance_to_dict(m))
 
 @router.post("/maintenance_records/{id}/complete")
-def complete_maintenance(id: str, data: MaintenanceComplete, db: Session = Depends(get_db)):
+def complete_maintenance(id: str, data: MaintenanceComplete, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     record = db.get(MaintenanceRecord, id)
     if not record:
         raise APIError(code="NOT_FOUND", message_ar="سجل الصيانة غير موجود", message_en="Record not found", status_code=404)
@@ -349,18 +349,18 @@ def delete_maintenance_record(id: str, actor: User = Depends(get_current_user), 
 
 # ----------------- DEPRECIATION RECORDS -----------------
 @router.get("/depreciation_records")
-def list_depreciation_records(db: Session = Depends(get_db)):
+def list_depreciation_records(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(DepreciationRecord)).all()
     return success_response(data=[depreciation_to_dict(d) for d in res])
 
 # ----------------- ASSET DOCUMENTS -----------------
 @router.get("/asset_documents")
-def list_asset_documents(db: Session = Depends(get_db)):
+def list_asset_documents(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     res = db.scalars(select(AssetDocument)).all()
     return success_response(data=[document_to_dict(d) for d in res])
 
 @router.post("/asset_documents")
-def add_asset_document(data: AssetDocumentCreate, db: Session = Depends(get_db)):
+def add_asset_document(data: AssetDocumentCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     doc = AssetDocument(**data.model_dump())
     db.add(doc)
     db.commit()
@@ -456,14 +456,14 @@ class RealEstateCreate(BaseModel):
     status: str
 
 @router.post("/vehicles")
-def create_vehicle(data: VehicleCreate, db: Session = Depends(get_db)):
+def create_vehicle(data: VehicleCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     v = Vehicle(**data.model_dump())
     db.add(v)
     db.commit()
     return success_response(data=vehicle_to_dict(v))
 
 @router.put("/vehicles/{id}")
-def update_vehicle(id: str, data: VehicleCreate, db: Session = Depends(get_db)):
+def update_vehicle(id: str, data: VehicleCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     v = db.get(Vehicle, id)
     if not v:
         raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
@@ -483,14 +483,14 @@ def delete_vehicle(id: str, actor: User = Depends(get_current_user), db: Session
     return success_response(data={"deleted": True})
 
 @router.post("/real_estates")
-def create_real_estate(data: RealEstateCreate, db: Session = Depends(get_db)):
+def create_real_estate(data: RealEstateCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     r = RealEstate(**data.model_dump())
     db.add(r)
     db.commit()
     return success_response(data=estate_to_dict(r))
 
 @router.put("/real_estates/{id}")
-def update_real_estate(id: str, data: RealEstateCreate, db: Session = Depends(get_db)):
+def update_real_estate(id: str, data: RealEstateCreate, actor: User = Depends(require_permission("إدارة الأصول")), db: Session = Depends(get_db)):
     r = db.get(RealEstate, id)
     if not r:
         raise APIError(code="NOT_FOUND", message_ar="العقار غير موجود", message_en="Real estate not found", status_code=404)

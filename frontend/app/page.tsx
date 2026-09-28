@@ -8,6 +8,7 @@ import {
   ArrowLeft, PlayCircle, CheckCircle2, Zap, ShieldCheck,
   Building2, TrendingUp, Users, FileBarChart, Wallet, Landmark,
   MessageCircle, Send, Menu, X,
+  Smartphone, Truck, CreditCard, FileText, Palette, Lock, Boxes,
 } from 'lucide-react'
 
 const NAV_LINKS = [
@@ -16,15 +17,24 @@ const NAV_LINKS = [
   { href: '#contact', label: 'تواصل معنا' },
 ]
 
-const TRUST_ITEMS = ['بيانات مشفّرة بالكامل', 'دعم عربي كامل', 'يدعم عدة فروع وخزائن']
+const TRUST_ITEMS = ['يعمل على الهاتف والحاسوب', 'دعم عربي كامل', 'يدعم عدة فروع وخزائن']
 
 const FEATURES = [
   { icon: Landmark, title: 'خزائن وفروع متعددة', desc: 'تابع كل فرع وخزنة على حدة، حوّل بينها، واعتمد الإقفال اليومي لكل فرع ثم للشركة ككل.' },
-  { icon: TrendingUp, title: 'أسعار صرف لحظية', desc: 'حدّث أسعار الشراء والبيع لكل عملة، مع حدود دنيا وقصوى تمنع أي تنفيذ خاطئ.' },
-  { icon: FileBarChart, title: 'تقارير جاهزة للتصدير', desc: 'أرباح، ديون، امتثال، وقيود محاسبية — بضغطة واحدة، بصيغة Excel أو PDF بالعربية.' },
-  { icon: Users, title: 'إدارة عملاء وديون', desc: 'سجل كامل لكل عميل: عملياته، أرصدته، ديونه المفتوحة، ومستنداته في مكان واحد.' },
+  { icon: Zap, title: 'عمليات صرف وورديات', desc: 'شراء وبيع وتبديل العملات بعمولات محسوبة تلقائياً، مع فتح وإغلاق الوردية واعتماد المدير.' },
+  { icon: TrendingUp, title: 'أسعار صرف وسجل أسعار', desc: 'حدّث أسعار الشراء والبيع لكل عملة مع حدود دنيا وقصوى، واحتفظ بسجل يومي للأسعار بالرسوم البيانية.' },
+  { icon: Wallet, title: 'حسابات بنكية للشركة والعملاء', desc: 'حسابات بنكية منفصلة للشركة ولكل عميل، إيداع وسحب وقيود يدوية، ويسمح الرصيد السالب عند الحاجة ويظهر بالأحمر.' },
+  { icon: FileText, title: 'كشوف حساب كاملة', desc: 'كشف بالأرقام والحروف مع له/عليه والتفاصيل والملاحظات — لكل عميل أو لجميع العملاء، وتصدير PDF وExcel وإرسال واتساب.' },
+  { icon: Users, title: 'إدارة عملاء وديون وسلف', desc: 'سجل كامل لكل عميل: عملياته، أرصدته، ديونه وسلفه المفتوحة، ومستنداته في مكان واحد، مع كشف أرصدة عليهم / لهم.' },
+  { icon: Truck, title: 'شركات المركبات والمعدات', desc: 'شركات فرعية بمخازنها ومركباتها وحساباتها ومؤشرات أدائها، وكشف مخازن شامل أو لمخزن محدد، وإضافة شركة جديدة من القائمة الجانبية.' },
+  { icon: Boxes, title: 'أصول وجرد ومصاريف', desc: 'الأصول الثابتة والمركبات والعقارات والصيانة والإهلاك، مع الجرد والمصاريف اليومية واعتماد الإقفالات.' },
+  { icon: CreditCard, title: 'بطاقات الدولار', desc: 'تسجيل المستفيدين من بطاقات الدولار ومستنداتهم ومتابعة حالة كل طلب.' },
+  { icon: FileBarChart, title: 'تقارير جاهزة للتصدير', desc: 'أرباح، ديون، عمليات ملغاة، وقيود محاسبية — بضغطة واحدة، بصيغة Excel أو PDF بالعربية.' },
   { icon: MessageCircle, title: 'تنبيهات واتساب وتيليجرام', desc: 'ملخص نهاية اليوم وتنبيهات العمليات الحساسة تصل مباشرة لمدير المكتب.' },
-  { icon: ShieldCheck, title: 'صلاحيات وتدقيق كامل', desc: 'أدوار دقيقة لكل موظف، وسجل تدقيق يوثّق كل عملية وتعديل في النظام.' },
+  { icon: ShieldCheck, title: 'صلاحيات وتدقيق كامل', desc: 'أدوار دقيقة لكل موظف، وسجل تدقيق وسجل دخول يوثّقان كل عملية وتعديل في النظام.' },
+  { icon: Lock, title: 'حماية وأمان', desc: 'مصادقة ثنائية اختيارية، تسجيل خروج تلقائي عند عدم النشاط، وحماية من محاولات الدخول المتكررة.' },
+  { icon: Palette, title: 'هويتك أنت', desc: 'غيّر اسم النظام وشعاره من الإعدادات ليظهر في الصفحة الرئيسية ولوحة التحكم وملفات PDF.' },
+  { icon: Smartphone, title: 'مصمم للهاتف والحاسوب', desc: 'واجهة عربية متجاوبة تعمل بوضوح على شاشة الموظف في المكتب وعلى هاتفه أثناء التنقل، والجداول تتمرر بسلاسة.' },
 ]
 
 export default function LandingPage() {
@@ -38,8 +48,7 @@ export default function LandingPage() {
         <div className="mx-auto flex h-16 max-w-[1200px] items-center justify-between px-5 sm:px-8">
           <div className="flex items-center gap-2.5">
             <Image src={branding.logoUrl} alt={branding.name} width={30} height={30} unoptimized className="h-[30px] w-[30px] rounded-lg shrink-0 object-contain" />
-            <span className="font-arabic text-base font-bold lg:hidden">{branding.name.split(' ')[0]}</span>
-            <span className="font-arabic hidden text-base font-bold lg:inline">{branding.name}</span>
+            <span className="font-arabic whitespace-nowrap text-sm font-bold sm:text-base">{branding.name}</span>
           </div>
 
           <nav className="hidden items-center gap-8 md:flex">
@@ -103,7 +112,7 @@ export default function LandingPage() {
           <div className="max-w-[520px]">
             <div className="inline-flex items-center gap-2 rounded-full border border-[#0f172a12] bg-[#eff4ff] px-3 py-[5px]">
               <span className="h-1.5 w-1.5 rounded-full bg-[#2743ff]" />
-              <span className="font-arabic text-[11px] font-semibold tracking-[0.08em] text-[#2743ff]">الآن مع تنبيهات واتساب وتيليجرام</span>
+              <span className="font-arabic text-[11px] font-semibold tracking-[0.08em] text-[#2743ff]">الآن بواجهة متجاوبة للهاتف وتنبيهات واتساب وتيليجرام</span>
             </div>
 
             <h1 className="font-arabic mt-5 text-[34px] font-extrabold leading-[1.3] sm:text-[44px]">
@@ -117,7 +126,7 @@ export default function LandingPage() {
               .
             </h1>
             <p className="font-arabic mt-5 max-w-[440px] text-base leading-relaxed text-[#64748b]">
-              عمليات الصرف، الخزائن والفروع، الديون، التقارير، والامتثال — كل ما يحتاجه مكتب صرافة ليبي في نظام عربي واحد، بدل جداول متفرقة.
+              عمليات الصرف، الخزائن والفروع، الحسابات البنكية، كشوف الحساب، الديون، شركات المركبات، والتقارير — كل ما يحتاجه مكتب صرافة ليبي في نظام عربي واحد يعمل على الهاتف والحاسوب.
             </p>
 
             <div className="mt-8 flex flex-col gap-3.5 sm:flex-row">
@@ -237,10 +246,10 @@ export default function LandingPage() {
       </section>
 
       <section id="contact" className="mx-auto max-w-[1200px] px-5 py-20 text-center sm:px-8 sm:py-24">
-        <h2 className="font-arabic text-[26px] font-extrabold sm:text-[32px]">مهتم بتجربة واكب في مكتبك؟</h2>
+        <h2 className="font-arabic text-[26px] font-extrabold sm:text-[32px]">مهتم بتجربة {branding.name} في مكتبك؟</h2>
         <p className="font-arabic mx-auto mt-3 max-w-md text-[#64748b]">تواصل معنا وسنرتب لك عرضاً توضيحياً على بياناتك الفعلية.</p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3.5 sm:flex-row">
-          <a href="mailto:info@wakeb.com.ly" className="flex items-center gap-2 rounded-full bg-[#2743ff] px-7 py-[15px] text-[15px] font-semibold text-white transition-colors hover:bg-[#2743ff]/90">
+          <a href="mailto:brmohaimen@gmail.com" className="flex items-center gap-2 rounded-full bg-[#2743ff] px-7 py-[15px] text-[15px] font-semibold text-white transition-colors hover:bg-[#2743ff]/90">
             <Send className="h-4 w-4" />
             راسلنا الآن
           </a>
@@ -274,7 +283,7 @@ export default function LandingPage() {
             <div>
               <h4 className="font-arabic text-[11px] font-semibold tracking-[0.1em] text-[#64748b]">تواصل</h4>
               <div className="mt-4 flex flex-col gap-2.5 text-[13.5px] text-[#cbd5e1]">
-                <a href="mailto:info@wakeb.com.ly" className="hover:text-white transition-colors" dir="ltr">info@wakeb.com.ly</a>
+                <a href="mailto:brmohaimen@gmail.com" className="hover:text-white transition-colors" dir="ltr">brmohaimen@gmail.com</a>
                 <a href="#contact" className="font-arabic hover:text-white transition-colors">اطلب عرضاً توضيحياً</a>
               </div>
             </div>

@@ -935,8 +935,8 @@ function CustomersPageInner() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-y-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-2xl font-bold text-foreground">العملاء</h2>
           <Link
             href="/customers/statement"
@@ -958,7 +958,7 @@ function CustomersPageInner() {
           </Link>
         </div>
         {tab === 'customers' && canManage && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input ref={fileInputRef} type="file" accept=".csv" onChange={handleImportFile} className="hidden" />
             <button
               onClick={triggerImport}

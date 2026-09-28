@@ -88,9 +88,13 @@ export default function LoginPage() {
   const [mfaUserId, setMfaUserId] = useState<string | null>(null)
   const [mfaCode, setMfaCode] = useState('')
   const [trial, setTrial] = useState<TrialStatus | null>(null)
+  const [sessionNotice, setSessionNotice] = useState('')
 
   useEffect(() => {
     api.get<TrialStatus>('/setup/trial').then(setTrial).catch(() => {})
+    if (new URLSearchParams(window.location.search).get('reason') === 'idle') {
+      setSessionNotice('تم تسجيل خروجك تلقائياً بسبب عدم النشاط لفترة طويلة. سجّل الدخول مرة أخرى للمتابعة.')
+    }
   }, [])
 
   const handleSubmit = async (e: FormEvent) => {
@@ -201,6 +205,12 @@ export default function LoginPage() {
 
           <h2 className="font-arabic text-2xl font-bold text-[#0d1220]">مرحباً بعودتك</h2>
           <p className="mt-1 text-sm text-[#5b6478]">سجّل الدخول للمتابعة إلى نظام الصرافة</p>
+
+          {sessionNotice && (
+            <p className="mt-4 flex items-center gap-1.5 rounded-lg bg-[#2743ff]/10 px-3 py-2 text-sm text-[#2743ff]">
+              <Clock className="h-4 w-4 shrink-0" /> {sessionNotice}
+            </p>
+          )}
 
           <form onSubmit={handleSubmit} className="mt-8 space-y-4 text-right">
             <div>

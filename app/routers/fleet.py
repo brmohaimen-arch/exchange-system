@@ -395,7 +395,7 @@ def damage_to_dict(d: FleetDamageRecord):
 
 # ----------------- VEHICLES -----------------
 @router.get("/fleet/vehicles")
-def list_fleet_vehicles(company: str = Depends(get_company), db: Session = Depends(get_db)):
+def list_fleet_vehicles(company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     vehicles = db.scalars(select(FleetVehicle).where(FleetVehicle.company == company)).all()
     account_names = {a.id: a.name for a in db.scalars(select(FleetAccount).where(FleetAccount.company == company)).all()}
     return success_response(data=[vehicle_to_dict(v, _vehicle_balances(db, v.id), account_names, db) for v in vehicles])
@@ -708,7 +708,7 @@ def _warehouse_to_dict(w: FleetWarehouse, in_stock: int = 0, total: int = 0):
 
 
 @router.get("/fleet/warehouses")
-def list_fleet_warehouses(company: str = Depends(get_company), db: Session = Depends(get_db)):
+def list_fleet_warehouses(company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     warehouses = db.scalars(select(FleetWarehouse).where(FleetWarehouse.company == company).order_by(FleetWarehouse.timestamp, FleetWarehouse.name)).all()
     vehicles = db.scalars(select(FleetVehicle).where(FleetVehicle.company == company, FleetVehicle.warehouse_id.isnot(None))).all()
     total: dict[str, int] = {}
@@ -824,7 +824,7 @@ def _warehouse_statement_sections(db: Session, company: str, warehouse_id: str):
 
 
 @router.get("/fleet/warehouses/statement")
-def get_warehouse_statement(warehouse_id: str = "", company: str = Depends(get_company), db: Session = Depends(get_db)):
+def get_warehouse_statement(warehouse_id: str = "", company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     sections = _warehouse_statement_sections(db, company, warehouse_id)
     return success_response(data={"sections": [{"name": n, "headers": h, "rows": r} for n, h, r in sections]})
 
@@ -844,7 +844,7 @@ def export_warehouse_statement(format: str = "pdf", warehouse_id: str = "", acto
 
 # ----------------- ACCOUNTS (real money-holding accounts for بيان) -----------------
 @router.get("/fleet/accounts")
-def list_fleet_accounts(company: str = Depends(get_company), db: Session = Depends(get_db)):
+def list_fleet_accounts(company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     # The cash wallet is a tracker only (see /fleet/wallets) — not a real account.
     res = db.scalars(select(FleetAccount).where(FleetAccount.account_type.notin_(["wallet", "manual"]), FleetAccount.company == company).order_by(FleetAccount.timestamp)).all()
     return success_response(data=[account_to_dict(a) for a in res])
@@ -990,7 +990,7 @@ def _date_filtered(query, model, date_from: str, date_to: str):
 
 
 @router.get("/fleet/summary")
-def fleet_summary(date_from: str = "", date_to: str = "", company: str = Depends(get_company), db: Session = Depends(get_db)):
+def fleet_summary(date_from: str = "", date_to: str = "", company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     """Company-wide KPIs across every vehicle/equipment — total income, total
     costs (expenses + damages) and net profit, everything converted to its LYD
     equivalent (same convention as the rest of the app's profit reports), plus
@@ -1036,7 +1036,7 @@ def fleet_summary(date_from: str = "", date_to: str = "", company: str = Depends
 
 
 @router.get("/fleet/transactions")
-def list_all_fleet_transactions(date_from: str = "", date_to: str = "", company: str = Depends(get_company), db: Session = Depends(get_db)):
+def list_all_fleet_transactions(date_from: str = "", date_to: str = "", company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     """The consolidated statement across every vehicle — same rows as each
     vehicle's own ledger, just merged and carrying the vehicle's name."""
     vehicles_by_id = {v.id: v for v in db.scalars(select(FleetVehicle).where(FleetVehicle.company == company)).all()}
@@ -1102,7 +1102,7 @@ def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company
 
 
 @router.get("/fleet/statement")
-def get_fleet_statement(date_from: str = "", date_to: str = "", currency: str = "", company: str = Depends(get_company), db: Session = Depends(get_db)):
+def get_fleet_statement(date_from: str = "", date_to: str = "", currency: str = "", company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     sections, closing_line = _fleet_statement_sections(db, date_from, date_to, company, currency)
     return success_response(data={
         "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
@@ -1124,7 +1124,7 @@ def export_fleet_statement(format: str = "pdf", date_from: str = "", date_to: st
 
 
 @router.get("/fleet/damage")
-def list_all_fleet_damage_records(date_from: str = "", date_to: str = "", company: str = Depends(get_company), db: Session = Depends(get_db)):
+def list_all_fleet_damage_records(date_from: str = "", date_to: str = "", company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     names = {v.id: v.name for v in db.scalars(select(FleetVehicle).where(FleetVehicle.company == company)).all()}
     query = _date_filtered(select(FleetDamageRecord).where(FleetDamageRecord.vehicle_id.in_(list(names))), FleetDamageRecord, date_from, date_to)
     res = db.scalars(query.order_by(FleetDamageRecord.date.desc(), FleetDamageRecord.timestamp.desc())).all()
@@ -1133,7 +1133,7 @@ def list_all_fleet_damage_records(date_from: str = "", date_to: str = "", compan
 
 # ----------------- TRANSACTIONS (income/expense ledger) -----------------
 @router.get("/fleet/vehicles/{vehicle_id}/transactions")
-def list_fleet_transactions(vehicle_id: str, db: Session = Depends(get_db)):
+def list_fleet_transactions(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     res = db.scalars(select(FleetTransaction).where(FleetTransaction.vehicle_id == vehicle_id).order_by(FleetTransaction.date.desc(), FleetTransaction.timestamp.desc())).all()
     account_names = {a.id: a.name for a in db.scalars(select(FleetAccount)).all()}
     return success_response(data=[transaction_to_dict(t, account_names.get(t.account_id)) for t in res])
@@ -1188,7 +1188,7 @@ def delete_fleet_transaction(transaction_id: str, actor: User = Depends(fleet_ac
 
 # ----------------- DAMAGE RECORDS -----------------
 @router.get("/fleet/vehicles/{vehicle_id}/damage")
-def list_fleet_damage_records(vehicle_id: str, db: Session = Depends(get_db)):
+def list_fleet_damage_records(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     res = db.scalars(select(FleetDamageRecord).where(FleetDamageRecord.vehicle_id == vehicle_id).order_by(FleetDamageRecord.date.desc(), FleetDamageRecord.timestamp.desc())).all()
     return success_response(data=[damage_to_dict(d) for d in res])
 

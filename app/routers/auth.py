@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
 from ..database import get_db
 from ..models import User, Role, AuditAction, LoginLog
 from ..tracking import create_audit_log
@@ -40,6 +40,31 @@ class MfaEnableRequest(BaseModel):
 
 class MfaDisableRequest(BaseModel):
     password: str
+
+
+# Brute-force guard: /login had no rate limiting at all — unlimited password
+# guesses were possible. Keyed by source IP (not username) so an attacker
+# can't lock a specific victim out of their own account just by failing
+# their username repeatedly from somewhere else.
+LOGIN_LOCKOUT_THRESHOLD = 8
+LOGIN_LOCKOUT_WINDOW_MINUTES = 15
+
+
+def _raise_if_ip_locked_out(db: Session):
+    cutoff = (datetime.utcnow() - timedelta(minutes=LOGIN_LOCKOUT_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M")
+    ip = get_client_ip()
+    recent_failures = db.scalar(
+        select(func.count()).select_from(LoginLog).where(
+            LoginLog.ip == ip, LoginLog.status == "failed", LoginLog.login_time >= cutoff
+        )
+    ) or 0
+    if recent_failures >= LOGIN_LOCKOUT_THRESHOLD:
+        raise APIError(
+            code="TOO_MANY_ATTEMPTS",
+            message_ar=f"محاولات تسجيل دخول فاشلة كثيرة جداً — يرجى المحاولة مرة أخرى بعد {LOGIN_LOCKOUT_WINDOW_MINUTES} دقيقة",
+            message_en="Too many failed login attempts — please try again later",
+            status_code=429,
+        )
 
 
 def _record_login(db: Session, *, user: User | None, username_attempted: str, status: str):
@@ -97,6 +122,7 @@ class UserCreate(BaseModel):
 @router.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     _raise_if_trial_expired(db)
+    _raise_if_ip_locked_out(db)
 
     user = db.scalar(
         select(User).where(
@@ -125,6 +151,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/mfa/login-verify")
 def mfa_login_verify(data: MfaLoginVerifyRequest, db: Session = Depends(get_db)):
     _raise_if_trial_expired(db)
+    _raise_if_ip_locked_out(db)
 
     user = db.get(User, data.userId)
     if not user or not user.is_active or not user.mfa_enabled or not user.mfa_secret:
@@ -306,7 +333,7 @@ class RoleDTO(BaseModel):
     permissions: list[str] = []
 
 @router.get("/roles")
-def list_roles(db: Session = Depends(get_db)):
+def list_roles(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     roles = db.scalars(select(Role)).all()
     return success_response(data=[{"name": r.name, "permissions": r.permissions, "isSystem": r.is_system} for r in roles])
 

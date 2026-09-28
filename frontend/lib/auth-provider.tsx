@@ -1,8 +1,15 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { api, ApiError, CurrentUser, MfaRequiredError } from './api-client'
+
+// No inactivity timeout existed at all before — a token stayed usable in an
+// unattended, unlocked browser tab for its full 12-hour lifetime (JWT_EXPIRE_HOURS
+// in app/auth_deps.py). This logs the user out client-side well before that if
+// nothing (click/keypress/scroll/touch) has happened for IDLE_TIMEOUT_MS.
+const IDLE_TIMEOUT_MS = 20 * 60 * 1000
+const ACTIVITY_EVENTS = ['mousedown', 'keydown', 'scroll', 'touchstart'] as const
 
 interface AuthContextValue {
   user: CurrentUser | null
@@ -10,7 +17,7 @@ interface AuthContextValue {
   login: (username: string, password: string) => Promise<void>
   completeMfaLogin: (userId: string, code: string) => Promise<void>
   refreshUser: () => Promise<void>
-  logout: () => void
+  logout: (reason?: 'idle') => void
   hasPermission: (permission: string) => boolean
 }
 
@@ -67,12 +74,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await refreshMe()
   }, [refreshMe])
 
-  const logout = useCallback(() => {
+  const logout = useCallback((reason?: 'idle') => {
     localStorage.removeItem('auth_token')
     localStorage.removeItem('auth_user')
     setUser(null)
-    router.push('/login')
+    router.push(reason ? `/login?reason=${reason}` : '/login')
   }, [router])
+
+  // Idle-timeout: reset a timer on any real user activity while logged in;
+  // if it ever fires, log out and say why. Only one timer is ever live
+  // (cleared/re-armed on every qualifying event) — a plain ref + setTimeout,
+  // not a re-render-driven interval, since activity can fire dozens of times
+  // a second (scroll/mousemove) and this must not re-run effects that often.
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!user) return
+    const resetTimer = () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current)
+      idleTimer.current = setTimeout(() => logout('idle'), IDLE_TIMEOUT_MS)
+    }
+    resetTimer()
+    ACTIVITY_EVENTS.forEach((evt) => window.addEventListener(evt, resetTimer, { passive: true }))
+    return () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current)
+      ACTIVITY_EVENTS.forEach((evt) => window.removeEventListener(evt, resetTimer))
+    }
+  }, [user, logout])
 
   const hasPermission = useCallback(
     (permission: string) => !!user?.permissions?.includes(permission),

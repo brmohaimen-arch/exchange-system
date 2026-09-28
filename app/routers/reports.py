@@ -10,7 +10,7 @@ from ..models import Transaction, Debt, Customer, ExchangeRate, User, ApprovalRe
 from ..core.responses import success_response
 from ..core.errors import APIError
 from ..core.export_labels import TX_TYPE_LABELS_AR, DEBT_STATUS_LABELS_AR
-from ..auth_deps import require_permission
+from ..auth_deps import require_permission, get_current_user
 from ..export_utils import build_excel, build_pdf, ArabicFontUnavailable
 from ..whatsapp_gateway import send_whatsapp_document, get_setting as get_whatsapp_setting
 from ..tracking import create_audit_log
@@ -74,6 +74,7 @@ def _tx_to_dict(t: Transaction) -> dict:
 def get_profit_report(
     date_from: str = "",
     date_to: str = "",
+    actor: User = Depends(require_permission("رؤية الأرباح")),
     db: Session = Depends(get_db),
 ):
     """Return all exchange transactions with their expected_profit values for the date range."""
@@ -158,7 +159,7 @@ def export_profit_report(
     return _export_response(format, title, headers, rows, "profit_report")
 
 @router.get("/debts-summary")
-def get_debts_summary(db: Session = Depends(get_db)):
+def get_debts_summary(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Return open/overdue debt aggregates for the dashboard alert system."""
     today = datetime.now().date().isoformat()
 
