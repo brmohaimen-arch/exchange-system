@@ -723,15 +723,14 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                 # A vault (physical cash) can't fund more than it holds; a bank
                 # account is allowed to go negative funding a transfer, same as
                 # everywhere else a bank account's balance is checked.
-                if transfer.source_type != "bank_account":
-                    src_balance = _party_balance(transfer.source_type, src)
-                    if src_balance < transfer.amount:
-                        raise APIError(
-                            code="INSUFFICIENT_BALANCE",
-                            message_ar=f"الرصيد المتاح في {transfer.source_name} ({src_balance} {transfer.currency}) غير كافٍ لتنفيذ التحويل بقيمة ({transfer.amount} {transfer.currency})",
-                            message_en=f"Insufficient balance in {transfer.source_name} for this transfer",
-                            status_code=400
-                        )
+                src_balance = _party_balance(transfer.source_type, src)
+                if transfer.source_type != "bank_account" and src_balance < transfer.amount:
+                    raise APIError(
+                        code="INSUFFICIENT_BALANCE",
+                        message_ar=f"الرصيد المتاح في {transfer.source_name} ({src_balance} {transfer.currency}) غير كافٍ لتنفيذ التحويل بقيمة ({transfer.amount} {transfer.currency})",
+                        message_en=f"Insufficient balance in {transfer.source_name} for this transfer",
+                        status_code=400
+                    )
 
                 approval.status = "approved"
                 transfer.status = "approved"
