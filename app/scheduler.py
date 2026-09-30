@@ -152,6 +152,58 @@ def scheduled_whatsapp_summary_job():
         db.close()
 
 
+def scheduled_daily_auto_close_job():
+    """If a branch's (or the whole company's) daily closing was never done
+    manually, close it automatically once that day has actually turned over —
+    yesterday, never "today" (still in progress) — using the exact same
+    snapshot/validation logic as a manager clicking "إقفال". A branch with
+    open/pending shifts is skipped rather than force-closed (there's no safe
+    way to guess what its uncounted cash should be) and management gets a
+    one-time notification instead; re-running this every tick is harmless
+    since an already-closed branch (whether by this job or a person) is a
+    no-op, same self-healing "poll for due" shape as the other jobs here."""
+    from .models import Branch, DailyClosing, Notification, NotificationType
+    from .routers.operations import _close_branch_day_for_date, _close_company_day_for_date
+    from sqlalchemy import select
+
+    db = SessionLocal()
+    try:
+        local_now = datetime.utcnow() + timedelta(hours=2)
+        yesterday = (local_now - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        branches = db.scalars(select(Branch)).all()
+        if not branches:
+            return
+        already_closed = set(db.scalars(select(DailyClosing.target_id).where(DailyClosing.level == "branch", DailyClosing.date == yesterday)).all())
+
+        blocked = []
+        for b in branches:
+            if b.id in already_closed:
+                continue
+            _dc, error_code, error_message = _close_branch_day_for_date(db, b, yesterday, "النظام (تلقائي)", "إقفال تلقائي — لم يُقفل يدوياً", None)
+            if error_code == "OPEN_SHIFTS_EXIST":
+                blocked.append(f"{b.name} ({error_message})")
+
+        if blocked:
+            already_notified = db.scalar(select(Notification).where(Notification.entity_type == "DailyClosingAutoCloseFailure", Notification.entity_id == yesterday))
+            if not already_notified:
+                db.add(Notification(
+                    title="تعذر الإقفال التلقائي لبعض الفروع",
+                    message=f"لم يتمكن النظام من إقفال يومية {yesterday} تلقائياً للفروع التالية بسبب ورديات غير مكتملة: " + "، ".join(blocked) + " — يرجى إقفالها يدوياً.",
+                    type=NotificationType.WARNING,
+                    entity_type="DailyClosingAutoCloseFailure", entity_id=yesterday,
+                ))
+                db.commit()
+
+        company_already_closed = db.scalar(select(DailyClosing).where(DailyClosing.level == "company", DailyClosing.target_id == "COMPANY", DailyClosing.date == yesterday))
+        if not company_already_closed:
+            still_open_branches = [b for b in branches if not db.scalar(select(DailyClosing).where(DailyClosing.level == "branch", DailyClosing.target_id == b.id, DailyClosing.date == yesterday))]
+            if not still_open_branches:
+                _close_company_day_for_date(db, yesterday, "النظام (تلقائي)", "إقفال تلقائي — لم يُقفل يدوياً", None)
+    finally:
+        db.close()
+
+
 def start_scheduler():
     scheduler.add_job(
         scheduled_notification_job,
@@ -179,6 +231,13 @@ def start_scheduler():
         trigger="interval",
         minutes=30,
         id="trial_check",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_daily_auto_close_job,
+        trigger="interval",
+        minutes=30,
+        id="daily_auto_close",
         replace_existing=True,
     )
     scheduler.start()

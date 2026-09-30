@@ -1000,28 +1000,20 @@ def list_daily_closings(actor: User = Depends(get_current_user), db: Session = D
     res = db.scalars(select(DailyClosing).order_by(DailyClosing.closed_at.desc())).all()
     return success_response(data=[daily_closing_to_dict(d) for d in res])
 
-@router.post("/daily_closings/branch/{branch_id}/close")
-def close_branch_day(branch_id: str, data: DailyCloseRequest, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
-    branch = db.get(Branch, branch_id)
-    if not branch:
-        raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
-    check_branch_access(actor, db, branch_id)
-
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    existing = db.scalar(select(DailyClosing).where(DailyClosing.level == "branch", DailyClosing.target_id == branch_id, DailyClosing.date == today))
+def _close_branch_day_for_date(db: Session, branch: Branch, date: str, closed_by_name: str, notes: str | None, username: str | None):
+    """Shared by the manual endpoint and the auto-close scheduler job — same
+    snapshot/validation logic either way. Returns (closing, error_code,
+    error_message) — error_code is None on success. Never raises, so the
+    scheduler job can skip a blocked branch and move on to the next one."""
+    existing = db.scalar(select(DailyClosing).where(DailyClosing.level == "branch", DailyClosing.target_id == branch.id, DailyClosing.date == date))
     if existing:
-        raise APIError(code="ALREADY_CLOSED", message_ar="تم إقفال يومية هذا الفرع بالفعل اليوم", message_en="This branch's day is already closed", status_code=400)
+        return None, "ALREADY_CLOSED", "تم إقفال يومية هذا الفرع بالفعل"
 
-    vaults = db.scalars(select(Vault).where(Vault.branch == branch_id)).all()
+    vaults = db.scalars(select(Vault).where(Vault.branch == branch.id)).all()
     vault_ids = [v.id for v in vaults]
     unsettled = db.scalars(select(Shift).where(Shift.vault_id.in_(vault_ids), Shift.status.in_(["open", "pending_open", "closed"]))).all() if vault_ids else []
     if unsettled:
-        raise APIError(
-            code="OPEN_SHIFTS_EXIST",
-            message_ar=f"لا يمكن إقفال يومية الفرع، توجد {len(unsettled)} وردية غير مكتملة (مفتوحة أو بانتظار موافقة)",
-            message_en=f"Cannot close the branch day: {len(unsettled)} shift(s) are still open or pending approval",
-            status_code=400
-        )
+        return None, "OPEN_SHIFTS_EXIST", f"توجد {len(unsettled)} وردية غير مكتملة (مفتوحة أو بانتظار موافقة)"
 
     snapshot: dict = {}
     totals: dict = {}
@@ -1032,32 +1024,27 @@ def close_branch_day(branch_id: str, data: DailyCloseRequest, actor: User = Depe
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     dc = DailyClosing(
-        id=new_id(f"dc_branch_{branch_id}"), level="branch", target_id=branch_id, target_name=branch.name,
-        date=today, status="closed", balances_snapshot=snapshot, totals=totals,
-        closed_by=actor.name, closed_at=timestamp, notes=data.notes
+        id=new_id(f"dc_branch_{branch.id}"), level="branch", target_id=branch.id, target_name=branch.name,
+        date=date, status="closed", balances_snapshot=snapshot, totals=totals,
+        closed_by=closed_by_name, closed_at=timestamp, notes=notes
     )
     db.add(dc)
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="DailyClosing", entity_id=dc.id, description=f"تم إقفال يومية فرع {branch.name}", username=actor.username)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="DailyClosing", entity_id=dc.id, description=f"تم إقفال يومية فرع {branch.name}", username=username)
     db.commit()
-    return success_response(data=daily_closing_to_dict(dc), message_ar="تم إقفال يومية الفرع بنجاح")
+    return dc, None, None
 
-@router.post("/daily_closings/company/close")
-def close_company_day(data: DailyCloseRequest, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    existing = db.scalar(select(DailyClosing).where(DailyClosing.level == "company", DailyClosing.target_id == "COMPANY", DailyClosing.date == today))
+
+def _close_company_day_for_date(db: Session, date: str, closed_by_name: str, notes: str | None, username: str | None):
+    """See _close_branch_day_for_date — same shared/non-raising shape."""
+    existing = db.scalar(select(DailyClosing).where(DailyClosing.level == "company", DailyClosing.target_id == "COMPANY", DailyClosing.date == date))
     if existing:
-        raise APIError(code="ALREADY_CLOSED", message_ar="تم إقفال يومية الشركة بالفعل اليوم", message_en="The company day is already closed", status_code=400)
+        return None, "ALREADY_CLOSED", "تم إقفال يومية الشركة بالفعل"
 
     branches = db.scalars(select(Branch)).all()
-    closed_branch_ids = set(db.scalars(select(DailyClosing.target_id).where(DailyClosing.level == "branch", DailyClosing.date == today)).all())
+    closed_branch_ids = set(db.scalars(select(DailyClosing.target_id).where(DailyClosing.level == "branch", DailyClosing.date == date)).all())
     missing = [b.name for b in branches if b.id not in closed_branch_ids]
     if missing:
-        raise APIError(
-            code="BRANCHES_NOT_CLOSED",
-            message_ar=f"يجب إقفال يومية جميع الفروع أولاً. الفروع المتبقية: {', '.join(missing)}",
-            message_en=f"All branches must close their day first. Remaining: {', '.join(missing)}",
-            status_code=400
-        )
+        return None, "BRANCHES_NOT_CLOSED", f"الفروع المتبقية: {', '.join(missing)}"
 
     vaults = db.scalars(select(Vault)).all()
     snapshot: dict = {}
@@ -1070,10 +1057,36 @@ def close_company_day(data: DailyCloseRequest, actor: User = Depends(require_per
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     dc = DailyClosing(
         id=new_id("dc_company"), level="company", target_id="COMPANY", target_name="الشركة (جميع الفروع)",
-        date=today, status="closed", balances_snapshot=snapshot, totals=totals,
-        closed_by=actor.name, closed_at=timestamp, notes=data.notes
+        date=date, status="closed", balances_snapshot=snapshot, totals=totals,
+        closed_by=closed_by_name, closed_at=timestamp, notes=notes
     )
     db.add(dc)
-    create_audit_log(db, action=AuditAction.CREATE, entity_type="DailyClosing", entity_id=dc.id, description="تم إقفال يومية الشركة بالكامل", username=actor.username)
+    create_audit_log(db, action=AuditAction.CREATE, entity_type="DailyClosing", entity_id=dc.id, description="تم إقفال يومية الشركة بالكامل", username=username)
     db.commit()
+    return dc, None, None
+
+
+@router.post("/daily_closings/branch/{branch_id}/close")
+def close_branch_day(branch_id: str, data: DailyCloseRequest, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
+    branch = db.get(Branch, branch_id)
+    if not branch:
+        raise APIError(code="NOT_FOUND", message_ar="الفرع غير موجود", message_en="Branch not found", status_code=404)
+    check_branch_access(actor, db, branch_id)
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    dc, error_code, error_message = _close_branch_day_for_date(db, branch, today, actor.name, data.notes, actor.username)
+    if error_code == "ALREADY_CLOSED":
+        raise APIError(code=error_code, message_ar=f"{error_message} اليوم", message_en="This branch's day is already closed", status_code=400)
+    if error_code == "OPEN_SHIFTS_EXIST":
+        raise APIError(code=error_code, message_ar=f"لا يمكن إقفال يومية الفرع، {error_message}", message_en="Cannot close the branch day: open shifts exist", status_code=400)
+    return success_response(data=daily_closing_to_dict(dc), message_ar="تم إقفال يومية الفرع بنجاح")
+
+@router.post("/daily_closings/company/close")
+def close_company_day(data: DailyCloseRequest, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    dc, error_code, error_message = _close_company_day_for_date(db, today, actor.name, data.notes, actor.username)
+    if error_code == "ALREADY_CLOSED":
+        raise APIError(code=error_code, message_ar=f"{error_message} اليوم", message_en="The company day is already closed", status_code=400)
+    if error_code == "BRANCHES_NOT_CLOSED":
+        raise APIError(code=error_code, message_ar=f"يجب إقفال يومية جميع الفروع أولاً. {error_message}", message_en="All branches must close their day first", status_code=400)
     return success_response(data=daily_closing_to_dict(dc), message_ar="تم إقفال يومية الشركة بنجاح")

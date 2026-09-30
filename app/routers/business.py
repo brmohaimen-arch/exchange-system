@@ -1376,7 +1376,7 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
         id=new_id(f"m_bank_{entry_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=account.id,
         entity_name=account.account_name, currency=account.currency, type=bank_movement_type,
         amount_in=data.amount if is_deposit else 0.0, amount_out=0.0 if is_deposit else data.amount,
-        balance_before=account_before, balance_after=account_after, reference_id=entry_id, user=actor.name
+        balance_before=account_before, balance_after=account_after, reference_id=entry_id, user=actor.name, notes=data.notes
     ))
     if vault is not None:
         db.add(Movement(
@@ -1384,7 +1384,7 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
             entity_name=vault.name, currency=account.currency,
             type="تحويل نقدي إلى بنك" if is_deposit else "سحب نقدي من بنك",
             amount_in=0.0 if is_deposit else data.amount, amount_out=data.amount if is_deposit else 0.0,
-            balance_before=vault_before, balance_after=vault_after, reference_id=entry_id, user=actor.name
+            balance_before=vault_before, balance_after=vault_after, reference_id=entry_id, user=actor.name, notes=data.notes
         ))
 
     source_desc = f"عبر خزنة {vault.name}" if vault is not None else "كتحويل خارجي بدون خزنة"
@@ -2277,7 +2277,7 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
             is_in = m.amount_in > 0
             entry = f"{m.amount_in:,.2f}" if is_in else ""
             exit_ = f"{m.amount_out:,.2f}" if not is_in else ""
-            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, _movement_source_notes(db, m.reference_id)]
+            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, _movement_source_notes(db, m)]
                         + _balance_cells(m.balance_after, m.currency, False) + [m.user])
         return rows
 
@@ -2427,7 +2427,14 @@ def _arabic_weekday(date_str: str) -> str:
 # — for manual journal entries and reversals — the journal entry itself).
 # reference_id links back to exactly one of those, so this tries each table
 # by primary key (cheap indexed lookups) and returns the first note found.
-def _movement_source_notes(db: Session, reference_id: str) -> str:
+def _movement_source_notes(db: Session, m: Movement) -> str:
+    # A movement can carry its own notes directly (e.g. a bank deposit/withdraw's
+    # free-text reason — that operation has no CustomerAccountEntry/Transfer/
+    # JournalEntry/etc. row for the lookup below to find) — prefer that before
+    # falling back to looking the reference_id up across every other table.
+    if m.notes:
+        return m.notes
+    reference_id = m.reference_id
     for model in (CustomerAccountEntry, Transfer, Transaction, Advance, AdvancePaymentRecord, Debt, DebtPaymentRecord):
         record = db.get(model, reference_id)
         if record is not None:
@@ -2569,7 +2576,7 @@ def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, dat
             str(i), date_part, _arabic_weekday(date_part), it["type"],
             f"{it['in']:,.2f}" if it["in"] else "",
             f"{it['out']:,.2f}" if it["out"] else "",
-            it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"].reference_id),
+            it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"]),
         ] + _balance_cells(it["after"], currency, with_sides) + [it["user"]])
     return headers, rows
 
@@ -2617,7 +2624,7 @@ def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to
         rows.append([
             str(i), date_part, _arabic_weekday(date_part), account_label, it["type"],
             f"{it['in']:,.2f}" if it["in"] > 0 else "", f"{it['out']:,.2f}" if it["out"] > 0 else "",
-            it["currency"], it["notes"] if m is None else _movement_source_notes(db, m.reference_id),
+            it["currency"], it["notes"] if m is None else _movement_source_notes(db, m),
         ] + _balance_cells(it["after"], it["currency"], True) + [it["user"]])
     return headers, rows
 
@@ -2680,7 +2687,7 @@ def _vaults_ledger_rows(db: Session, vault_ids: list[str], date_from: str, date_
         rows.append([
             str(i), date_part, _arabic_weekday(date_part), it["entity_name"], it["type"],
             f"{it['in']:,.2f}" if it["in"] > 0 else "", f"{it['out']:,.2f}" if it["out"] > 0 else "",
-            it["currency"], it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"].reference_id),
+            it["currency"], it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"]),
         ] + _balance_cells(it["after"], it["currency"], False) + [it["user"]])
     return headers, rows
 
@@ -2749,6 +2756,61 @@ def export_bank_account_daily_ledger(account_id: str, format: str = "pdf", date_
     media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
     disposition = "attachment" if ext == "xlsx" else "inline"
     return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="daily_ledger_{account_id}.{ext}"'})
+
+_TRANSFER_STATUS_LABELS_AR = {"pending": "بانتظار الموافقة", "approved": "تمت الموافقة", "rejected": "مرفوضة"}
+
+
+def _company_bank_transfers_rows(db: Session, date: str, account_id: str):
+    """Same filter the on-screen "حركة حسابات الشركة البنكية" tab uses
+    client-side: every Transfer touching a company-owned (not customer-owned)
+    bank account on either side, for one day, optionally narrowed to one
+    account — kept in sync with TreasuryShell.tsx's companyBankTransfers/
+    filteredBankMovements so the export matches exactly what's on screen."""
+    company_account_ids = {a.id for a in db.scalars(select(BankAccount).where(BankAccount.customer_id.is_(None))).all()}
+    bank_accounts_by_id = {a.id: a for a in db.scalars(select(BankAccount)).all()}
+    transfers = db.scalars(select(Transfer).where(Transfer.timestamp.like(f"{date}%")).order_by(Transfer.timestamp)).all()
+
+    def is_company_bank_side(entity_type: str, entity_id: str) -> bool:
+        return entity_type == "bank_account" and entity_id in company_account_ids
+
+    def account_number(entity_type: str, entity_id: str) -> str:
+        if entity_type != "bank_account":
+            return "—"
+        acc = bank_accounts_by_id.get(entity_id)
+        return acc.account_number if acc else "—"
+
+    headers = ["الوقت", "من", "رقم حساب المرسل", "إلى", "رقم حساب المستلم", "العملة", "المبلغ", "ملاحظات", "الحالة", "بواسطة"]
+    rows = []
+    for t in transfers:
+        if not (is_company_bank_side(t.source_type, t.source_id) or is_company_bank_side(t.dest_type, t.dest_id)):
+            continue
+        if account_id and t.source_id != account_id and t.dest_id != account_id:
+            continue
+        rows.append([
+            t.timestamp, t.source_name, account_number(t.source_type, t.source_id),
+            t.dest_name, account_number(t.dest_type, t.dest_id), t.currency, f"{t.amount:,.2f}",
+            t.notes or "—", _TRANSFER_STATUS_LABELS_AR.get(t.status, t.status), t.requested_by,
+        ])
+    return headers, rows
+
+
+@router.get("/bank_accounts/company_transfers/export")
+def export_company_bank_transfers(date: str, account_id: str = "", format: str = "pdf", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    headers, rows = _company_bank_transfers_rows(db, date, account_id)
+    title = f"حركة حسابات الشركة البنكية — دخول وخروج ({date})"
+    if format == "xlsx":
+        buf = build_excel(title, headers, rows)
+        content, ext = buf.read(), "xlsx"
+    else:
+        try:
+            buf = build_pdf(title, headers, rows)
+        except ArabicFontUnavailable as e:
+            raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء الكشف: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+        content, ext = buf.read(), "pdf"
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
+    disposition = "attachment" if ext == "xlsx" else "inline"
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="company_bank_transfers_{date}.{ext}"'})
+
 
 def _send_entity_daily_ledger_whatsapp(db: Session, entity_kind: str, entity_id: str, entity_name: str, date_from: str, date_to: str, currency: str, actor: User):
     manager_phone = get_whatsapp_setting(db, "whatsappManagerPhone", "")

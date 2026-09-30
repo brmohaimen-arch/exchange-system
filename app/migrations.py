@@ -90,6 +90,7 @@ NEW_COLUMNS = [
     ("vehicles", "barcode", "VARCHAR(100)"),
     ("customers", "passport_number", "VARCHAR(100)"),
     ("customer_account_entries", "other_source", "VARCHAR(200)"),
+    ("movements", "notes", "VARCHAR(500)"),
     ("fixed_assets", "color", "VARCHAR(50)"),
     ("fixed_assets", "car_model", "VARCHAR(50)"),
     ("fixed_assets", "vin", "VARCHAR(100)"),

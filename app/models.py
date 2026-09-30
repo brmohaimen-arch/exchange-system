@@ -317,6 +317,12 @@ class Movement(Base):
     balance_after: Mapped[float] = mapped_column(Float, nullable=False)
     reference_id: Mapped[str] = mapped_column(String(50), nullable=False)
     user: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Free-text reason typed on the operation itself (e.g. a bank deposit/
+    # withdraw's notes field) — some operations that create a Movement don't
+    # also create a JournalEntry/CustomerAccountEntry/etc. for
+    # _movement_source_notes() to look notes up from, so this is a direct
+    # place to store them instead of silently dropping them.
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 class JournalEntry(Base):
     __tablename__ = "journal_entries"

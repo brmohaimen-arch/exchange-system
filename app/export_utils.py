@@ -301,8 +301,29 @@ def build_excel(sheet_title: str, headers: list[str], rows: list[list]) -> io.By
 def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
     font_name = _ensure_font_registered()
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1.5 * cm, rightMargin=1.5 * cm)
-    content_width = landscape(A4)[0] - 3 * cm
+    page_width, page_height = landscape(A4)
+    # Extra top/bottom margin reserves room for the letterhead and page number
+    # drawn on the canvas itself — this builder previously had neither (no
+    # logo, no office name, no phone), unlike every other export in this file.
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=2.8 * cm, bottomMargin=1.3 * cm)
+    content_width = page_width - 3 * cm
+
+    brand_name, brand_phone, brand_logo = _brand()
+
+    def draw_page_furniture(canvas, _doc):
+        canvas.saveState()
+        if os.path.exists(brand_logo):
+            logo_size = 1.2 * cm
+            canvas.drawImage(brand_logo, (page_width - logo_size) / 2, page_height - 0.3 * cm - logo_size,
+                              width=logo_size, height=logo_size, mask="auto", preserveAspectRatio=True)
+        canvas.setFont(font_name, 13)
+        canvas.setFillColor(BRAND_COLOR)
+        canvas.drawCentredString(page_width / 2, page_height - 1.85 * cm, get_display(arabic_reshaper.reshape(brand_name)))
+        canvas.setFont(font_name, 8)
+        canvas.setFillColor(colors.grey)
+        canvas.drawCentredString(page_width / 2, page_height - 2.25 * cm, brand_phone)
+        canvas.drawCentredString(page_width / 2, 0.7 * cm, get_display(arabic_reshaper.reshape(f"صفحة {canvas.getPageNumber()}")))
+        canvas.restoreState()
 
     title_style = ParagraphStyle("ArabicTitle", fontName=font_name, fontSize=16, alignment=1, spaceAfter=12)
     elements = [Paragraph(shape_arabic(title), title_style), Spacer(1, 0.5 * cm)]
@@ -339,7 +360,7 @@ def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
     ]))
     elements.append(table)
 
-    doc.build(elements)
+    doc.build(elements, onFirstPage=draw_page_furniture, onLaterPages=draw_page_furniture)
     buf.seek(0)
     return buf
 

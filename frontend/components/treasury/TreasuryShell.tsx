@@ -134,6 +134,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [movementsLoading, setMovementsLoading] = useState(false)
   const [bankMovementsDate, setBankMovementsDate] = useState(new Date().toISOString().slice(0, 10))
   const [bankMovementsAccountId, setBankMovementsAccountId] = useState('')
+  const [bankMovementsDownloading, setBankMovementsDownloading] = useState<string | null>(null)
   const [customerBankMovementsDate, setCustomerBankMovementsDate] = useState(new Date().toISOString().slice(0, 10))
   const [customerBankMovementsAccountId, setCustomerBankMovementsAccountId] = useState('')
   const [loading, setLoading] = useState(true)
@@ -353,6 +354,26 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل الملف')
     } finally {
       setStatementDownloading(null)
+    }
+  }
+
+  const downloadCompanyBankTransfers = async (format: 'pdf' | 'xlsx') => {
+    const key = `dl-${format}`
+    setBankMovementsDownloading(key)
+    setError('')
+    try {
+      const params = new URLSearchParams({ date: bankMovementsDate, format })
+      if (bankMovementsAccountId) params.set('account_id', bankMovementsAccountId)
+      const path = `/bank_accounts/company_transfers/export?${params.toString()}`
+      if (format === 'pdf') {
+        await openFile(path)
+      } else {
+        await downloadFile(path, `company_bank_transfers_${bankMovementsDate}.xlsx`)
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'تعذر تحميل الملف')
+    } finally {
+      setBankMovementsDownloading(null)
     }
   }
 
@@ -1721,8 +1742,24 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
           )}
 
           <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-            <div className="border-b border-border px-6 py-4 bg-secondary/30">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4 bg-secondary/30">
               <h3 className="text-lg font-semibold text-foreground">حركة حسابات الشركة البنكية — دخول وخروج</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => downloadCompanyBankTransfers('pdf')}
+                  disabled={bankMovementsDownloading === 'dl-pdf'}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  {bankMovementsDownloading === 'dl-pdf' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />} فتح PDF
+                </button>
+                <button
+                  onClick={() => downloadCompanyBankTransfers('xlsx')}
+                  disabled={bankMovementsDownloading === 'dl-xlsx'}
+                  className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  {bankMovementsDownloading === 'dl-xlsx' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Receipt className="h-3.5 w-3.5" />} تحميل Excel
+                </button>
+              </div>
             </div>
             <div className="overflow-x-auto">
               {fBankMovements.filterBar}
