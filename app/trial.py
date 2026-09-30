@@ -26,6 +26,16 @@ from .models import SystemSetting
 
 DEFAULT_TRIAL_DAYS = 20
 
+# Single on/off switch for this deployment. Both trial_status() (what the
+# login page displays, including its full-page "trial ended" block) and
+# is_trial_expired() (what actually blocks API access) read this same flag,
+# so there's no way for one to say "disabled" while the other still locks
+# people out — that split is exactly what happened before this was unified:
+# is_trial_expired() was hardcoded off, but /setup/trial (trial_status())
+# kept computing the real elapsed-time answer and showing it as expired.
+# Flip this back to True to re-enable enforcement for this deployment.
+TRIAL_ENFORCEMENT_DISABLED = True
+
 
 def _get_setting(db: Session, key: str, default=None):
     row = db.get(SystemSetting, key)
@@ -33,8 +43,11 @@ def _get_setting(db: Session, key: str, default=None):
 
 
 def trial_status(db: Session) -> dict:
-    start_str = _get_setting(db, "trialStartDate", "")
     duration_days = _get_setting(db, "trialDurationDays", DEFAULT_TRIAL_DAYS) or DEFAULT_TRIAL_DAYS
+    start_str = _get_setting(db, "trialStartDate", "")
+
+    if TRIAL_ENFORCEMENT_DISABLED:
+        return {"expired": False, "daysRemaining": duration_days, "trialDurationDays": duration_days, "trialStartDate": start_str or None}
 
     if not start_str:
         # Not stamped yet (shouldn't happen once migrations have run) — treat as
@@ -57,6 +70,4 @@ def trial_status(db: Session) -> dict:
 
 
 def is_trial_expired(db: Session) -> bool:
-    # Trial enforcement disabled for this deployment — revert this line to
-    # `return trial_status(db)["expired"]` to re-enable it.
-    return False
+    return trial_status(db)["expired"]
