@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth-provider'
 import { useSidebarState } from '@/lib/sidebar-context'
 import { useBranding } from '@/lib/branding'
-import { api, FleetCompanyDef } from '@/lib/api-client'
+import { api, FleetCompanyDef, ApprovalRequestDTO } from '@/lib/api-client'
 import { ApiError } from '@/lib/auth-provider'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 
@@ -129,6 +129,21 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const canCreateCompany = hasPermission('إدارة الإعدادات')
   const [showCreate, setShowCreate] = useState(false)
 
+  // So an employee notices a waiting approval (a transfer, a shift open/close,
+  // an inventory count) without having to open "الورديات وطلبات الموافقة" first
+  // just to check — same 30s-poll pattern the notification bell already uses.
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0)
+  useEffect(() => {
+    const loadPendingApprovals = () => {
+      api.get<ApprovalRequestDTO[]>('/approvals').then((rows) => {
+        setPendingApprovalsCount(rows.filter((r) => r.status === 'pending').length)
+      }).catch(() => {})
+    }
+    loadPendingApprovals()
+    const interval = setInterval(loadPendingApprovals, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
   const visibleCompanies = companies
     .filter((c) => hasPermission(c.permission))
     .map((c) => ({ name: c.name, href: companyHref(c.id), icon: ICON_MAP[c.icon] || Truck }))
@@ -214,6 +229,11 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             >
               <item.icon className="ml-3 h-5 w-5 flex-shrink-0" aria-hidden="true" />
               {item.name}
+              {item.href === '/shifts' && pendingApprovalsCount > 0 && (
+                <span className="mr-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-[11px] font-bold text-danger-foreground">
+                  {pendingApprovalsCount}
+                </span>
+              )}
             </Link>
             </Fragment>
           )
