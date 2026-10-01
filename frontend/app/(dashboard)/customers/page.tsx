@@ -8,6 +8,7 @@ import { api, newId, openFile, uploadFile, Customer, Debt, DebtPaymentRecord, Ad
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { useSuccess } from '@/components/SuccessProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { DateInput } from '@/components/ui/date-input'
@@ -66,6 +67,7 @@ export default function CustomersPage() {
 function CustomersPageInner() {
   const { hasPermission } = useAuth()
   const confirmDialog = useConfirm()
+  const success = useSuccess()
   const searchParams = useSearchParams()
   const initialTab = (VALID_TABS as readonly string[]).includes(searchParams.get('tab') || '')
     ? (searchParams.get('tab') as CustomersTab)
@@ -307,8 +309,10 @@ function CustomersPageInner() {
           passport_number: form.passportNumber.trim() || null,
         })
       }
+      const wasCreate = !editingCustomer
       setShowModal(false)
       await load()
+      success(wasCreate ? 'تم إنشاء العميل بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: openCreate } : undefined)
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'تعذر حفظ بيانات العميل')
     } finally {
@@ -393,8 +397,11 @@ function CustomersPageInner() {
           amount,
           notes: dwForm.notes.trim() || null,
         })
+        const customer = depositWithdrawCustomer
+        const type = depositWithdrawType
         setDepositWithdrawCustomer(null)
         await load()
+        success('تمت العملية بنجاح', { onCreateAnother: () => openDepositWithdraw(customer, type) })
       } catch (err) {
         setDwError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
       } finally {
@@ -419,8 +426,11 @@ function CustomersPageInner() {
         amount,
         notes: dwForm.notes.trim() || null,
       })
+      const customer = depositWithdrawCustomer
+      const type = depositWithdrawType
       setDepositWithdrawCustomer(null)
       await load()
+      success('تمت العملية بنجاح', { onCreateAnother: () => openDepositWithdraw(customer, type) })
     } catch (err) {
       setDwError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
     } finally {
@@ -467,8 +477,10 @@ function CustomersPageInner() {
           amount,
           notes: transferForm.notes.trim() || null,
         })
+        const customer = transferCustomer
         setTransferCustomer(null)
         await load()
+        success('تم تنفيذ التحويل بنجاح', { onCreateAnother: () => openTransfer(customer) })
       } catch (err) {
         setTransferError(err instanceof ApiError ? err.message : 'تعذر تنفيذ التحويل')
       } finally {
@@ -489,8 +501,10 @@ function CustomersPageInner() {
         amount,
         notes: transferForm.notes.trim() || null,
       })
+      const customer = transferCustomer
       setTransferCustomer(null)
       await load()
+      success('تم تنفيذ التحويل بنجاح', { onCreateAnother: () => openTransfer(customer) })
     } catch (err) {
       setTransferError(err instanceof ApiError ? err.message : 'تعذر تنفيذ التحويل')
     } finally {
@@ -529,6 +543,7 @@ function CustomersPageInner() {
       })
       setShowDebtModal(false)
       await load()
+      success('تم تسجيل الدين بنجاح', { onCreateAnother: () => openCreateDebt() })
     } catch (err) {
       setDebtFormError(err instanceof ApiError ? err.message : 'تعذر تسجيل الدين')
     } finally {
@@ -565,6 +580,7 @@ function CustomersPageInner() {
       })
       setShowAdvanceModal(false)
       await load()
+      success('تم صرف السلفة بنجاح', { onCreateAnother: () => openCreateAdvance() })
     } catch (err) {
       setAdvanceFormError(err instanceof ApiError ? err.message : 'تعذر صرف السلفة')
     } finally {
@@ -654,6 +670,7 @@ function CustomersPageInner() {
       await uploadFile(`/customer_documents/${docId}/file`, docForm.file)
       setShowDocModal(false)
       await load()
+      success('تم حفظ المستند بنجاح', { onCreateAnother: openCreateDoc })
     } catch (err) {
       setDocFormError(err instanceof ApiError ? err.message : 'تعذر حفظ المستند')
     } finally {

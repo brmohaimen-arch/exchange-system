@@ -7,7 +7,7 @@ import { ApiError, useAuth } from '@/lib/auth-provider'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { NumberInput } from '@/components/ui/number-input'
-import { useTableFilters } from '@/components/TableFilters'
+import { useTableFilters, label as filterLabel } from '@/components/TableFilters'
 import { useBranding, refreshBranding } from '@/lib/branding'
 
 interface Branch { id: string; name: string; city: string }
@@ -979,7 +979,7 @@ export default function SettingsPage() {
                 <div key={log.id} className="px-6 py-3 text-right">
                   <div className="flex justify-between items-center">
                     <span className="text-xs text-muted-foreground">{log.timestamp}</span>
-                    <span className="text-xs font-medium text-foreground">{log.user} — {log.action}</span>
+                    <span className="text-xs font-medium text-foreground">{log.user} — {filterLabel(log.action)}</span>
                   </div>
                   <p className="text-sm text-foreground mt-1">{log.details}</p>
                   <p dir="ltr" className="text-[10px] text-muted-foreground mt-1 text-right">{log.ip} · {log.device}</p>

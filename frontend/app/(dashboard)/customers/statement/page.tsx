@@ -1,18 +1,22 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, FormEvent } from 'react'
 import Link from 'next/link'
-import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText } from 'lucide-react'
+import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText, Pencil, Undo2, X } from 'lucide-react'
 import { matchesQuery } from '@/lib/search'
 import { api, openFile, downloadFile, Customer, Currency } from '@/lib/api-client'
-import { ApiError } from '@/lib/auth-provider'
+import { ApiError, useAuth } from '@/lib/auth-provider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DateInput } from '@/components/ui/date-input'
+import { NumberInput } from '@/components/ui/number-input'
 
 interface StatementSection { name: string; headers: string[]; rows: string[][] }
-interface StatementData { sections: StatementSection[]; closingLine: string }
+interface DepositWithdrawRef { kind: 'entry' | 'transfer'; id: string; customerId: string }
+interface StatementData { sections: StatementSection[]; closingLine: string; depositWithdrawRefs?: DepositWithdrawRef[] }
 
 export default function CustomerStatementPage() {
+  const { hasPermission } = useAuth()
+  const canReverse = hasPermission('إنشاء عملية عكسية')
   const [customers, setCustomers] = useState<Customer[]>([])
   const [currencies, setCurrencies] = useState<Currency[]>([])
   const [nameFilter, setNameFilter] = useState('')
@@ -26,6 +30,17 @@ export default function CustomerStatementPage() {
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+
+  // "تعديل"/"تراجع" on a deposit/withdraw or customer-to-customer transfer row
+  const [undoTarget, setUndoTarget] = useState<DepositWithdrawRef & { label: string } | null>(null)
+  const [undoReason, setUndoReason] = useState('')
+  const [undoSaving, setUndoSaving] = useState(false)
+  const [undoError, setUndoError] = useState('')
+
+  const [editTarget, setEditTarget] = useState<DepositWithdrawRef & { label: string; amount: number; notes: string } | null>(null)
+  const [editForm, setEditForm] = useState({ amount: '', notes: '', reason: '' })
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState('')
 
   useEffect(() => {
     api.get<Customer[]>('/customers').then(setCustomers).catch(() => {})
@@ -66,6 +81,57 @@ export default function CustomerStatementPage() {
       setStatement(null)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const refPath = (ref: DepositWithdrawRef) =>
+    ref.kind === 'transfer' ? `/customer_transfers/${ref.id}` : `/customers/${ref.customerId}/entries/${ref.id}`
+
+  const openUndoModal = (ref: DepositWithdrawRef, label: string) => {
+    setUndoTarget({ ...ref, label })
+    setUndoReason('')
+    setUndoError('')
+  }
+
+  const submitUndo = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!undoTarget) return
+    if (!undoReason.trim()) { setUndoError('سبب التراجع مطلوب'); return }
+    setUndoError('')
+    setUndoSaving(true)
+    try {
+      await api.post(`${refPath(undoTarget)}/reverse`, { reason: undoReason.trim() })
+      setUndoTarget(null)
+      await loadStatement()
+    } catch (err) {
+      setUndoError(err instanceof ApiError ? err.message : 'تعذر التراجع عن العملية')
+    } finally {
+      setUndoSaving(false)
+    }
+  }
+
+  const openEditModal = (ref: DepositWithdrawRef, label: string, amount: number, notes: string) => {
+    setEditTarget({ ...ref, label, amount, notes })
+    setEditForm({ amount: String(amount), notes: notes || '', reason: '' })
+    setEditError('')
+  }
+
+  const submitEdit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editTarget) return
+    const amount = parseFloat(editForm.amount)
+    if (!amount || amount <= 0) { setEditError('أدخل مبلغاً صحيحاً'); return }
+    if (!editForm.reason.trim()) { setEditError('سبب التعديل مطلوب'); return }
+    setEditError('')
+    setEditSaving(true)
+    try {
+      await api.put(refPath(editTarget), { amount, notes: editForm.notes || null, reason: editForm.reason.trim() })
+      setEditTarget(null)
+      await loadStatement()
+    } catch (err) {
+      setEditError(err instanceof ApiError ? err.message : 'تعذر تعديل العملية')
+    } finally {
+      setEditSaving(false)
     }
   }
 
@@ -225,7 +291,10 @@ export default function CustomerStatementPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm text-right">
                   <thead className="bg-secondary/50 text-muted-foreground text-xs uppercase">
-                    <tr>{section.headers.map((h) => <th key={h} className="px-4 py-3 font-medium">{h}</th>)}</tr>
+                    <tr>
+                      {section.headers.map((h) => <th key={h} className="px-4 py-3 font-medium">{h}</th>)}
+                      {canReverse && section.name === 'الإيداع والسحب' && <th className="px-4 py-3 font-medium">إجراءات</th>}
+                    </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {section.rows.length === 0 ? (
@@ -237,8 +306,22 @@ export default function CustomerStatementPage() {
                       // "المبلغ" column instead, so it's rendered with no coloring.
                       const entryIdx = section.headers.indexOf('دخول')
                       const exitIdx = section.headers.indexOf('خروج')
+                      const notesIdx = section.headers.indexOf('ملاحظات')
+                      const detailIdx = section.headers.indexOf('التفاصيل')
                       const hasFlow = entryIdx !== -1 && exitIdx !== -1
-                      return section.rows.map((row, i) => (
+                      const showActions = canReverse && section.name === 'الإيداع والسحب'
+                      return section.rows.map((row, i) => {
+                        // "المرجع" (row[0]) is the same 1-based sequence number the
+                        // backend used when building depositWithdrawRefs in the same
+                        // order — it survives the client-side search filter above, so
+                        // it reliably maps a row back to its reference even once rows
+                        // are filtered out.
+                        const ref = showActions ? statement.depositWithdrawRefs?.[parseInt(row[0], 10) - 1] : undefined
+                        const amountStr = (hasFlow ? (row[entryIdx] || row[exitIdx]) : '') || '0'
+                        const amount = parseFloat(amountStr.replace(/,/g, '')) || 0
+                        const notes = notesIdx !== -1 ? row[notesIdx] || '' : ''
+                        const label = detailIdx !== -1 ? row[detailIdx] : ''
+                        return (
                         <tr key={i} className="hover:bg-muted/50 transition-colors">
                           {row.map((cell, j) => {
                             const isEntry = hasFlow && j === entryIdx && cell !== ''
@@ -253,8 +336,32 @@ export default function CustomerStatementPage() {
                               </td>
                             )
                           })}
+                          {showActions && (
+                            <td className="px-4 py-3">
+                              {ref && (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditModal(ref, label, amount, notes)}
+                                    title="تعديل العملية"
+                                    className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openUndoModal(ref, label)}
+                                    title="تراجع عن العملية"
+                                    className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                  >
+                                    <Undo2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          )}
                         </tr>
-                      ))
+                      )})
                     })()}
                   </tbody>
                 </table>
@@ -264,6 +371,91 @@ export default function CustomerStatementPage() {
 
           <div className="rounded-xl border border-border bg-card shadow-sm px-6 py-3 text-sm font-medium text-foreground">
             {statement.closingLine}
+          </div>
+        </div>
+      )}
+
+      {/* Undo (single-step reverse) Modal — deposit/withdraw or customer-to-customer transfer */}
+      {undoTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تراجع عن العملية</h3>
+              <button onClick={() => setUndoTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitUndo} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                سيتم عكس أثر "{undoTarget.label}" على الأرصدة فوراً. تختفي من كشف الحساب ويبقى السجل الكامل في سجل العمليات.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب التراجع</label>
+                <textarea
+                  value={undoReason}
+                  onChange={(e) => setUndoReason(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+              </div>
+              {undoError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{undoError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setUndoTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={undoSaving} className="flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-sm font-medium text-danger-foreground hover:bg-danger/90 transition-colors disabled:opacity-60">
+                  {undoSaving && <Loader2 className="h-4 w-4 animate-spin" />} تأكيد التراجع
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit amount/notes Modal — deposit/withdraw or customer-to-customer transfer */}
+      {editTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تعديل العملية</h3>
+              <button onClick={() => setEditTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitEdit} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                سيتم عكس أثر "{editTarget.label}" الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
+                <NumberInput
+                  value={editForm.amount}
+                  onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب التعديل</label>
+                <textarea
+                  value={editForm.reason}
+                  onChange={(e) => setEditForm({ ...editForm, reason: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {editError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{editError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setEditTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={editSaving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {editSaving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ التعديل
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

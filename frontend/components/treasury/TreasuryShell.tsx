@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState, FormEvent, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle, Percent, FileText } from 'lucide-react'
+import { Landmark, ArrowRightLeft, X, Loader2, Building2, Clock, ShieldCheck, Check, Ban, Plus, MapPin, Pencil, Trash2, ClipboardList, Receipt, Lock, Eye, Wallet, ArrowDownCircle, ArrowUpCircle, Percent, FileText, Undo2 } from 'lucide-react'
 import { api, newId, openFile, downloadFile, Vault, Currency, Bank, BankAccount, BankDeposit, BankBranch, Branch, Shift, ApprovalRequestDTO, InventoryCountDTO, DailyExpenseDTO, EXPENSE_CATEGORIES, Transaction, Customer, Movement } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { useSuccess } from '@/components/SuccessProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
@@ -38,6 +39,7 @@ const statusLabels: Record<string, { label: string; className: string }> = {
   rejected: { label: 'مرفوضة', className: 'bg-danger/10 text-danger' },
   open: { label: 'مفتوحة', className: 'bg-info/10 text-info' },
   closed: { label: 'مغلقة', className: 'bg-muted text-muted-foreground' },
+  reversed: { label: 'تم التراجع عنها', className: 'bg-muted text-muted-foreground' },
 }
 const approvalTypeLabels: Record<string, string> = { transfer: 'تحويل أموال', shift: 'إقفال وردية', shift_open: 'فتح وردية', inventory: 'جرد', reversal: 'عكس عملية' }
 const txTypeLabels: Record<string, string> = { buy: 'شراء', sell: 'بيع', exchange: 'تبديل', deposit: 'إيداع', withdraw: 'سحب' }
@@ -99,11 +101,13 @@ export function TreasuryShell({ visibleTabs, pageTitle, basePath }: TreasuryShel
 function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellProps) {
   const { user, hasPermission } = useAuth()
   const confirmDialog = useConfirm()
+  const success = useSuccess()
   const canTransfer = hasPermission('تحويل بين الخزنات')
   const canOpenShift = hasPermission('فتح وردية')
   const canManageVaults = hasPermission('إدارة الخزنات')
   const canManageBranches = hasPermission('إدارة الفروع')
   const canManageBanks = hasPermission('إدارة البنوك')
+  const canReverse = hasPermission('إنشاء عملية عكسية')
 
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -211,7 +215,22 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [statementTarget, setStatementTarget] = useState<{ kind: 'vault' | 'bank_account'; id: string; name: string } | null>(null)
   const [statementItems, setStatementItems] = useState<Movement[]>([])
   const [statementSections, setStatementSections] = useState<StatementSection[]>([])
+  const [statementEntryIds, setStatementEntryIds] = useState<Record<string, (string | null)[]>>({})
   const [statementLoading, setStatementLoading] = useState(false)
+
+  // A bank-account movement entry (identified by its reference_id) or an
+  // approved transfer — "تراجع" reverses it in one step, "تعديل" fixes its
+  // amount/notes by reversing then reapplying with the corrected values.
+  // Same underlying never-delete-only-reverse mechanism either way.
+  const [undoTarget, setUndoTarget] = useState<{ kind: 'bank_entry' | 'transfer'; id: string; label: string } | null>(null)
+  const [undoReason, setUndoReason] = useState('')
+  const [undoSaving, setUndoSaving] = useState(false)
+  const [undoError, setUndoError] = useState('')
+
+  const [amountEditTarget, setAmountEditTarget] = useState<{ kind: 'bank_entry' | 'transfer'; id: string; label: string; amount: number; notes: string } | null>(null)
+  const [amountEditForm, setAmountEditForm] = useState({ amount: '', notes: '', reason: '' })
+  const [amountEditSaving, setAmountEditSaving] = useState(false)
+  const [amountEditError, setAmountEditError] = useState('')
   const [statementDateFrom, setStatementDateFrom] = useState('')
   const [statementDateTo, setStatementDateTo] = useState('')
   const [statementCcy, setStatementCcy] = useState('')
@@ -305,10 +324,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       if (statementDateTo) params.set('date_to', statementDateTo)
       const [res, sectioned] = await Promise.all([
         api.get<Movement[]>(`/movements?${params.toString()}`),
-        api.get<{ sections: StatementSection[]; closingLine: string }>(`${statementBasePath()}/statement?${statementQuery()}`),
+        api.get<{ sections: StatementSection[]; closingLine: string; entryIds?: Record<string, (string | null)[]> }>(`${statementBasePath()}/statement?${statementQuery()}`),
       ])
       setStatementItems(res)
       setStatementSections(sectioned.sections)
+      setStatementEntryIds(sectioned.entryIds || {})
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل كشف الحساب')
     } finally {
@@ -326,6 +346,60 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     setStatementCcy('')
     setStatementItems([])
     setStatementTarget({ kind, id, name })
+  }
+
+  const undoPath = (t: { kind: 'bank_entry' | 'transfer'; id: string }) => {
+    if (t.kind === 'transfer') return `/transfers/${t.id}`
+    const base = statementTarget?.kind === 'vault' ? '/vaults' : '/bank_accounts'
+    return `${base}/${statementTarget?.id}/movements/${t.id}`
+  }
+
+  const openUndoModal = (kind: 'bank_entry' | 'transfer', id: string, label: string) => {
+    setUndoTarget({ kind, id, label })
+    setUndoReason('')
+    setUndoError('')
+  }
+
+  const submitUndo = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!undoTarget) return
+    if (!undoReason.trim()) { setUndoError('سبب التراجع مطلوب'); return }
+    setUndoError('')
+    setUndoSaving(true)
+    try {
+      await api.post(`${undoPath(undoTarget)}/reverse`, { reason: undoReason.trim() })
+      setUndoTarget(null)
+      await Promise.all([load(), loadStatement()])
+    } catch (err) {
+      setUndoError(err instanceof ApiError ? err.message : 'تعذر التراجع عن العملية')
+    } finally {
+      setUndoSaving(false)
+    }
+  }
+
+  const openAmountEditModal = (kind: 'bank_entry' | 'transfer', id: string, label: string, amount: number, notes: string) => {
+    setAmountEditTarget({ kind, id, label, amount, notes })
+    setAmountEditForm({ amount: String(amount), notes: notes || '', reason: '' })
+    setAmountEditError('')
+  }
+
+  const submitAmountEdit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!amountEditTarget) return
+    const amount = parseFloat(amountEditForm.amount)
+    if (!amount || amount <= 0) { setAmountEditError('أدخل مبلغاً صحيحاً'); return }
+    if (!amountEditForm.reason.trim()) { setAmountEditError('سبب التعديل مطلوب'); return }
+    setAmountEditError('')
+    setAmountEditSaving(true)
+    try {
+      await api.put(undoPath(amountEditTarget), { amount, notes: amountEditForm.notes || null, reason: amountEditForm.reason.trim() })
+      setAmountEditTarget(null)
+      await Promise.all([load(), loadStatement()])
+    } catch (err) {
+      setAmountEditError(err instanceof ApiError ? err.message : 'تعذر تعديل العملية')
+    } finally {
+      setAmountEditSaving(false)
+    }
   }
 
   const statementQuery = () => {
@@ -576,9 +650,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         const path = isVault ? `/vaults/${manualEntryTarget.id}/manual_entry` : `/bank_accounts/${manualEntryTarget.id}/manual_entry`
         await api.post(path, { direction, currency, amount, description: description.trim(), notes: notes.trim() || null })
       }
+      const target = manualEntryTarget
       setManualEntryTarget(null)
       await load()
-      if (statementTarget?.id === manualEntryTarget.id) await loadStatement()
+      if (statementTarget?.id === target.id) await loadStatement()
+      success('تمت العملية بنجاح', { onCreateAnother: () => openManualEntry(target.kind, target.id, target.name, target.currency) })
     } catch (err) {
       setManualEntryError(err instanceof ApiError ? err.message : 'تعذر تسجيل العملية')
     } finally {
@@ -773,6 +849,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       })
       setShowTransferModal(false)
       await load()
+      success('تم إرسال طلب التحويل بنجاح', { onCreateAnother: openTransfer })
     } catch (err) {
       setTransferError(err instanceof ApiError ? err.message : 'تعذر إرسال طلب التحويل')
     } finally {
@@ -873,8 +950,10 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
           is_active: true,
         })
       }
+      const wasCreate = !editingVault
       setShowVaultModal(false)
       await load()
+      success(wasCreate ? 'تم إنشاء الخزنة بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: openCreateVault } : undefined)
     } catch (err) {
       setVaultFormError(err instanceof ApiError ? err.message : 'تعذر حفظ الخزنة')
     } finally {
@@ -916,10 +995,12 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         is_active: true,
         notes: branchForm.notes.trim() || null,
       }
+      const wasCreate = !editingBranch
       if (editingBranch) await api.put(`/branches/${editingBranch.id}`, payload)
       else await api.post('/branches', payload)
       setShowBranchModal(false)
       await load()
+      success(wasCreate ? 'تم إنشاء الفرع بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: openCreateBranch } : undefined)
     } catch (err) {
       setBranchFormError(err instanceof ApiError ? err.message : 'تعذر حفظ الفرع')
     } finally {
@@ -994,10 +1075,12 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         is_active: true,
         notes: bankForm.notes.trim() || null,
       }
+      const wasCreate = !editingBank
       if (editingBank) await api.put(`/banks/${editingBank.id}`, payload)
       else await api.post('/banks', payload)
       setShowBankModal(false)
       await load()
+      success(wasCreate ? 'تم إنشاء البنك بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: openCreateBank } : undefined)
     } catch (err) {
       setBankFormError(err instanceof ApiError ? err.message : 'تعذر حفظ البنك')
     } finally {
@@ -1049,8 +1132,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         interest_rate: bankOpType === 'deposit' ? (parseFloat(bankOpForm.interestRate) || 0) : undefined,
         notes: bankOpForm.notes.trim() || null,
       })
+      const account = bankOpAccount
+      const type = bankOpType
       setBankOpAccount(null)
       await load()
+      success('تمت العملية بنجاح', { onCreateAnother: () => openBankOp(account, type) })
     } catch (err) {
       setBankOpError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
     } finally {
@@ -1211,6 +1297,8 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         notes: null,
         customer_id: accountForm.customerId || null,
       }
+      const wasCreate = !editingAccount
+      const customerId = accountForm.customerId
       if (editingAccount) {
         await api.put(`/bank_accounts/${editingAccount.id}`, payload)
       } else {
@@ -1218,6 +1306,10 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       }
       setShowAccountModal(false)
       await load()
+      success(
+        wasCreate ? 'تم إنشاء الحساب البنكي بنجاح' : 'تم حفظ التعديلات بنجاح',
+        wasCreate ? { onCreateAnother: () => (customerId ? openCreateAccountForCustomer(customerId) : openCreateAccount()) } : undefined
+      )
     } catch (err) {
       setAccountFormError(err instanceof ApiError ? err.message : 'تعذر حفظ الحساب البنكي')
     } finally {
@@ -1325,6 +1417,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       })
       setShowInventoryModal(false)
       await load()
+      success('تم تسجيل الجرد بنجاح', { onCreateAnother: openCreateInventory })
     } catch (err) {
       setInventoryFormError(err instanceof ApiError ? err.message : 'تعذر تسجيل الجرد')
     } finally {
@@ -1371,6 +1464,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       })
       setShowExpenseModal(false)
       await load()
+      success('تم تسجيل المصروف بنجاح', { onCreateAnother: openCreateExpense })
     } catch (err) {
       setExpenseFormError(err instanceof ApiError ? err.message : 'تعذر تسجيل المصروف')
     } finally {
@@ -1776,6 +1870,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <th className="px-6 py-4 font-medium">ملاحظات</th>
                     <th className="px-6 py-4 font-medium">الحالة</th>
                     <th className="px-6 py-4 font-medium">بواسطة</th>
+                    {canReverse && <th className="px-6 py-4 font-medium">إجراءات</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -1783,6 +1878,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
                   ) : pagedBankMovements.map((t) => {
                     const st = statusLabels[t.status] || statusLabels.pending
+                    const label = `${t.sourceName} ← ${t.destName}`
                     return (
                       <tr key={t.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-6 py-4 text-muted-foreground">{t.timestamp}</td>
@@ -1797,6 +1893,30 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                           <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${st.className}`}>{st.label}</span>
                         </td>
                         <td className="px-6 py-4 text-muted-foreground">{t.requestedBy}</td>
+                        {canReverse && (
+                          <td className="px-6 py-4">
+                            {t.status === 'approved' && (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => openAmountEditModal('transfer', t.id, label, t.amount, t.notes || '')}
+                                  title="تعديل التحويل"
+                                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openUndoModal('transfer', t.id, label)}
+                                  title="تراجع عن التحويل"
+                                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                >
+                                  <Undo2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -2148,6 +2268,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <th className="px-6 py-4 font-medium">ملاحظات</th>
                     <th className="px-6 py-4 font-medium">الحالة</th>
                     <th className="px-6 py-4 font-medium">بواسطة</th>
+                    {canReverse && <th className="px-6 py-4 font-medium">إجراءات</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -2155,6 +2276,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
                   ) : pagedCustomerBankMovements.map((t) => {
                     const st = statusLabels[t.status] || statusLabels.pending
+                    const label = `${t.sourceName} ← ${t.destName}`
                     return (
                       <tr key={t.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-6 py-4 text-muted-foreground">{t.timestamp}</td>
@@ -2169,6 +2291,30 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                           <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${st.className}`}>{st.label}</span>
                         </td>
                         <td className="px-6 py-4 text-muted-foreground">{t.requestedBy}</td>
+                        {canReverse && (
+                          <td className="px-6 py-4">
+                            {t.status === 'approved' && (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => openAmountEditModal('transfer', t.id, label, t.amount, t.notes || '')}
+                                  title="تعديل التحويل"
+                                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openUndoModal('transfer', t.id, label)}
+                                  title="تراجع عن التحويل"
+                                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                >
+                                  <Undo2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -3378,33 +3524,69 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   {statementSections.filter((s) => s.rows.length > 0).map((section) => {
                     const entryIdx = section.headers.indexOf('دخول')
                     const exitIdx = section.headers.indexOf('خروج')
+                    const notesIdx = section.headers.indexOf('ملاحظات')
                     const hasFlow = entryIdx !== -1 && exitIdx !== -1
+                    const showActions = canReverse && (statementTarget?.kind === 'bank_account' || statementTarget?.kind === 'vault')
+                    const ids = statementEntryIds[section.name] || []
                     return (
                       <div key={section.name}>
                         <p className="text-sm font-medium text-foreground mb-2">{section.name}</p>
                         <div className="rounded-md border border-border overflow-x-auto">
                           <table className="w-full text-xs text-right">
                             <thead className="bg-secondary/50 text-muted-foreground">
-                              <tr>{section.headers.map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}</tr>
+                              <tr>
+                                {section.headers.map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}
+                                {showActions && <th className="px-3 py-2 font-medium">إجراءات</th>}
+                              </tr>
                             </thead>
                             <tbody className="divide-y divide-border">
-                              {section.rows.map((row, i) => (
-                                <tr key={i}>
-                                  {row.map((cell, j) => {
-                                    const isEntry = hasFlow && j === entryIdx && cell !== ''
-                                    const isExit = hasFlow && j === exitIdx && cell !== ''
-                                    return (
-                                      <td
-                                        key={j}
-                                        dir={isEntry || isExit || /^-?\s?\d[\d,]*\.\d+$/.test(cell) ? 'ltr' : undefined}
-                                        className={`px-3 py-2 ${isEntry ? 'font-bold text-success' : isExit ? 'font-bold text-danger' : /^-\s?\d/.test(cell) ? 'font-bold text-danger' : 'text-muted-foreground'}`}
-                                      >
-                                        {isEntry ? `+${cell}` : isExit ? `-${cell}` : cell}
+                              {section.rows.map((row, i) => {
+                                const entryId = ids[i] || null
+                                const amountStr = (hasFlow ? (row[entryIdx] || row[exitIdx]) : '') || '0'
+                                const amount = parseFloat(amountStr.replace(/,/g, '')) || 0
+                                const notes = notesIdx !== -1 ? row[notesIdx] || '' : ''
+                                return (
+                                  <tr key={i}>
+                                    {row.map((cell, j) => {
+                                      const isEntry = hasFlow && j === entryIdx && cell !== ''
+                                      const isExit = hasFlow && j === exitIdx && cell !== ''
+                                      return (
+                                        <td
+                                          key={j}
+                                          dir={isEntry || isExit || /^-?\s?\d[\d,]*\.\d+$/.test(cell) ? 'ltr' : undefined}
+                                          className={`px-3 py-2 ${isEntry ? 'font-bold text-success' : isExit ? 'font-bold text-danger' : /^-\s?\d/.test(cell) ? 'font-bold text-danger' : 'text-muted-foreground'}`}
+                                        >
+                                          {isEntry ? `+${cell}` : isExit ? `-${cell}` : cell}
+                                        </td>
+                                      )
+                                    })}
+                                    {showActions && (
+                                      <td className="px-3 py-2">
+                                        {entryId && (
+                                          <div className="flex items-center gap-1.5">
+                                            <button
+                                              type="button"
+                                              onClick={() => openAmountEditModal('bank_entry', entryId, row[2] || '', amount, notes)}
+                                              title="تعديل العملية"
+                                              className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                                            >
+                                              <Pencil className="h-3.5 w-3.5" />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => openUndoModal('bank_entry', entryId, row[2] || '')}
+                                              title="تراجع عن العملية"
+                                              className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                            >
+                                              <Undo2 className="h-3.5 w-3.5" />
+                                            </button>
+                                          </div>
+                                        )}
                                       </td>
-                                    )
-                                  })}
-                                </tr>
-                              ))}
+                                    )}
+                                  </tr>
+                                )
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -3425,12 +3607,14 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                               <th className="px-3 py-2 font-medium">المبلغ</th>
                               <th className="px-3 py-2 font-medium">الحالة</th>
                               <th className="px-3 py-2 font-medium">بواسطة</th>
+                              {canReverse && <th className="px-3 py-2 font-medium">إجراءات</th>}
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-border">
                             {statementTransfers.map((t) => {
                               const st = statusLabels[t.status] || statusLabels.pending
                               const isIn = t.destId === statementTarget.id
+                              const label = `${t.sourceName} ← ${t.destName}`
                               return (
                                 <tr key={t.id}>
                                   <td className="px-3 py-2 text-muted-foreground">{t.timestamp}</td>
@@ -3443,6 +3627,30 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${st.className}`}>{st.label}</span>
                                   </td>
                                   <td className="px-3 py-2 text-muted-foreground">{t.requestedBy}</td>
+                                  {canReverse && (
+                                    <td className="px-3 py-2">
+                                      {t.status === 'approved' && (
+                                        <div className="flex items-center gap-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => openAmountEditModal('transfer', t.id, label, t.amount, t.notes || '')}
+                                            title="تعديل التحويل"
+                                            className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                                          >
+                                            <Pencil className="h-3.5 w-3.5" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => openUndoModal('transfer', t.id, label)}
+                                            title="تراجع عن التحويل"
+                                            className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                          >
+                                            <Undo2 className="h-3.5 w-3.5" />
+                                          </button>
+                                        </div>
+                                      )}
+                                    </td>
+                                  )}
                                 </tr>
                               )
                             })}
@@ -3458,6 +3666,91 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Undo (single-step reverse) Modal — bank account entry or transfer */}
+      {undoTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تراجع عن العملية</h3>
+              <button onClick={() => setUndoTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitUndo} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                سيتم عكس أثر "{undoTarget.label}" على الأرصدة فوراً. تختفي من كشف الحساب ويبقى السجل الكامل في سجل العمليات.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب التراجع</label>
+                <textarea
+                  value={undoReason}
+                  onChange={(e) => setUndoReason(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+              </div>
+              {undoError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{undoError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setUndoTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={undoSaving} className="flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-sm font-medium text-danger-foreground hover:bg-danger/90 transition-colors disabled:opacity-60">
+                  {undoSaving && <Loader2 className="h-4 w-4 animate-spin" />} تأكيد التراجع
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit amount/notes Modal — bank account entry or transfer */}
+      {amountEditTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تعديل العملية</h3>
+              <button onClick={() => setAmountEditTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitAmountEdit} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                سيتم عكس أثر "{amountEditTarget.label}" الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
+                <NumberInput
+                  value={amountEditForm.amount}
+                  onChange={(e) => setAmountEditForm({ ...amountEditForm, amount: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={amountEditForm.notes}
+                  onChange={(e) => setAmountEditForm({ ...amountEditForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب التعديل</label>
+                <textarea
+                  value={amountEditForm.reason}
+                  onChange={(e) => setAmountEditForm({ ...amountEditForm, reason: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {amountEditError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{amountEditError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setAmountEditTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={amountEditSaving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {amountEditSaving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ التعديل
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

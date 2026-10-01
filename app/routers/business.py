@@ -3,7 +3,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, and_
 from ..database import get_db
 from ..models import (
     Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, DebtPaymentRecord, Advance, AdvancePaymentRecord, Transaction, Movement, JournalEntry,
@@ -27,6 +27,18 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 
 router = APIRouter(tags=["Business & Transactions"])
+
+# "Never delete, only reverse" request bodies — referenced by edit/reverse
+# endpoints defined earlier in this file than BankAccountDepositOp's section
+# below, so they must be defined here (FastAPI resolves route signatures at
+# import time, not lazily).
+class ReverseEntryRequest(BaseModel):
+    reason: str
+
+class EditMovementAmountRequest(BaseModel):
+    amount: float
+    notes: str | None = None
+    reason: str
 
 # Request bodies
 class BankCreate(BaseModel):
@@ -263,7 +275,8 @@ def movement_to_dict(m: Movement):
         "balanceBefore": m.balance_before,
         "balanceAfter": m.balance_after,
         "referenceId": m.reference_id,
-        "user": m.user
+        "user": m.user,
+        "notes": m.notes,
     }
 
 # ----------------- BANKS -----------------
@@ -853,10 +866,75 @@ def withdraw_from_customer(customer_id: str, data: CustomerAccountOp, actor: Use
     entry = _run_customer_account_op("withdraw", customer_id, data, actor, db)
     return success_response(data=customer_account_entry_to_dict(entry), message_ar="تم تسجيل السحب بنجاح")
 
-@router.post("/customers/{customer_id}/transfer")
-def transfer_between_customers(customer_id: str, data: CustomerTransferOp, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+def _reverse_customer_entry(db: Session, reference_id: str, actor_name: str, reason: str):
+    """Undoes a customer deposit/withdraw, or one leg-pair of a customer-to-
+    customer transfer (reference_id is the bare transfer id shared by both
+    Movement rows, not either suffixed CustomerAccountEntry id) — reverses
+    the Movement leg(s) via _reverse_movement_entries (customer-aware) and,
+    if this reference also has a linked Transaction (only true for a
+    vault-funded deposit/withdraw), flips it to "reversed" too so it shows
+    as cancelled wherever trades are listed, reopening the shift's expected
+    balance exactly like apply_transaction_reversal does."""
+    _reverse_movement_entries(db, reference_id, actor_name, reason)
+    tx = db.get(Transaction, reference_id)
+    if tx and tx.status != "reversed":
+        tx.status = "reversed"
+        if tx.vault_id:
+            shift = db.scalar(select(Shift).where(Shift.vault_id == tx.vault_id, Shift.status == "open"))
+            if shift:
+                expected = shift.expected_balances.copy()
+                delta = tx.amount if tx.type == "deposit" else -tx.amount
+                expected[tx.currency] = expected.get(tx.currency, 0.0) - delta
+                shift.expected_balances = expected
+
+@router.post("/customers/{customer_id}/entries/{entry_id}/reverse")
+def reverse_customer_entry(customer_id: str, entry_id: str, data: ReverseEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Undoes a mistaken customer deposit/withdraw."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
+    entry = db.get(CustomerAccountEntry, entry_id)
+    if not entry or entry.customer_id != customer_id or entry.type not in ("deposit", "withdraw"):
+        raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذه العملية على هذا العميل", message_en="No such deposit/withdraw entry for this customer", status_code=404)
+    _reverse_customer_entry(db, entry_id, actor.name, reason)
+    db.commit()
+    customer = db.get(Customer, customer_id)
+    return success_response(data={"id": customer.id, "balances": customer.balances}, message_ar="تم التراجع عن العملية بنجاح")
+
+class EditCustomerEntryRequest(BaseModel):
+    amount: float
+    notes: str | None = None
+    reason: str
+
+@router.put("/customers/{customer_id}/entries/{entry_id}")
+def edit_customer_entry(customer_id: str, entry_id: str, data: EditCustomerEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Fixes the amount/notes of a mistaken customer deposit/withdraw by
+    reversing it (_reverse_customer_entry) then re-creating it through the
+    same validated path a fresh entry would use (_run_customer_account_op),
+    keeping the same type/customer/source/currency."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    entry = db.get(CustomerAccountEntry, entry_id)
+    if not entry or entry.customer_id != customer_id or entry.type not in ("deposit", "withdraw"):
+        raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذه العملية على هذا العميل", message_en="No such deposit/withdraw entry for this customer", status_code=404)
+    op_type, currency = entry.type, entry.currency
+    _reverse_customer_entry(db, entry_id, actor.name, f"تعديل العملية بواسطة {actor.name} — {reason}")
+    new_entry = _run_customer_account_op(
+        op_type, customer_id,
+        CustomerAccountOp(vault_id=entry.vault_id, bank_account_id=entry.bank_account_id, other_source=entry.other_source, currency=currency, amount=data.amount, notes=data.notes),
+        actor, db,
+    )
+    return success_response(data=customer_account_entry_to_dict(new_entry), message_ar="تم تعديل العملية بنجاح")
+
+def _run_customer_transfer(customer_id: str, data: CustomerTransferOp, actor: User, db: Session) -> tuple[CustomerAccountEntry, CustomerAccountEntry]:
     """Moves money directly from one customer's account to another's, in the same
-    currency — no vault or bank involved on either side, unlike deposit/withdraw."""
+    currency — no vault or bank involved on either side, unlike deposit/withdraw.
+    Shared by the create endpoint and edit_customer_transfer's reapply step
+    (always mints a fresh transfer_id, even on edit, since the old rows are
+    reversed in place rather than deleted — see edit_customer_transfer)."""
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
     if data.to_customer_id == customer_id:
@@ -941,16 +1019,79 @@ def transfer_between_customers(customer_id: str, data: CustomerTransferOp, actor
         description=f"تحويل {data.amount} {data.currency} من حساب العميل {from_customer.name} إلى حساب العميل {to_customer.name}",
         username=actor.username
     )
+    return out_entry, in_entry
+
+@router.post("/customers/{customer_id}/transfer")
+def transfer_between_customers(customer_id: str, data: CustomerTransferOp, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
+    out_entry, in_entry = _run_customer_transfer(customer_id, data, actor, db)
     db.commit()
     return success_response(
         data={"from": customer_account_entry_to_dict(out_entry), "to": customer_account_entry_to_dict(in_entry)},
-        message_ar=f"تم تحويل {data.amount} {data.currency} إلى {to_customer.name} بنجاح"
+        message_ar=f"تم تحويل {data.amount} {data.currency} إلى {in_entry.customer_name} بنجاح"
     )
+
+@router.post("/customer_transfers/{transfer_id}/reverse")
+def reverse_customer_transfer(transfer_id: str, data: ReverseEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Undoes a mistaken customer-to-customer transfer — transfer_id is the
+    bare id shared by both Movement legs (not either suffixed
+    CustomerAccountEntry id, which the frontend never needs to know). Not
+    scoped under /customers/{id}/... since either side of the transfer (the
+    sender's or the recipient's own statement) should be able to trigger it,
+    same as a bank-to-bank transfer isn't scoped to one account."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
+    if not db.get(CustomerAccountEntry, f"{transfer_id}_out"):
+        raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذا التحويل", message_en="No such transfer", status_code=404)
+    _reverse_customer_entry(db, transfer_id, actor.name, reason)
+    db.commit()
+    return success_response(message_ar="تم التراجع عن التحويل بنجاح")
+
+@router.put("/customer_transfers/{transfer_id}")
+def edit_customer_transfer(transfer_id: str, data: EditCustomerEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Fixes the amount/notes of a mistaken customer-to-customer transfer by
+    reversing it then re-creating it through _run_customer_transfer with the
+    same two customers/currency."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    out_entry = db.get(CustomerAccountEntry, f"{transfer_id}_out")
+    in_entry = db.get(CustomerAccountEntry, f"{transfer_id}_in")
+    if not out_entry or not in_entry:
+        raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذا التحويل", message_en="No such transfer", status_code=404)
+    customer_id, to_customer_id, currency = out_entry.customer_id, in_entry.customer_id, out_entry.currency
+    _reverse_customer_entry(db, transfer_id, actor.name, f"تعديل العملية بواسطة {actor.name} — {reason}")
+    # A fresh transfer_id, not the old one — the old (now-reversed) rows keep
+    # their ids rather than being deleted, so reusing them would collide;
+    # every other edit endpoint in this "never delete, only reverse" family
+    # mints a new id for the corrected entry the same way.
+    _run_customer_transfer(customer_id, CustomerTransferOp(to_customer_id=to_customer_id, currency=currency, amount=data.amount, notes=data.notes), actor, db)
+    db.commit()
+    return success_response(message_ar="تم تعديل التحويل بنجاح")
+
+def _reversed_customer_entry_ids(db: Session, entries: list[CustomerAccountEntry]) -> set[str]:
+    """Which of these CustomerAccountEntry ids should be hidden as reversed.
+    A deposit/withdraw's id IS its Movement.reference_id directly; a
+    transfer leg's id is that reference_id plus a "_out"/"_in" suffix (see
+    _run_customer_transfer) — so the suffix is stripped before checking
+    against the reversed-reference set, rather than relying on the
+    JournalEntry-reference convention trades use (which never matches a
+    transfer leg's suffixed id)."""
+    reversed_refs = set(db.scalars(select(Movement.reference_id).where(Movement.entity_type == "customer", Movement.status == "reversed")).all())
+    hidden = set()
+    for e in entries:
+        base = e.id[:-4] if e.id.endswith("_out") else e.id[:-3] if e.id.endswith("_in") else e.id
+        if base in reversed_refs:
+            hidden.add(e.id)
+    return hidden
 
 @router.get("/customer_account_entries")
 def list_customer_account_entries(actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
-    res = db.scalars(select(CustomerAccountEntry).where(CustomerAccountEntry.id.not_in(_reversed_journal_refs())).order_by(CustomerAccountEntry.timestamp.desc())).all()
-    return success_response(data=[customer_account_entry_to_dict(e) for e in res])
+    res = db.scalars(select(CustomerAccountEntry).order_by(CustomerAccountEntry.timestamp.desc())).all()
+    hidden = _reversed_customer_entry_ids(db, res)
+    return success_response(data=[customer_account_entry_to_dict(e) for e in res if e.id not in hidden])
 
 def _group_rows_by_currency(name_prefix: str, headers: list[str], items_with_ts_ccy_row: list[tuple[str, str, list]]) -> list[tuple[str, list[str], list[list]]]:
     """Splits a flat (timestamp, currency, row) list into one named section per
@@ -979,9 +1120,18 @@ def _not_reversed_movement():
     """SQL clause: hide every Movement (the original legs AND the "عكس عملية" /
     "عكس قيد" counter-legs) belonging to an operation that has since been
     reversed — a reversed operation must not appear in any statement. The pair
-    nets to zero on the balance, so the running balance stays continuous."""
+    nets to zero on the balance, so the running balance stays continuous.
+    Covers two different "reversed" conventions in this codebase: a reversed
+    Transaction (trades — looked up by reference_id, since the Movement rows
+    themselves carry no status) and a Movement marked status="reversed"
+    directly (bank account deposit/withdraw/manual-entry/transfer edits and
+    undos — see _reverse_movement_entries, which has no separate Transaction
+    row to flip)."""
     reversed_tx = select(Transaction.id).where(Transaction.status == "reversed")
-    return or_(Movement.reference_id.is_(None), (Movement.reference_id.not_in(reversed_tx)) & (Movement.reference_id.not_in(_reversed_journal_refs())))
+    return and_(
+        Movement.status != "reversed",
+        or_(Movement.reference_id.is_(None), (Movement.reference_id.not_in(reversed_tx)) & (Movement.reference_id.not_in(_reversed_journal_refs()))),
+    )
 
 def _customers_statement_sections(db: Session, customers: list[Customer], date_from: str = "", date_to: str = "", currency: str = "", show_customer_col: bool = False):
     """Every buy/sell/exchange transaction, deposit/withdraw/transfer entry, debt,
@@ -1003,7 +1153,6 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     advances_query = select(Advance).where(Advance.customer_id.in_(customer_ids))
     advance_payments_query = select(AdvancePaymentRecord).where(AdvancePaymentRecord.customer_id.in_(customer_ids))
     _rev = _reversed_journal_refs()
-    entries_query = entries_query.where(CustomerAccountEntry.id.not_in(_rev))
     debts_query = debts_query.where(Debt.id.not_in(_rev))
     debt_payments_query = debt_payments_query.where(DebtPaymentRecord.id.not_in(_rev))
     advances_query = advances_query.where(Advance.id.not_in(_rev))
@@ -1031,6 +1180,8 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
 
     txs = db.scalars(txs_query).all()
     entries = db.scalars(entries_query).all()
+    _hidden_entry_ids = _reversed_customer_entry_ids(db, entries)
+    entries = [e for e in entries if e.id not in _hidden_entry_ids]
     debts = db.scalars(debts_query).all()
     debt_payments = db.scalars(debt_payments_query).all()
     advances = db.scalars(advances_query).all()
@@ -1053,8 +1204,9 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     # moves it by a known delta; everything else (cash trades, debts, سلف)
     # leaves it unchanged, so those rows simply repeat the balance at that time.
     # Built from the customer's whole history, not only the filtered range.
-    reversed_refs = _reversed_journal_refs()
-    hist_entries = db.scalars(select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id.in_(customer_ids), CustomerAccountEntry.id.not_in(reversed_refs))).all()
+    hist_entries_raw = db.scalars(select(CustomerAccountEntry).where(CustomerAccountEntry.customer_id.in_(customer_ids))).all()
+    _hidden_hist_ids = _reversed_customer_entry_ids(db, hist_entries_raw)
+    hist_entries = [e for e in hist_entries_raw if e.id not in _hidden_hist_ids]
     hist_trades = db.scalars(select(Transaction).where(
         Transaction.customer_id.in_(customer_ids), Transaction.type.in_(["buy", "sell", "exchange"]),
         Transaction.status != "reversed", Transaction.payment_method == "customer_account")).all()
@@ -1150,15 +1302,21 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         if e.type in ("deposit", "withdraw"):
             source_label = cash_source_label(e.vault_name, e.bank_account_name, e.other_source)
             detail = f"إيداع نقدي — من {source_label}" if e.type == "deposit" else f"سحب نقدي — إلى {source_label}"
+            entry_ref = {"kind": "entry", "id": e.id, "customerId": e.customer_id}
         else:
             # transfer_in / transfer_out — other_source already reads like
             # "تحويل من/إلى العميل X (id)", so it doubles as the detail text.
+            # The edit/reverse endpoints key on the bare transfer id, shared
+            # by both legs' Movement rows — not either suffixed entry id.
             detail = e.other_source or e.type
+            base_id = e.id[:-4] if e.id.endswith("_out") else e.id[:-3] if e.id.endswith("_in") else e.id
+            entry_ref = {"kind": "transfer", "id": base_id, "customerId": e.customer_id}
         entry, exit_ = entry_exit(e.amount, e.type in ("deposit", "transfer_in"))
         row = prefixed([e.timestamp, detail, entry, exit_, e.currency, e.notes or ""] + bal_cols(e.customer_id, e.currency, e.timestamp, exact=e.balance_after) + [e.user], e.customer_id)
-        dw_rows_with_ts.append((e.timestamp, row))
+        dw_rows_with_ts.append((e.timestamp, row, entry_ref))
     dw_rows_with_ts.sort(key=lambda r: r[0])
-    dw_rows = [[str(i)] + row for i, (_, row) in enumerate(dw_rows_with_ts, start=1)]
+    dw_rows = [[str(i)] + row for i, (_, row, _ref) in enumerate(dw_rows_with_ts, start=1)]
+    dw_entry_refs = [ref for _, _, ref in dw_rows_with_ts]
 
     # 3. الديون — grouped into one table per currency. A debt is a pure paper
     # record (registering or paying one never touches a vault/bank balance —
@@ -1209,7 +1367,7 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         customer = customers[0]
         balances = {currency: customer.balances.get(currency, 0.0)} if currency else customer.balances
         closing_line = "الأرصدة الحالية: " + (" ، ".join(f"{abs(amt):,.2f} {ccy}" + (f" ({balance_side(amt)})" if balance_side(amt) else "") for ccy, amt in balances.items()) or "لا توجد أرصدة")
-    return sections, closing_line
+    return sections, closing_line, dw_entry_refs
 
 def _customer_statement_sections(db: Session, customer: Customer, date_from: str = "", date_to: str = "", currency: str = ""):
     return _customers_statement_sections(db, [customer], date_from, date_to, currency, show_customer_col=False)
@@ -1222,10 +1380,11 @@ def get_customer_statement(customer_id: str, date_from: str = "", date_to: str =
     customer = db.get(Customer, customer_id)
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
-    sections, closing_line = _customer_statement_sections(db, customer, date_from, date_to, currency)
+    sections, closing_line, dw_entry_refs = _customer_statement_sections(db, customer, date_from, date_to, currency)
     return success_response(data={
         "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
         "closingLine": closing_line,
+        "depositWithdrawRefs": dw_entry_refs,
     })
 
 @router.get("/customers/{customer_id}/statement/export")
@@ -1234,7 +1393,7 @@ def export_customer_statement(customer_id: str, format: str = "pdf", date_from: 
     if not customer:
         raise APIError(code="NOT_FOUND", message_ar="العميل غير موجود", message_en="Customer not found", status_code=404)
 
-    sections, closing_line = _customer_statement_sections(db, customer, date_from, date_to, currency)
+    sections, closing_line, _dw_entry_refs = _customer_statement_sections(db, customer, date_from, date_to, currency)
     if format == "xlsx":
         buf = build_sectioned_excel(sections)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="statement_{customer.id}.xlsx"'})
@@ -1253,7 +1412,7 @@ def send_customer_statement_whatsapp(customer_id: str, date_from: str = "", date
     if not customer.phone:
         raise APIError(code="NO_PHONE", message_ar="لا يوجد رقم هاتف مسجل لهذا العميل", message_en="This customer has no phone number on file", status_code=400)
 
-    sections, closing_line = _customer_statement_sections(db, customer, date_from, date_to, currency)
+    sections, closing_line, _dw_entry_refs = _customer_statement_sections(db, customer, date_from, date_to, currency)
     try:
         info_line = f"الهاتف: {customer.phone}" + (f"  —  الرقم الوطني: {customer.id_number}" if customer.id_number else "")
         buf = build_sectioned_pdf(f"كشف حساب — {customer.name}", sections, closing_line, subtitle_lines=[info_line])
@@ -1278,16 +1437,17 @@ def send_customer_statement_whatsapp(customer_id: str, date_from: str = "", date
 @router.get("/customer_statements/all")
 def get_all_customers_statement(date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     customers = db.scalars(select(Customer)).all()
-    sections, closing_line = _customers_statement_sections(db, customers, date_from, date_to, currency, show_customer_col=True)
+    sections, closing_line, dw_entry_refs = _customers_statement_sections(db, customers, date_from, date_to, currency, show_customer_col=True)
     return success_response(data={
         "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
         "closingLine": closing_line,
+        "depositWithdrawRefs": dw_entry_refs,
     })
 
 @router.get("/customer_statements/all/export")
 def export_all_customers_statement(format: str = "pdf", date_from: str = "", date_to: str = "", currency: str = "", actor: User = Depends(require_permission("رؤية سجل العمليات")), db: Session = Depends(get_db)):
     customers = db.scalars(select(Customer)).all()
-    sections, closing_line = _customers_statement_sections(db, customers, date_from, date_to, currency, show_customer_col=True)
+    sections, closing_line, _dw_entry_refs = _customers_statement_sections(db, customers, date_from, date_to, currency, show_customer_col=True)
     if format == "xlsx":
         buf = build_sectioned_excel(sections)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="statement_all_customers.xlsx"'})
@@ -1303,7 +1463,7 @@ def send_all_customers_statement_whatsapp(date_from: str = "", date_to: str = ""
     if not manager_phone:
         raise APIError(code="NO_PHONE", message_ar="لم يتم تحديد رقم هاتف المدير في الإعدادات لاستقبال التقارير", message_en="No manager phone configured in settings to receive reports", status_code=400)
     customers = db.scalars(select(Customer)).all()
-    sections, closing_line = _customers_statement_sections(db, customers, date_from, date_to, currency, show_customer_col=True)
+    sections, closing_line, _dw_entry_refs = _customers_statement_sections(db, customers, date_from, date_to, currency, show_customer_col=True)
     try:
         buf = build_sectioned_pdf("كشف حساب شامل — جميع العملاء", sections, closing_line)
     except ArabicFontUnavailable as e:
@@ -1394,14 +1554,104 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
         username=actor.username
     )
     db.commit()
-    return account
+    return account, entry_id
+
+
+def _reverse_movement_entries(db: Session, reference_id: str, actor_name: str, reason: str) -> list[Movement]:
+    """Generic "never delete, only reverse" correction for a bank account/
+    vault Movement-based operation (deposit, withdraw, manual entry, a
+    transfer leg) — unlike a trade (Transaction), these have no separate
+    status field of their own to flip, so each Movement row is marked
+    status="reversed" directly (hides it from every statement via
+    _not_reversed_movement()) and the entity's LIVE balance is adjusted by
+    the inverse of whatever it actually recorded — not a replay of history,
+    so it's correct regardless of how many other operations happened since.
+    Does not commit — the caller does, after any further changes (e.g. an
+    edit re-creating the corrected entry) so it's all one transaction.
+    Returns the rows that were reversed."""
+    rows = db.scalars(select(Movement).where(Movement.reference_id == reference_id, Movement.status != "reversed")).all()
+    if not rows:
+        raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على عملية نشطة بهذا المرجع", message_en="No active movement found for this reference", status_code=404)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    for m in rows:
+        entity = None
+        if m.entity_type == "vault":
+            entity = db.get(Vault, m.entity_id)
+        elif m.entity_type == "bank_account":
+            entity = db.get(BankAccount, m.entity_id)
+        elif m.entity_type == "customer":
+            entity = db.get(Customer, m.entity_id)
+        if entity is not None:
+            if m.entity_type in ("vault", "customer"):
+                bals = entity.balances.copy()
+                bals[m.currency] = bals.get(m.currency, 0.0) - m.amount_in + m.amount_out
+                entity.balances = bals
+            else:
+                entity.balance = entity.balance - m.amount_in + m.amount_out
+            if m.entity_type != "customer":
+                entity.last_movement = timestamp
+        m.status = "reversed"
+
+    lead = rows[0]
+    amount = lead.amount_in or lead.amount_out
+    create_audit_log(
+        db, action=AuditAction.REVERSE, entity_type="Movement", entity_id=reference_id,
+        description=f"تراجع عن عملية ({lead.type}) بقيمة {amount:,.2f} {lead.currency} — السبب: {reason}",
+        username=actor_name,
+    )
+    return rows
+
+
+def _edit_movement_entries(db: Session, reference_id: str, new_amount: float, new_notes: str | None, actor_name: str, reason: str) -> list[Movement]:
+    """Edits a bank account/vault Movement-based operation (deposit, withdraw,
+    manual entry, or one leg of a transfer) by reversing the old entry
+    (_reverse_movement_entries) and creating a fresh one with the corrected
+    amount — same "never delete, only reverse" rule, and the same
+    reverse-then-reapply shape already used for editing a trade transaction.
+    Keeps the original entity/currency/type/direction/reference_id; only the
+    amount and notes change. Works uniformly whether the operation touched
+    one leg (a plain deposit/withdraw/manual entry) or two (a vault-backed
+    bank op, or a transfer's source+dest legs) — doesn't need to know which
+    endpoint originally created it."""
+    old_rows = _reverse_movement_entries(db, reference_id, actor_name, f"تعديل العملية بواسطة {actor_name} — {reason}")
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    new_rows = []
+    for old in old_rows:
+        entity = None
+        if old.entity_type == "vault":
+            entity = db.get(Vault, old.entity_id)
+        elif old.entity_type == "bank_account":
+            entity = db.get(BankAccount, old.entity_id)
+        is_in = old.amount_in > 0
+        balance_before = entity.balances.get(old.currency, 0.0) if (entity is not None and old.entity_type == "vault") else (entity.balance if entity is not None else 0.0)
+        delta = new_amount if is_in else -new_amount
+        balance_after = balance_before + delta
+        if entity is not None:
+            if old.entity_type == "vault":
+                bals = entity.balances.copy()
+                bals[old.currency] = balance_after
+                entity.balances = bals
+            else:
+                entity.balance = balance_after
+            entity.last_movement = timestamp
+        new_row = Movement(
+            id=new_id(f"m_edit_{reference_id}"), timestamp=timestamp, entity_type=old.entity_type, entity_id=old.entity_id,
+            entity_name=old.entity_name, currency=old.currency, type=old.type,
+            amount_in=new_amount if is_in else 0.0, amount_out=new_amount if not is_in else 0.0,
+            balance_before=balance_before, balance_after=balance_after, reference_id=reference_id, user=actor_name, notes=new_notes,
+        )
+        db.add(new_row)
+        new_rows.append(new_row)
+    return new_rows
+
 
 class BankAccountDepositOp(CustomerAccountOp):
     interest_rate: float = 0.0  # if the bank quotes a rate on this specific deposit, record it for interest tracking
 
 @router.post("/bank_accounts/{account_id}/deposit")
 def deposit_to_bank_account(account_id: str, data: BankAccountDepositOp, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
-    account = _run_bank_account_op("deposit", account_id, data, actor, db)
+    account, _entry_id = _run_bank_account_op("deposit", account_id, data, actor, db)
     if data.interest_rate > 0:
         db.add(BankDeposit(
             id=new_id(f"bdep_{account_id}"), bank_account_id=account.id, amount=data.amount, currency=account.currency,
@@ -1414,8 +1664,140 @@ def deposit_to_bank_account(account_id: str, data: BankAccountDepositOp, actor: 
 
 @router.post("/bank_accounts/{account_id}/withdraw")
 def withdraw_from_bank_account(account_id: str, data: CustomerAccountOp, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
-    account = _run_bank_account_op("withdraw", account_id, data, actor, db)
+    account, _entry_id = _run_bank_account_op("withdraw", account_id, data, actor, db)
     return success_response(data=bank_account_to_dict(account), message_ar="تم تسجيل السحب بنجاح")
+
+def _guard_reference_not_linked(db: Session, entry_id: str):
+    # A trade, a transfer, or a customer deposit/withdraw each carries its own
+    # edit/reverse flow (the two-person approval reversal for trades;
+    # /transfers/{id}/reverse for transfers; the dedicated customer-entry
+    # endpoints) — undoing just the vault/bank-account leg here would desync
+    # it from that entity's own status/balance, so those reference_ids are
+    # rejected up front. A customer entry funded by a bank account creates no
+    # Transaction row (only a vault-funded one does), hence the separate check.
+    if db.get(Transaction, entry_id) or db.get(Transfer, entry_id) or db.get(CustomerAccountEntry, entry_id):
+        raise APIError(code="NOT_REVERSIBLE_HERE", message_ar="هذه العملية جزء من عملية صرافة أو تحويل أو حساب عميل — استخدم زر التراجع/التعديل الخاص بها من صفحتها", message_en="This entry belongs to a trade, transfer, or customer entry; use that operation's own edit/reverse action", status_code=400)
+
+def _bank_account_entry_rows(db: Session, account_id: str, entry_id: str) -> list[Movement]:
+    _guard_reference_not_linked(db, entry_id)
+    rows = db.scalars(select(Movement).where(Movement.reference_id == entry_id, Movement.status != "reversed")).all()
+    if not any(m.entity_type == "bank_account" and m.entity_id == account_id for m in rows):
+        raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذه العملية على هذا الحساب", message_en="No such active entry on this account", status_code=404)
+    return rows
+
+def _vault_entry_rows(db: Session, vault_id: str, entry_id: str) -> list[Movement]:
+    _guard_reference_not_linked(db, entry_id)
+    rows = db.scalars(select(Movement).where(Movement.reference_id == entry_id, Movement.status != "reversed")).all()
+    if not any(m.entity_type == "vault" and m.entity_id == vault_id for m in rows):
+        raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذه العملية على هذه الخزنة", message_en="No such active entry on this vault", status_code=404)
+    return rows
+
+@router.post("/bank_accounts/{account_id}/movements/{entry_id}/reverse")
+def reverse_bank_account_entry(account_id: str, entry_id: str, data: ReverseEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Undoes a mistaken deposit/withdraw/manual entry — e.g. a withdrawal
+    that should never have been recorded at all. The row stays in the
+    database (status="reversed") and simply stops appearing in the
+    statement; see _reverse_movement_entries."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
+    _bank_account_entry_rows(db, account_id, entry_id)
+    _reverse_movement_entries(db, entry_id, actor.name, reason)
+    db.commit()
+    return success_response(data=bank_account_to_dict(account), message_ar="تم التراجع عن العملية بنجاح")
+
+@router.put("/bank_accounts/{account_id}/movements/{entry_id}")
+def edit_bank_account_entry(account_id: str, entry_id: str, data: EditMovementAmountRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Fixes the amount/notes of a mistaken deposit/withdraw/manual entry —
+    e.g. withdrew 100 when it should have been 1,000 — without touching
+    which account/vault/direction it used. See _edit_movement_entries."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    account = db.get(BankAccount, account_id)
+    if not account:
+        raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
+    _bank_account_entry_rows(db, account_id, entry_id)
+    _edit_movement_entries(db, entry_id, data.amount, data.notes, actor.name, reason)
+    db.commit()
+    account = db.get(BankAccount, account_id)
+    return success_response(data=bank_account_to_dict(account), message_ar="تم تعديل العملية بنجاح")
+
+@router.post("/vaults/{vault_id}/movements/{entry_id}/reverse")
+def reverse_vault_entry(vault_id: str, entry_id: str, data: ReverseEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Undoes a mistaken vault manual entry — same mechanism as
+    reverse_bank_account_entry, for a vault instead of a bank account."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    _vault_entry_rows(db, vault_id, entry_id)
+    _reverse_movement_entries(db, entry_id, actor.name, reason)
+    db.commit()
+    return success_response(data={"id": vault.id, "balances": vault.balances}, message_ar="تم التراجع عن العملية بنجاح")
+
+@router.put("/vaults/{vault_id}/movements/{entry_id}")
+def edit_vault_entry(vault_id: str, entry_id: str, data: EditMovementAmountRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Fixes the amount/notes of a mistaken vault manual entry — same
+    mechanism as edit_bank_account_entry, for a vault instead."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    vault = db.get(Vault, vault_id)
+    if not vault:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
+    _vault_entry_rows(db, vault_id, entry_id)
+    _edit_movement_entries(db, entry_id, data.amount, data.notes, actor.name, reason)
+    db.commit()
+    return success_response(data={"id": vault.id, "balances": vault.balances}, message_ar="تم تعديل العملية بنجاح")
+
+def _approved_transfer_or_404(db: Session, transfer_id: str) -> Transfer:
+    transfer = db.get(Transfer, transfer_id)
+    if not transfer:
+        raise APIError(code="NOT_FOUND", message_ar="التحويل غير موجود", message_en="Transfer not found", status_code=404)
+    if transfer.status != "approved":
+        raise APIError(code="NOT_APPROVED", message_ar="لا يمكن التراجع عن تحويل لم تتم الموافقة عليه بعد", message_en="Only an approved transfer can be reversed/edited", status_code=400)
+    return transfer
+
+@router.post("/transfers/{transfer_id}/reverse")
+def reverse_transfer(transfer_id: str, data: ReverseEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Undoes an already-executed transfer between two accounts — moves the
+    money back on both legs. A still-pending transfer is cancelled via the
+    existing reject action instead; this is only for one that already moved
+    real money."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
+    transfer = _approved_transfer_or_404(db, transfer_id)
+    _reverse_movement_entries(db, transfer_id, actor.name, reason)
+    transfer.status = "reversed"
+    db.commit()
+    return success_response(message_ar="تم التراجع عن التحويل بنجاح")
+
+@router.put("/transfers/{transfer_id}")
+def edit_transfer(transfer_id: str, data: EditMovementAmountRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Fixes the amount/notes of an already-executed transfer without
+    touching which two accounts it moved money between."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    transfer = _approved_transfer_or_404(db, transfer_id)
+    _edit_movement_entries(db, transfer_id, data.amount, data.notes, actor.name, reason)
+    transfer.amount = data.amount
+    transfer.notes = data.notes
+    db.commit()
+    return success_response(message_ar="تم تعديل التحويل بنجاح")
 
 # ----------------- CUSTOMER KYC DOCUMENTS -----------------
 class CustomerDocumentCreate(BaseModel):
@@ -2290,6 +2672,17 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
         ("تحويلات مباشرة مع خزنة/بنك", mv_headers, mv_rows(groups["transfer_direct"])),
         ("أخرى", mv_headers, mv_rows(groups["other"])),
     ]
+    # Parallel to each section's rows (by index) — the Movement.reference_id
+    # an edit/reverse call needs, for the bank-account statement's on-screen
+    # action buttons only. Not used by the PDF/Excel export.
+    entry_ids: dict[str, list[str | None]] = {
+        name: [m.reference_id for m in groups[key]]
+        for name, key in [
+            ("معاملات الصرافة", "trade"), ("إيداع وسحب العملاء", "customer"), ("السلف", "advance"),
+            ("فوائد بنكية", "interest"), ("قيود يدوية", "manual"),
+            ("تحويلات مباشرة مع خزنة/بنك", "transfer_direct"), ("أخرى", "other"),
+        ]
+    }
 
     # Transfers via the approval system — only ones actually approved, since a
     # pending/rejected transfer never moved any cash.
@@ -2319,10 +2712,10 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
         ", ".join(f"{ccy} — دخول {v['in']:,.2f} / خروج {v['out']:,.2f}" for ccy, v in totals.items())
         or "لا توجد حركات في هذه الفترة"
     )
-    return sections, closing_line
+    return sections, closing_line, entry_ids
 
 def _entity_statement_export(db: Session, entity_kind: str, entity_id: str, entity_name: str, format: str, date_from: str, date_to: str, currency: str):
-    sections, closing_line = _entity_statement_sections(db, entity_kind, entity_id, date_from, date_to, currency)
+    sections, closing_line, _entry_ids = _entity_statement_sections(db, entity_kind, entity_id, date_from, date_to, currency)
     if format == "xlsx":
         buf = build_sectioned_excel(sections)
         return buf.read(), "xlsx"
@@ -2340,10 +2733,11 @@ def get_vault_statement(vault_id: str, date_from: str = "", date_to: str = "", c
     vault = db.get(Vault, vault_id)
     if not vault:
         raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
-    sections, closing_line = _entity_statement_sections(db, "vault", vault_id, date_from, date_to, currency)
+    sections, closing_line, entry_ids = _entity_statement_sections(db, "vault", vault_id, date_from, date_to, currency)
     return success_response(data={
         "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
         "closingLine": closing_line,
+        "entryIds": entry_ids,
     })
 
 @router.get("/bank_accounts/{account_id}/statement")
@@ -2353,10 +2747,11 @@ def get_bank_account_statement(account_id: str, date_from: str = "", date_to: st
     account = db.get(BankAccount, account_id)
     if not account:
         raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
-    sections, closing_line = _entity_statement_sections(db, "bank_account", account_id, date_from, date_to, currency)
+    sections, closing_line, entry_ids = _entity_statement_sections(db, "bank_account", account_id, date_from, date_to, currency)
     return success_response(data={
         "sections": [{"name": name, "headers": headers, "rows": rows} for name, headers, rows in sections],
         "closingLine": closing_line,
+        "entryIds": entry_ids,
     })
 
 @router.get("/vaults/{vault_id}/statement/export")

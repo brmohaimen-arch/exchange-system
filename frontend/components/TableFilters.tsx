@@ -29,9 +29,18 @@ const VALUE_LABELS: Record<string, string> = {
   in_progress: 'قيد التنفيذ', handed: 'تم التسليم', not_handed: 'لم يتم التسليم', pending_open: 'بانتظار الفتح', pending_close: 'بانتظار الإغلاق',
   buy: 'شراء', sell: 'بيع', exchange: 'تبديل', deposit: 'إيداع', withdraw: 'سحب', transfer: 'تحويل', cash: 'نقدي', bank: 'بنك',
   customer_account: 'حساب العميل', debt: 'دين', true: 'نعم', false: 'لا',
+  income: 'إيراد', expense: 'مصروف', transfer_in: 'تحويل وارد', transfer_out: 'تحويل صادر',
+  rent: 'إيجار', salaries: 'رواتب', electricity: 'كهرباء', maintenance: 'صيانة', other: 'أخرى', gas: 'وقود', fuel: 'وقود',
+  branch: 'فرع', company: 'الشركة',
+  CREATE: 'إنشاء', UPDATE: 'تعديل', DISABLE: 'تعطيل', DELETE: 'حذف', LOGIN: 'تسجيل دخول', LOGOUT: 'تسجيل خروج',
+  APPROVE: 'اعتماد', REJECT: 'رفض', CANCEL: 'إلغاء', REVERSE: 'عكس', SYSTEM_ALERT: 'تنبيه نظام',
+  bank_account: 'حساب بنكي', vault: 'خزنة', customer: 'عميل',
+  shift: 'وردية', shift_open: 'فتح وردية', inventory: 'جرد', reversal: 'عكس عملية',
+  reviewed: 'تمت المراجعة', reported: 'تم الإبلاغ', successful: 'ناجح', failed: 'فاشل',
+  created: 'إنشاء', disbursed: 'صرف',
 }
 
-const label = (v: string) => VALUE_LABELS[v] ?? v
+export const label = (v: string) => VALUE_LABELS[v] ?? v
 
 function flatten(value: unknown, depth = 0, out: unknown[] = []): unknown[] {
   if (value === null || value === undefined) return out

@@ -2,7 +2,9 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import { AuthProvider } from '@/lib/auth-provider'
 import { ConfirmProvider } from '@/components/ConfirmProvider'
+import { SuccessProvider } from '@/components/SuccessProvider'
 import { BrandTitleSync } from '@/components/BrandTitleSync'
+import { RtlScrollFix } from '@/components/RtlScrollFix'
 
 export const metadata: Metadata = {
   title: 'شركة واكب | لوحة التحكم',
@@ -27,8 +29,11 @@ export default function RootLayout({
     <html lang="ar" dir="rtl" suppressHydrationWarning>
       <body className="font-sans antialiased bg-background text-foreground">
           <BrandTitleSync />
+          <RtlScrollFix />
           <AuthProvider>
-            <ConfirmProvider>{children}</ConfirmProvider>
+            <ConfirmProvider>
+              <SuccessProvider>{children}</SuccessProvider>
+            </ConfirmProvider>
           </AuthProvider>
       </body>
     </html>

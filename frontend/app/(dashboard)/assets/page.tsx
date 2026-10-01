@@ -7,6 +7,7 @@ import { api, newId, openFile, uploadFile, FixedAsset, Vehicle, RealEstate, Main
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { useSuccess } from '@/components/SuccessProvider'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
@@ -70,6 +71,7 @@ export default function AssetsPage() {
 function AssetsPageInner() {
   const { hasPermission } = useAuth()
   const confirmDialog = useConfirm()
+  const success = useSuccess()
   const canManage = hasPermission('إدارة الأصول')
 
   const searchParams = useSearchParams()
@@ -238,10 +240,12 @@ function AssetsPageInner() {
       make_year: assetForm.type === 'مخزن' && assetForm.makeYear ? parseInt(assetForm.makeYear, 10) : null,
     }
     try {
+      const wasCreate = !editingAsset
       if (editingAsset) await api.put(`/assets/${editingAsset.id}`, payload)
       else await api.post('/assets', payload)
       setShowAssetModal(false)
       await load()
+      success(wasCreate ? 'تم إضافة الأصل بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: openCreateAsset } : undefined)
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'تعذر حفظ الأصل')
     } finally {

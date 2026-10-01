@@ -1,13 +1,14 @@
 'use client'
 
 import { useEffect, useState, FormEvent } from 'react'
-import { Plus, X, Loader2, Trash2, Package, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag, ArrowUpRight, ArrowDownRight, CalendarRange } from 'lucide-react'
+import { Plus, X, Loader2, Trash2, Package, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag, ArrowUpRight, ArrowDownRight, CalendarRange, Pencil, Undo2 } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from '@/components/ui/chart'
 import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, FleetWarehouse, FleetCompanyDef, Currency } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { useSuccess } from '@/components/SuccessProvider'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
@@ -122,6 +123,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const base = meta?.base ?? null
   const { hasPermission } = useAuth()
   const confirmDialog = useConfirm()
+  const success = useSuccess()
   const canManage = hasPermission(perm)
 
   const [vehicles, setVehicles] = useState<FleetVehicle[]>([])
@@ -140,6 +142,20 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const [statementLoading, setStatementLoading] = useState(false)
   const [statementPage, setStatementPage] = useState(1)
   const [exporting, setExporting] = useState<string | null>(null)
+
+  // "تعديل"/"تراجع" on a statement row — a plain transaction is reversed
+  // then reapplied with corrected values (mirrors the bank-account statement's
+  // same mechanism); a vehicle-sale row can only be undone (resets the vehicle
+  // to "عرض" for resale) since a sale touches too many fields/accounts to edit in place.
+  const [undoTxTarget, setUndoTxTarget] = useState<{ kind: 'transaction' | 'sale'; id: string; label: string } | null>(null)
+  const [undoTxReason, setUndoTxReason] = useState('')
+  const [undoTxSaving, setUndoTxSaving] = useState(false)
+  const [undoTxError, setUndoTxError] = useState('')
+
+  const [editTxTarget, setEditTxTarget] = useState<FleetTransactionWithVehicle | null>(null)
+  const [editTxForm, setEditTxForm] = useState({ amount: '', category: '', date: '', notes: '', reason: '' })
+  const [editTxSaving, setEditTxSaving] = useState(false)
+  const [editTxError, setEditTxError] = useState('')
 
   const [accounts, setAccounts] = useState<FleetAccount[]>([])
   const [accountsLoading, setAccountsLoading] = useState(true)
@@ -236,10 +252,12 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
     setWhError('')
     try {
       const payload = { name: whModal.name.trim(), notes: whModal.notes.trim() || null }
+      const wasCreate = !whModal.id
       if (whModal.id) await api.put(`${base}/fleet/warehouses/${whModal.id}`, payload)
       else await api.post(`${base}/fleet/warehouses`, payload)
       setWhModal(null)
       await Promise.all([loadWarehouses(), load()])
+      success(wasCreate ? 'تم إنشاء المخزن بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: () => setWhModal({ id: null, name: '', notes: '' }) } : undefined)
     } catch (err) {
       setWhError(err instanceof ApiError ? err.message : 'تعذر حفظ المخزن')
     } finally {
@@ -420,8 +438,10 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         }
         await api.post(`${base}/fleet/vehicles`, payload)
       }
+      const wasCreate = !editing
       setShowModal(false)
       await Promise.all([load(), loadSummary(), loadAccounts()])
+      success(wasCreate ? 'تمت إضافة المركبة/المعدة بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: openCreate } : undefined)
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'تعذر حفظ البيانات')
     } finally {
@@ -478,6 +498,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
       })
       setSellingVehicle(null)
       await Promise.all([load(), loadSummary(), loadAccounts()])
+      success('تم تسجيل عملية البيع بنجاح')
     } catch (err) {
       setSellFormError(err instanceof ApiError ? err.message : 'تعذر تسجيل عملية البيع')
     } finally {
@@ -513,6 +534,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         account_number: accountForm.accountNumber.trim() || null, bank_name: accountForm.bankName.trim() || null,
         notes: accountForm.notes.trim() || null,
       }
+      const wasCreate = !editingAccount
       if (editingAccount) {
         await api.put(`${base}/fleet/accounts/${editingAccount.id}`, payload)
       } else {
@@ -520,6 +542,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
       }
       setShowAccountModal(false)
       await loadAccounts()
+      success(wasCreate ? 'تم إنشاء الحساب بنجاح' : 'تم حفظ التعديلات بنجاح', wasCreate ? { onCreateAnother: openCreateAccount } : undefined)
     } catch (err) {
       setAccountFormError(err instanceof ApiError ? err.message : 'تعذر حفظ البيانات')
     } finally {
@@ -601,6 +624,61 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
       await Promise.all([load(), loadSummary(), loadAccounts()])
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر حذف القيد')
+    }
+  }
+
+  const undoTxPath = (t: { kind: 'transaction' | 'sale'; id: string }) =>
+    t.kind === 'sale' ? `${base}/fleet/vehicles/${t.id}/sell/reverse` : `${base}/fleet/transactions/${t.id}/reverse`
+
+  const openUndoTx = (kind: 'transaction' | 'sale', id: string, label: string) => {
+    setUndoTxTarget({ kind, id, label })
+    setUndoTxReason('')
+    setUndoTxError('')
+  }
+
+  const submitUndoTx = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!undoTxTarget) return
+    if (!undoTxReason.trim()) { setUndoTxError('سبب التراجع مطلوب'); return }
+    setUndoTxError('')
+    setUndoTxSaving(true)
+    try {
+      await api.post(undoTxPath(undoTxTarget), { reason: undoTxReason.trim() })
+      setUndoTxTarget(null)
+      await Promise.all([load(), loadSummary(), loadAccounts(), loadStatement()])
+    } catch (err) {
+      setUndoTxError(err instanceof ApiError ? err.message : 'تعذر التراجع عن العملية')
+    } finally {
+      setUndoTxSaving(false)
+    }
+  }
+
+  const openEditTx = (t: FleetTransactionWithVehicle) => {
+    setEditTxTarget(t)
+    setEditTxForm({ amount: String(t.amount), category: t.category, date: t.date, notes: t.notes || '', reason: '' })
+    setEditTxError('')
+  }
+
+  const submitEditTx = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editTxTarget) return
+    const amount = parseFloat(editTxForm.amount)
+    if (!amount || amount <= 0) { setEditTxError('أدخل مبلغاً صحيحاً'); return }
+    if (!editTxForm.category.trim()) { setEditTxError('التصنيف حقل مطلوب'); return }
+    if (!editTxForm.date) { setEditTxError('التاريخ حقل مطلوب'); return }
+    if (!editTxForm.reason.trim()) { setEditTxError('سبب التعديل مطلوب'); return }
+    setEditTxError('')
+    setEditTxSaving(true)
+    try {
+      await api.put(`${base}/fleet/transactions/${editTxTarget.id}`, {
+        amount, category: editTxForm.category.trim(), date: editTxForm.date, notes: editTxForm.notes || null, reason: editTxForm.reason.trim(),
+      })
+      setEditTxTarget(null)
+      await Promise.all([load(), loadSummary(), loadAccounts(), loadStatement()])
+    } catch (err) {
+      setEditTxError(err instanceof ApiError ? err.message : 'تعذر تعديل القيد')
+    } finally {
+      setEditTxSaving(false)
     }
   }
 
@@ -985,6 +1063,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                     <th className="px-4 py-3 font-medium">إلى</th>
                     <th className="px-4 py-3 font-medium">الرصيد بعد</th>
                     <th className="px-4 py-3 font-medium">ملاحظات</th>
+                    {canManage && <th className="px-4 py-3 font-medium">إجراءات</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -993,6 +1072,12 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                     const counterpartyLabel = t.counterparty || '—'
                     const [fromLabel, toLabel] = t.type === 'income' ? [counterpartyLabel, accountLabel] : [accountLabel, counterpartyLabel]
                     const isClientLinked = accounts.find((a) => a.id === t.accountId)?.accountType === 'client'
+                    // A vehicle sale touches the vehicle's own sale_* fields and up to two
+                    // accounts — too much to edit in place, so it only offers undo-sale
+                    // (resets the vehicle to "عرض" for resale) instead of the generic edit/reverse.
+                    const isSale = t.category === 'بيع المركبة/المعدة'
+                    const isPurchase = t.category === 'شراء المركبة/المعدة'
+                    const rowLabel = `${t.vehicleName} — ${t.category}`
                     return (
                       <tr key={t.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-4 py-3">{t.date}</td>
@@ -1007,6 +1092,45 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                         <td className="px-4 py-3">{toLabel}</td>
                         <td className="px-4 py-3" dir="ltr">{t.balanceAfter !== null && !isClientLinked ? t.balanceAfter.toLocaleString() : '—'}</td>
                         <td className="px-4 py-3 text-muted-foreground">{t.notes || '—'}</td>
+                        {canManage && (
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-1.5">
+                              {isSale ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openUndoTx('sale', t.vehicleId, rowLabel)}
+                                  title="تراجع عن البيع — تعيد المركبة للعرض من جديد"
+                                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                >
+                                  <Undo2 className="h-3.5 w-3.5" />
+                                </button>
+                              ) : isPurchase ? (
+                                <span className="text-xs text-muted-foreground" title="سعر وتاريخ الشراء جزء من بيانات المركبة — عدّلهما من زر «تعديل» في قائمة المركبات">
+                                  عدّل من بيانات المركبة
+                                </span>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditTx(t)}
+                                    title="تعديل العملية"
+                                    className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openUndoTx('transaction', t.id, rowLabel)}
+                                    title="تراجع عن العملية"
+                                    className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                  >
+                                    <Undo2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -1571,6 +1695,109 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
                 <button type="button" onClick={() => setShowAccountModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={savingAccount} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {savingAccount && <Loader2 className="h-4 w-4 animate-spin" />} حفظ
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Undo (single-step reverse) Modal — generic transaction or a vehicle sale */}
+      {undoTxTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">{undoTxTarget.kind === 'sale' ? 'تراجع عن البيع' : 'تراجع عن العملية'}</h3>
+              <button onClick={() => setUndoTxTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitUndoTx} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                {undoTxTarget.kind === 'sale'
+                  ? `سيتم التراجع عن بيع "${undoTxTarget.label}" — تُعاد أرصدة الحسابات المرتبطة وتصبح المركبة متاحة للعرض من جديد.`
+                  : `سيتم عكس أثر "${undoTxTarget.label}" على الأرصدة فوراً. تختفي من كشف الحركات ويبقى السجل الكامل في سجل العمليات.`}
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب التراجع</label>
+                <textarea
+                  value={undoTxReason}
+                  onChange={(e) => setUndoTxReason(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+              </div>
+              {undoTxError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{undoTxError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setUndoTxTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={undoTxSaving} className="flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-sm font-medium text-danger-foreground hover:bg-danger/90 transition-colors disabled:opacity-60">
+                  {undoTxSaving && <Loader2 className="h-4 w-4 animate-spin" />} تأكيد التراجع
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit amount/category/date/notes Modal — generic transaction only (a sale can only be undone) */}
+      {editTxTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <h3 className="text-lg font-semibold text-foreground">تعديل العملية</h3>
+              <button onClick={() => setEditTxTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={submitEditTx} className="space-y-4 p-6 text-right">
+              <p className="text-xs text-muted-foreground">
+                سيتم عكس أثر "{editTxTarget.vehicleName} — {editTxTarget.category}" الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
+                <NumberInput
+                  value={editTxForm.amount}
+                  onChange={(e) => setEditTxForm({ ...editTxForm, amount: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">التصنيف</label>
+                <input
+                  value={editTxForm.category}
+                  onChange={(e) => setEditTxForm({ ...editTxForm, category: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">التاريخ</label>
+                <DateInput
+                  value={editTxForm.date}
+                  onChange={(e) => setEditTxForm({ ...editTxForm, date: e.target.value })}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                <textarea
+                  value={editTxForm.notes}
+                  onChange={(e) => setEditTxForm({ ...editTxForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">سبب التعديل</label>
+                <textarea
+                  value={editTxForm.reason}
+                  onChange={(e) => setEditTxForm({ ...editTxForm, reason: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              {editTxError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{editTxError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setEditTxTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
+                <button type="submit" disabled={editTxSaving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
+                  {editTxSaving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ التعديل
                 </button>
               </div>
             </form>

@@ -91,6 +91,7 @@ NEW_COLUMNS = [
     ("customers", "passport_number", "VARCHAR(100)"),
     ("customer_account_entries", "other_source", "VARCHAR(200)"),
     ("movements", "notes", "VARCHAR(500)"),
+    ("movements", "status", "VARCHAR(20) DEFAULT 'active'"),
     ("fixed_assets", "color", "VARCHAR(50)"),
     ("fixed_assets", "car_model", "VARCHAR(50)"),
     ("fixed_assets", "vin", "VARCHAR(100)"),

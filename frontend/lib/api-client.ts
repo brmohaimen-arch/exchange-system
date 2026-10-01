@@ -415,6 +415,7 @@ export interface Movement {
   balanceAfter: number
   referenceId: string | null
   user: string
+  notes: string | null
 }
 
 export interface Transaction {

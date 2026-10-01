@@ -8,11 +8,12 @@ import { TablePagination, paginate } from '@/components/TablePagination'
 import { usePersistedState, clearPersistedState } from '@/lib/usePersistedState'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
+import { useSuccess } from '@/components/SuccessProvider'
 
 const paymentMethodLabels: Record<string, string> = {
   cash: 'نقداً', customer_account: 'حساب العميل', bank_account: 'حساب بنكي', debt: 'دين (آجل)',
 }
-const typeLabel: Record<string, string> = { buy: 'شراء', sell: 'بيع', exchange: 'تبديل' }
+const typeLabel: Record<string, string> = { buy: 'شراء', sell: 'بيع', exchange: 'تبديل', deposit: 'إيداع', withdraw: 'سحب' }
 const statusLabel: Record<string, { label: string; className: string }> = {
   approved: { label: 'مكتمل', className: 'bg-success/10 text-success' },
   pending: { label: 'قيد المعالجة', className: 'bg-warning/10 text-warning' },
@@ -66,6 +67,7 @@ interface EditForm {
 
 export default function TransactionsPage() {
   const { user, hasPermission } = useAuth()
+  const success = useSuccess()
   const canBuy = hasPermission('تنفيذ شراء عملة')
   const canSell = hasPermission('تنفيذ بيع عملة')
   const canEdit = hasPermission('إنشاء عملية عكسية')
@@ -210,6 +212,7 @@ export default function TransactionsPage() {
       })
       setShowCloseShiftModal(false)
       await load()
+      success('تم إقفال الوردية بنجاح')
     } catch (err) {
       setCloseError(err instanceof ApiError ? err.message : 'تعذر إقفال الوردية')
     } finally {
@@ -293,6 +296,7 @@ export default function TransactionsPage() {
       setSuccessMsg(`تم تنفيذ عملية ${isBuy ? 'الشراء' : 'البيع'} بنجاح`)
       if (isBuy) setBuyForm(emptyOpForm('', form.vaultId)); else setSellForm(emptyOpForm('', form.vaultId))
       await load()
+      success(`تم تنفيذ عملية ${isBuy ? 'الشراء' : 'البيع'} بنجاح`)
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'تعذر تنفيذ العملية')
     } finally {
@@ -332,6 +336,7 @@ export default function TransactionsPage() {
       setSuccessMsg('تم تنفيذ عملية تبديل العملة بنجاح')
       setExchangeForm(emptyExchangeForm(exchangeForm.vaultId))
       await load()
+      success('تم تنفيذ عملية تبديل العملة بنجاح')
     } catch (err) {
       setExchangeError(err instanceof ApiError ? err.message : 'تعذر تنفيذ عملية التبديل')
     } finally {

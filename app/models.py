@@ -323,6 +323,12 @@ class Movement(Base):
     # _movement_source_notes() to look notes up from, so this is a direct
     # place to store them instead of silently dropping them.
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # "active" | "reversed" — a bank account deposit/withdraw/manual-entry/
+    # transfer leg that's been corrected or undone (see
+    # business.py's _reverse_movement_entries) is marked reversed rather than
+    # deleted, same "never delete, only reverse" rule already used for trade
+    # transactions, and hidden from statements by _not_reversed_movement().
+    status: Mapped[str] = mapped_column(String(20), default="active")
 
 class JournalEntry(Base):
     __tablename__ = "journal_entries"

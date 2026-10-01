@@ -20,6 +20,10 @@ from ..export_utils import build_sectioned_pdf, build_sectioned_excel, ArabicFon
 
 router = APIRouter(tags=["Fleet (cars & heavy equipment sub-company)"])
 
+
+class ReverseEntryRequest(BaseModel):
+    reason: str
+
 PERM = "إدارة شركة بيان"
 COMPANY_PERMS = {"bayan": "إدارة شركة بيان", "imtiaz": "إدارة شركة الامتياز", "itqan": "إدارة شركة اتقن المحركات"}
 COMPANY_NAMES = {"bayan": "بيان الدولية", "imtiaz": "شركة الامتياز", "itqan": "شركة اتقن المحركات"}
@@ -666,6 +670,54 @@ def sell_fleet_vehicle(vehicle_id: str, data: FleetVehicleSell, actor: User = De
     return success_response(data=vehicle_to_dict(v, _vehicle_balances(db, vehicle_id), account_names, db), message_ar="تم تسجيل عملية البيع بنجاح")
 
 
+@router.post("/fleet/vehicles/{vehicle_id}/sell/reverse")
+def reverse_fleet_vehicle_sale(vehicle_id: str, data: ReverseEntryRequest, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+    """Undoes a sale recorded with wrong details (wrong buyer, price, chassis
+    number mismatch discovered after the fact, etc.) — reverses both account
+    entries sell_fleet_vehicle booked (the company account that received the
+    money, and the client account it was drawn from, if any), deletes the
+    linked FleetTransaction, and resets every sale_* field so the vehicle is
+    available to sell again. A full in-place "edit sale" isn't offered
+    because a sale touches two accounts and several interdependent fields —
+    undo-then-resell is the safe equivalent, same reasoning as a transfer."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
+    v = db.get(FleetVehicle, vehicle_id)
+    if not v:
+        raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
+    if v.sale_price is None:
+        raise APIError(code="NOT_SOLD", message_ar="هذه المركبة غير مباعة أصلاً", message_en="This vehicle hasn't been sold", status_code=400)
+
+    sale_tx = db.scalar(select(FleetTransaction).where(FleetTransaction.vehicle_id == vehicle_id, FleetTransaction.category == "بيع المركبة/المعدة").order_by(FleetTransaction.timestamp.desc()))
+    if sale_tx and sale_tx.account_id:
+        account = db.get(FleetAccount, sale_tx.account_id)
+        if account:
+            account.balance -= sale_tx.amount  # undo the income side
+    if v.sale_client_account_id:
+        client_account = db.get(FleetAccount, v.sale_client_account_id)
+        if client_account:
+            client_account.balance += v.sale_price  # undo the client drawdown
+    if sale_tx:
+        db.delete(sale_tx)
+
+    old_summary = f"{v.buyer_name} — {v.sale_price:,.2f} {v.sale_currency}"
+    v.status = "عرض"
+    v.sale_date = None
+    v.buyer_name = None
+    v.sale_price = None
+    v.sale_payment_method = None
+    v.sale_currency = None
+    v.sale_account_id = None
+    v.sale_client_account_id = None
+    v.sale_bank_details = None
+
+    create_audit_log(db, action=AuditAction.REVERSE, entity_type="FleetVehicle", entity_id=vehicle_id,
+                      description=f"تم التراجع عن بيع {v.name} (#{v.auto_number:03d}) — كان مباعاً لـ {old_summary} — السبب: {reason}", username=actor.username)
+    db.commit()
+    return success_response(data=vehicle_to_dict(v, _vehicle_balances(db, vehicle_id), {}, db), message_ar="تم التراجع عن عملية البيع — المركبة متاحة للبيع من جديد")
+
+
 @router.delete("/fleet/vehicles/{vehicle_id}")
 def delete_fleet_vehicle(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     v = db.get(FleetVehicle, vehicle_id)
@@ -1168,6 +1220,87 @@ def create_fleet_transaction(vehicle_id: str, data: FleetTransactionCreate, acto
     return success_response(data=transaction_to_dict(t, account.name if account else None), message_ar="تمت إضافة القيد بنجاح")
 
 
+class FleetTransactionEdit(BaseModel):
+    amount: float
+    category: str
+    date: str
+    notes: str | None = None
+    reason: str
+
+_VEHICLE_LINKED_CATEGORIES = {
+    "بيع المركبة/المعدة": "استخدم زر \"التراجع عن البيع\" على المركبة بدلاً من ذلك — فالبيع يُحدّث حالة المركبة وحقولها أيضاً وليس القيد المحاسبي فقط",
+    "شراء المركبة/المعدة": "عدّل سعر/تاريخ الشراء من نموذج تعديل بيانات المركبة نفسها بدلاً من ذلك — فهذا القيد مرتبط بحقول الشراء على المركبة",
+}
+
+def _guard_editable_fleet_transaction(t: "FleetTransaction"):
+    # A sale or purchase transaction is auto-generated alongside FleetVehicle
+    # fields (status/sale_*/purchase_price) — editing or reversing just the
+    # ledger entry here would desync those fields from the transaction.
+    hint = _VEHICLE_LINKED_CATEGORIES.get(t.category)
+    if hint:
+        raise APIError(code="NOT_EDITABLE_HERE", message_ar=f"لا يمكن تعديل أو التراجع عن هذا القيد من هنا — {hint}", message_en="This entry is linked to the vehicle's own fields; use the vehicle's own edit/undo-sale action instead", status_code=400)
+
+@router.put("/fleet/transactions/{transaction_id}")
+def edit_fleet_transaction(transaction_id: str, data: FleetTransactionEdit, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+    """Fixes a mistaken income/expense entry's amount/category/date/notes —
+    e.g. the wrong amount was typed — without deleting and re-creating it.
+    Undoes the old amount's effect on the linked account (same formula
+    delete_fleet_transaction already uses) then re-applies the new amount
+    through the same validated path a fresh entry would use, so an edit that
+    would overdraw a company account is refused exactly like a new entry
+    would be."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    if data.amount <= 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
+    t = db.get(FleetTransaction, transaction_id)
+    if not t:
+        raise APIError(code="NOT_FOUND", message_ar="القيد غير موجود", message_en="Transaction not found", status_code=404)
+    _guard_editable_fleet_transaction(t)
+
+    old_amount, old_category = t.amount, t.category
+    account_name = None
+    if t.account_id:
+        account = db.get(FleetAccount, t.account_id)
+        if account:
+            account.balance += t.amount if t.type == "expense" else -t.amount  # undo the old amount
+            account, balance_after = _apply_account_entry(db, t.account_id, t.currency, t.type, data.amount)  # apply + validate the new one
+            t.balance_after = balance_after
+            account_name = account.name
+
+    t.amount = data.amount
+    t.category = data.category.strip()
+    t.date = data.date
+    t.notes = data.notes
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="FleetTransaction", entity_id=transaction_id,
+                      description=f"تم تعديل قيد {old_category} من {old_amount:,.2f} إلى {data.amount:,.2f} {t.currency} — السبب: {reason}", username=actor.username)
+    db.commit()
+    return success_response(data=transaction_to_dict(t, account_name), message_ar="تم تعديل القيد بنجاح")
+
+@router.post("/fleet/transactions/{transaction_id}/reverse")
+def reverse_fleet_transaction(transaction_id: str, data: ReverseEntryRequest, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+    """Same as delete_fleet_transaction, but requires a reason and logs it —
+    kept alongside delete (not replacing it) since this ledger already
+    reverses the balance safely on delete; the only gap was no recorded
+    reason for *why*."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
+    t = db.get(FleetTransaction, transaction_id)
+    if not t:
+        raise APIError(code="NOT_FOUND", message_ar="القيد غير موجود", message_en="Transaction not found", status_code=404)
+    _guard_editable_fleet_transaction(t)
+    if t.account_id:
+        account = db.get(FleetAccount, t.account_id)
+        if account:
+            account.balance += t.amount if t.type == "expense" else -t.amount
+    create_audit_log(db, action=AuditAction.REVERSE, entity_type="FleetTransaction", entity_id=transaction_id,
+                      description=f"تراجع عن قيد {t.category} بقيمة {t.amount:,.2f} {t.currency} — السبب: {reason}", username=actor.username)
+    db.delete(t)
+    db.commit()
+    return success_response(data={"deleted": True}, message_ar="تم التراجع عن القيد بنجاح")
+
 @router.delete("/fleet/transactions/{transaction_id}")
 def delete_fleet_transaction(transaction_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
     t = db.get(FleetTransaction, transaction_id)
@@ -1220,6 +1353,35 @@ def update_fleet_damage_status(damage_id: str, data: FleetDamageStatusUpdate, ac
                       description=f"تم تحديث حالة سجل الضرر إلى {data.status}", username=actor.username)
     db.commit()
     return success_response(data=damage_to_dict(d), message_ar="تم تحديث الحالة بنجاح")
+
+class FleetDamageEdit(BaseModel):
+    date: str
+    description: str
+    cost: float = 0.0
+    reported_by: str | None = None
+    notes: str | None = None
+    reason: str
+
+@router.put("/fleet/damage/{damage_id}/details")
+def edit_fleet_damage_record(damage_id: str, data: FleetDamageEdit, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+    """Fixes a damage record's cost/description/date/reporter — unlike a
+    FleetTransaction, damage cost never books against a real FleetAccount
+    (it only feeds the vehicle's own cost/profit totals), so there's no
+    balance to reverse and reapply here — a direct field update is safe."""
+    reason = data.reason.strip()
+    if not reason:
+        raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    if data.cost < 0:
+        raise APIError(code="INVALID_AMOUNT", message_ar="لا يمكن أن تكون التكلفة بقيمة سالبة", message_en="Cost cannot be negative", status_code=400)
+    d = db.get(FleetDamageRecord, damage_id)
+    if not d:
+        raise APIError(code="NOT_FOUND", message_ar="سجل الضرر غير موجود", message_en="Damage record not found", status_code=404)
+    old_cost, old_description = d.cost, d.description
+    d.date, d.description, d.cost, d.reported_by, d.notes = data.date, data.description, data.cost, data.reported_by, data.notes
+    create_audit_log(db, action=AuditAction.UPDATE, entity_type="FleetDamageRecord", entity_id=damage_id,
+                      description=f"تم تعديل سجل الضرر ({old_description}) من {old_cost:,.2f} إلى {data.cost:,.2f} {d.currency} — السبب: {reason}", username=actor.username)
+    db.commit()
+    return success_response(data=damage_to_dict(d), message_ar="تم تعديل سجل الضرر بنجاح")
 
 
 @router.delete("/fleet/damage/{damage_id}")
