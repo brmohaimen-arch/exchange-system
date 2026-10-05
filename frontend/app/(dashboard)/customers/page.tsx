@@ -12,6 +12,7 @@ import { useSuccess } from '@/components/SuccessProvider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { DateInput } from '@/components/ui/date-input'
+import { DetailsField } from '@/components/DetailsField'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
 
@@ -133,7 +134,7 @@ function CustomersPageInner() {
   const [dwForm, setDwForm] = useState({
     destination: 'wallet' as 'wallet' | 'own_bank_account',
     sourceType: 'vault' as 'vault' | 'bank_account' | 'other', vaultId: '', bankAccountId: '', otherSource: '',
-    ownBankAccountId: '', currency: 'LYD', amount: '', notes: '',
+    ownBankAccountId: '', currency: 'LYD', amount: '', notes: '', details: '',
   })
   const [dwError, setDwError] = useState('')
   const [dwSaving, setDwSaving] = useState(false)
@@ -142,7 +143,7 @@ function CustomersPageInner() {
   const [transferForm, setTransferForm] = useState({
     mode: 'customer' as 'customer' | 'own_bank_account',
     toCustomerId: '', ownBankAccountId: '', ownDirection: 'to_bank_account' as 'to_bank_account' | 'to_wallet',
-    currency: 'LYD', amount: '', notes: '',
+    currency: 'LYD', amount: '', notes: '', details: '',
   })
   const [transferError, setTransferError] = useState('')
   const [transferSaving, setTransferSaving] = useState(false)
@@ -365,7 +366,7 @@ function CustomersPageInner() {
     const ownAccounts = customerOwnAccounts(c.id)
     setDwForm({
       destination: 'wallet', sourceType: 'vault', vaultId: vaults[0]?.id || '', bankAccountId: bankAccounts[0]?.id || '',
-      otherSource: '', ownBankAccountId: ownAccounts[0]?.id || '', currency: 'LYD', amount: '', notes: '',
+      otherSource: '', ownBankAccountId: ownAccounts[0]?.id || '', currency: 'LYD', amount: '', notes: '', details: '',
     })
     setDwError('')
   }
@@ -396,6 +397,7 @@ function CustomersPageInner() {
           currency: account?.currency || 'LYD',
           amount,
           notes: dwForm.notes.trim() || null,
+          details: dwForm.details.trim() || null,
         })
         const customer = depositWithdrawCustomer
         const type = depositWithdrawType
@@ -425,6 +427,7 @@ function CustomersPageInner() {
         currency: dwForm.currency,
         amount,
         notes: dwForm.notes.trim() || null,
+        details: dwForm.details.trim() || null,
       })
       const customer = depositWithdrawCustomer
       const type = depositWithdrawType
@@ -443,7 +446,7 @@ function CustomersPageInner() {
     const ownAccounts = customerOwnAccounts(c.id)
     setTransferForm({
       mode: 'customer', toCustomerId: '', ownBankAccountId: ownAccounts[0]?.id || '', ownDirection: 'to_bank_account',
-      currency: Object.keys(c.balances)[0] || 'LYD', amount: '', notes: '',
+      currency: Object.keys(c.balances)[0] || 'LYD', amount: '', notes: '', details: '',
     })
     setTransferError('')
   }
@@ -476,6 +479,7 @@ function CustomersPageInner() {
           currency: account?.currency || 'LYD',
           amount,
           notes: transferForm.notes.trim() || null,
+          details: transferForm.details.trim() || null,
         })
         const customer = transferCustomer
         setTransferCustomer(null)
@@ -500,6 +504,7 @@ function CustomersPageInner() {
         currency: transferForm.currency,
         amount,
         notes: transferForm.notes.trim() || null,
+        details: transferForm.details.trim() || null,
       })
       const customer = transferCustomer
       setTransferCustomer(null)
@@ -2430,6 +2435,7 @@ function CustomersPageInner() {
                   </div>
                 </>
               )}
+              <DetailsField value={dwForm.details} onChange={(v) => setDwForm({ ...dwForm, details: v })} />
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea
@@ -2566,6 +2572,7 @@ function CustomersPageInner() {
                   </p>
                 </>
               )}
+              <DetailsField value={transferForm.details} onChange={(v) => setTransferForm({ ...transferForm, details: v })} />
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea

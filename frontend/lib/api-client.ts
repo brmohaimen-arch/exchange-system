@@ -416,6 +416,7 @@ export interface Movement {
   referenceId: string | null
   user: string
   notes: string | null
+  details?: string | null
 }
 
 export interface Transaction {
@@ -435,6 +436,7 @@ export interface Transaction {
   paymentMethod: string
   status: string
   notes: string | null
+  details?: string | null
   user: string
   branch: string
   timestamp: string

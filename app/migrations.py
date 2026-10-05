@@ -70,6 +70,10 @@ DEFAULT_SETTINGS = {
 
 # (table, column, sqlite_column_definition)
 NEW_COLUMNS = [
+    ("movements", "details", "VARCHAR(300)"),
+    ("customer_account_entries", "details", "VARCHAR(300)"),
+    ("transfers", "details", "VARCHAR(300)"),
+    ("transactions", "details", "VARCHAR(300)"),
     ("exchange_rates", "market_rate", "REAL"),
     ("shifts", "denomination_breakdown", "TEXT DEFAULT '{}'"),
     ("inventory_counts", "denomination_breakdown", "TEXT DEFAULT '{}'"),

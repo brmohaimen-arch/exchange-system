@@ -4,14 +4,21 @@ import { useEffect, useMemo, useState, FormEvent } from 'react'
 import Link from 'next/link'
 import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText, Pencil, Undo2, X } from 'lucide-react'
 import { matchesQuery } from '@/lib/search'
-import { api, openFile, downloadFile, Customer, Currency } from '@/lib/api-client'
+import { DetailsField } from '@/components/DetailsField'
+import { api, openFile, downloadFile, Customer, Currency, Vault, BankAccount } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
 
 interface StatementSection { name: string; headers: string[]; rows: string[][] }
-interface DepositWithdrawRef { kind: 'entry' | 'transfer'; id: string; customerId: string }
+interface DepositWithdrawRef {
+  kind: 'entry' | 'transfer'; id: string; customerId: string; currency?: string
+  vaultId?: string | null; bankAccountId?: string | null; otherSource?: string | null
+  fromCustomerId?: string | null; toCustomerId?: string | null
+}
+type SourceType = 'vault' | 'bank_account' | 'other'
+const selectClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50'
 interface StatementData { sections: StatementSection[]; closingLine: string; depositWithdrawRefs?: DepositWithdrawRef[] }
 
 export default function CustomerStatementPage() {
@@ -19,6 +26,8 @@ export default function CustomerStatementPage() {
   const canReverse = hasPermission('إنشاء عملية عكسية')
   const [customers, setCustomers] = useState<Customer[]>([])
   const [currencies, setCurrencies] = useState<Currency[]>([])
+  const [vaults, setVaults] = useState<Vault[]>([])
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
   const [nameFilter, setNameFilter] = useState('')
   const [customerId, setCustomerId] = useState('')
   const [currencyFilter, setCurrencyFilter] = useState('')
@@ -37,14 +46,19 @@ export default function CustomerStatementPage() {
   const [undoSaving, setUndoSaving] = useState(false)
   const [undoError, setUndoError] = useState('')
 
-  const [editTarget, setEditTarget] = useState<DepositWithdrawRef & { label: string; amount: number; notes: string } | null>(null)
-  const [editForm, setEditForm] = useState({ amount: '', notes: '', reason: '' })
+  const [editTarget, setEditTarget] = useState<DepositWithdrawRef & { label: string; amount: number; notes: string; type?: 'deposit' | 'withdraw' } | null>(null)
+  const [editForm, setEditForm] = useState<{
+    amount: string; notes: string; reason: string; type: 'deposit' | 'withdraw'; currency: string; details: string
+    sourceType: SourceType; sourceValue: string; fromCustomerId: string; toCustomerId: string
+  }>({ amount: '', notes: '', reason: '', type: 'deposit', currency: 'LYD', details: '', sourceType: 'other', sourceValue: '', fromCustomerId: '', toCustomerId: '' })
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState('')
 
   useEffect(() => {
     api.get<Customer[]>('/customers').then(setCustomers).catch(() => {})
     api.get<Currency[]>('/currencies').then(setCurrencies).catch(() => {})
+    api.get<Vault[]>('/vaults').then(setVaults).catch(() => {})
+    api.get<BankAccount[]>('/bank_accounts').then(setBankAccounts).catch(() => {})
   }, [])
 
   useEffect(() => { setCurrencyFilter('') }, [customerId])
@@ -110,9 +124,14 @@ export default function CustomerStatementPage() {
     }
   }
 
-  const openEditModal = (ref: DepositWithdrawRef, label: string, amount: number, notes: string) => {
-    setEditTarget({ ...ref, label, amount, notes })
-    setEditForm({ amount: String(amount), notes: notes || '', reason: '' })
+  const openEditModal = (ref: DepositWithdrawRef, label: string, amount: number, notes: string, type?: 'deposit' | 'withdraw') => {
+    setEditTarget({ ...ref, label, amount, notes, type })
+    setEditForm({
+      amount: String(amount), notes: notes || '', reason: '', type: type || 'deposit', currency: ref.currency || 'LYD', details: label || '',
+      sourceType: ref.vaultId ? 'vault' : ref.bankAccountId ? 'bank_account' : 'other',
+      sourceValue: ref.vaultId || ref.bankAccountId || ref.otherSource || '',
+      fromCustomerId: ref.fromCustomerId || '', toCustomerId: ref.toCustomerId || '',
+    })
     setEditError('')
   }
 
@@ -125,7 +144,27 @@ export default function CustomerStatementPage() {
     setEditError('')
     setEditSaving(true)
     try {
-      await api.put(refPath(editTarget), { amount, notes: editForm.notes || null, reason: editForm.reason.trim() })
+      // Only what was actually changed goes along, so a plain amount fix
+      // sends exactly what it always did.
+      const changes: Record<string, unknown> = {}
+      // What the statement shows now is the starting text; only an edit of it is sent,
+      // so an untouched automatic wording stays automatic ("" = back to automatic).
+      if (editForm.details.trim() !== (editTarget.label || '').trim()) changes.details = editForm.details.trim()
+      if (editTarget.currency && editForm.currency !== editTarget.currency) changes.currency = editForm.currency
+      if (editTarget.kind === 'entry') {
+        if (editTarget.type && editForm.type !== editTarget.type) changes.type = editForm.type
+        const origSourceType: SourceType = editTarget.vaultId ? 'vault' : editTarget.bankAccountId ? 'bank_account' : 'other'
+        const origSourceValue = editTarget.vaultId || editTarget.bankAccountId || editTarget.otherSource || ''
+        if (editForm.sourceType !== origSourceType || editForm.sourceValue.trim() !== origSourceValue) {
+          if (!editForm.sourceValue.trim()) { setEditError('حدّد مصدر/وجهة المبلغ'); setEditSaving(false); return }
+          changes.source_type = editForm.sourceType
+          changes.source_value = editForm.sourceValue.trim()
+        }
+      } else {
+        if (editForm.fromCustomerId && editForm.fromCustomerId !== editTarget.fromCustomerId) changes.from_customer_id = editForm.fromCustomerId
+        if (editForm.toCustomerId && editForm.toCustomerId !== editTarget.toCustomerId) changes.to_customer_id = editForm.toCustomerId
+      }
+      await api.put(refPath(editTarget), { amount, notes: editForm.notes || null, reason: editForm.reason.trim(), ...changes })
       setEditTarget(null)
       await loadStatement()
     } catch (err) {
@@ -283,7 +322,10 @@ export default function CustomerStatementPage() {
             <input value={rowSearch} onChange={(e) => setRowSearch(e.target.value)} placeholder="بحث داخل الكشف (تفاصيل، ملاحظات، مبلغ، تاريخ...)" className="w-full rounded-md border border-input bg-background py-2 pl-3 pr-9 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
           </div>
 
-          {statement.sections.map((section0) => { const section = { ...section0, rows: section0.rows.filter((r) => matchesQuery(rowSearch, ...r)) }; return (
+          {statement.sections.every((s) => s.rows.length === 0) && (
+            <p className="rounded-xl border border-border bg-card py-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد حركات في هذه الفترة</p>
+          )}
+          {statement.sections.filter((s) => s.rows.length > 0).map((section0) => { const section = { ...section0, rows: section0.rows.filter((r) => matchesQuery(rowSearch, ...r)) }; return (
             <div key={section.name} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
               <div className="border-b border-border px-6 py-3 bg-secondary/30">
                 <h4 className="text-sm font-semibold text-foreground">{section.name}</h4>
@@ -321,6 +363,7 @@ export default function CustomerStatementPage() {
                         const amount = parseFloat(amountStr.replace(/,/g, '')) || 0
                         const notes = notesIdx !== -1 ? row[notesIdx] || '' : ''
                         const label = detailIdx !== -1 ? row[detailIdx] : ''
+                        const entryType: 'deposit' | 'withdraw' = hasFlow && row[entryIdx] ? 'deposit' : 'withdraw'
                         return (
                         <tr key={i} className="hover:bg-muted/50 transition-colors">
                           {row.map((cell, j) => {
@@ -342,7 +385,7 @@ export default function CustomerStatementPage() {
                                 <div className="flex items-center gap-1.5">
                                   <button
                                     type="button"
-                                    onClick={() => openEditModal(ref, label, amount, notes)}
+                                    onClick={() => openEditModal(ref, label, amount, notes, ref.kind === 'entry' ? entryType : undefined)}
                                     title="تعديل العملية"
                                     className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
                                   >
@@ -412,15 +455,94 @@ export default function CustomerStatementPage() {
       {/* Edit amount/notes Modal — deposit/withdraw or customer-to-customer transfer */}
       {editTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+          <div className="w-full max-w-md max-h-[calc(100vh-2rem)] overflow-y-auto rounded-xl border border-border bg-card shadow-xl">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
               <h3 className="text-lg font-semibold text-foreground">تعديل العملية</h3>
               <button onClick={() => setEditTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
             </div>
-            <form onSubmit={submitEdit} className="space-y-4 p-6 text-right">
+            <form onSubmit={submitEdit} className="space-y-3 p-5 text-right">
               <p className="text-xs text-muted-foreground">
                 سيتم عكس أثر "{editTarget.label}" الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة.
               </p>
+              {editTarget.type && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">نوع العملية</label>
+                  <select
+                    value={editForm.type}
+                    onChange={(e) => setEditForm({ ...editForm, type: e.target.value as 'deposit' | 'withdraw' })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="deposit">إيداع</option>
+                    <option value="withdraw">سحب</option>
+                  </select>
+                  {editForm.type !== editTarget.type && (
+                    <p className="mt-1 text-xs text-warning">ستتحول العملية من {editTarget.type === 'deposit' ? 'إيداع إلى سحب' : 'سحب إلى إيداع'} ويُعدَّل رصيد العميل ومصدر المبلغ وفق ذلك.</p>
+                  )}
+                </div>
+              )}
+              {editTarget.kind === 'entry' && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">مصدر / وجهة المبلغ</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={editForm.sourceType}
+                      onChange={(e) => setEditForm({ ...editForm, sourceType: e.target.value as SourceType, sourceValue: '' })}
+                      className={selectClass}
+                    >
+                      <option value="vault">خزنة</option>
+                      <option value="bank_account">حساب بنكي</option>
+                      <option value="other">مصدر آخر</option>
+                    </select>
+                    {editForm.sourceType === 'vault' && (
+                      <select value={editForm.sourceValue} onChange={(e) => setEditForm({ ...editForm, sourceValue: e.target.value })} className={selectClass}>
+                        <option value="">اختر الخزنة</option>
+                        {vaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                      </select>
+                    )}
+                    {editForm.sourceType === 'bank_account' && (
+                      <select value={editForm.sourceValue} onChange={(e) => setEditForm({ ...editForm, sourceValue: e.target.value })} className={selectClass}>
+                        <option value="">اختر الحساب</option>
+                        {bankAccounts.map((b) => <option key={b.id} value={b.id}>{b.bankName} - {b.accountName}</option>)}
+                      </select>
+                    )}
+                    {editForm.sourceType === 'other' && (
+                      <input value={editForm.sourceValue} onChange={(e) => setEditForm({ ...editForm, sourceValue: e.target.value })} placeholder="وصف المصدر" className={selectClass} />
+                    )}
+                  </div>
+                </div>
+              )}
+              {editTarget.kind === 'transfer' && (
+                <div>
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-foreground mb-1">من (المرسل)</label>
+                      <select value={editForm.fromCustomerId} onChange={(e) => setEditForm({ ...editForm, fromCustomerId: e.target.value })} className={selectClass}>
+                        {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditForm({ ...editForm, fromCustomerId: editForm.toCustomerId, toCustomerId: editForm.fromCustomerId })}
+                      title="عكس الاتجاه"
+                      className="mb-0.5 rounded-md border border-border px-2.5 py-2 text-sm hover:bg-muted transition-colors"
+                    >⇄</button>
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-foreground mb-1">إلى (المستلم)</label>
+                      <select value={editForm.toCustomerId} onChange={(e) => setEditForm({ ...editForm, toCustomerId: e.target.value })} className={selectClass}>
+                        {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <DetailsField value={editForm.details} onChange={(v) => setEditForm({ ...editForm, details: v })} />
+              <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                <select value={editForm.currency} onChange={(e) => setEditForm({ ...editForm, currency: e.target.value })} className={selectClass}>
+                  {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                </select>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
                 <NumberInput
@@ -429,6 +551,7 @@ export default function CustomerStatementPage() {
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   autoFocus
                 />
+              </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>

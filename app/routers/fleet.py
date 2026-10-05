@@ -1226,6 +1226,13 @@ class FleetTransactionEdit(BaseModel):
     date: str
     notes: str | None = None
     reason: str
+    # "income"/"expense" - only sent when the entry was booked as the wrong
+    # kind; omitted, the kind is kept as is.
+    type: str | None = None
+    # The account it moved money through / who it was with, when picked wrong.
+    # None keeps what is there; an empty string clears it (no account / no one).
+    account_id: str | None = None
+    counterparty: str | None = None
 
 _VEHICLE_LINKED_CATEGORIES = {
     "بيع المركبة/المعدة": "استخدم زر \"التراجع عن البيع\" على المركبة بدلاً من ذلك — فالبيع يُحدّث حالة المركبة وحقولها أيضاً وليس القيد المحاسبي فقط",
@@ -1258,23 +1265,35 @@ def edit_fleet_transaction(transaction_id: str, data: FleetTransactionEdit, acto
     if not t:
         raise APIError(code="NOT_FOUND", message_ar="القيد غير موجود", message_en="Transaction not found", status_code=404)
     _guard_editable_fleet_transaction(t)
+    if data.type is not None and data.type not in ("income", "expense"):
+        raise APIError(code="INVALID_TYPE", message_ar="نوع القيد يجب أن يكون إيراد أو مصروف", message_en="type must be 'income' or 'expense'", status_code=400)
+    new_type = data.type or t.type
 
-    old_amount, old_category = t.amount, t.category
+    old_amount, old_category, old_type = t.amount, t.category, t.type
+    new_account_id = t.account_id if data.account_id is None else (data.account_id or None)
     account_name = None
     if t.account_id:
-        account = db.get(FleetAccount, t.account_id)
-        if account:
-            account.balance += t.amount if t.type == "expense" else -t.amount  # undo the old amount
-            account, balance_after = _apply_account_entry(db, t.account_id, t.currency, t.type, data.amount)  # apply + validate the new one
-            t.balance_after = balance_after
-            account_name = account.name
+        old_account = db.get(FleetAccount, t.account_id)
+        if old_account:
+            old_account.balance += t.amount if t.type == "expense" else -t.amount  # undo the old entry on its OLD account (by its OLD kind)
+    if new_account_id:
+        account, balance_after = _apply_account_entry(db, new_account_id, t.currency, new_type, data.amount)  # apply + validate on the NEW account (by the NEW kind)
+        t.balance_after = balance_after
+        account_name = account.name
+    else:
+        t.balance_after = None
+    t.account_id = new_account_id
+    if data.counterparty is not None:
+        t.counterparty = data.counterparty.strip() or None
 
+    t.type = new_type
     t.amount = data.amount
     t.category = data.category.strip()
     t.date = data.date
     t.notes = data.notes
+    type_note = f" وتغيير النوع من {'إيراد' if old_type == 'income' else 'مصروف'} إلى {'إيراد' if new_type == 'income' else 'مصروف'}" if new_type != old_type else ""
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="FleetTransaction", entity_id=transaction_id,
-                      description=f"تم تعديل قيد {old_category} من {old_amount:,.2f} إلى {data.amount:,.2f} {t.currency} — السبب: {reason}", username=actor.username)
+                      description=f"تم تعديل قيد {old_category} من {old_amount:,.2f} إلى {data.amount:,.2f} {t.currency}{type_note} — السبب: {reason}", username=actor.username)
     db.commit()
     return success_response(data=transaction_to_dict(t, account_name), message_ar="تم تعديل القيد بنجاح")
 

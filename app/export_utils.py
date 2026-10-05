@@ -28,8 +28,10 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, KeepTogether
 from reportlab.lib.styles import ParagraphStyle
+
+from .arabic_numbers import amount_in_words
 
 _LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
 COMPANY_PHONES = ["+218915002525", "+218911252525", "+218917252525"]
@@ -298,7 +300,93 @@ def build_excel(sheet_title: str, headers: list[str], rows: list[list]) -> io.By
     return buf
 
 
-def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
+# ---- totals block under every statement PDF ----------------------------------
+# A table that lists the same movement twice (a transfer shows up both as an
+# account's own movement and in the "التحويلات بين الحسابات" list) must not be
+# summed twice, so that list is left out of the totals.
+_TOTALS_SKIP_SECTIONS = ("التحويلات بين الحسابات",)
+
+
+def _to_amount(cell) -> float:
+    try:
+        return float(str(cell).replace(",", "").strip())
+    except ValueError:
+        return 0.0
+
+
+def compute_currency_totals(tables, default_currency: str = "") -> dict[str, dict[str, float]]:
+    """Total دخول and خروج per currency across every (name, headers, rows)
+    table that has both columns. The currency comes from the row's "العملة"
+    cell, or default_currency for a single-currency statement that has no such
+    column. Tables without دخول/خروج (lists, warehouse stock...) are ignored."""
+    totals: dict[str, dict[str, float]] = {}
+    for name, headers, rows in tables:
+        if name in _TOTALS_SKIP_SECTIONS or "دخول" not in headers or "خروج" not in headers:
+            continue
+        i_in, i_out = headers.index("دخول"), headers.index("خروج")
+        i_ccy = headers.index("العملة") if "العملة" in headers else None
+        for row in rows:
+            ccy = (row[i_ccy] if i_ccy is not None and i_ccy < len(row) else default_currency) or ""
+            if not ccy:
+                continue
+            bucket = totals.setdefault(ccy, {"in": 0.0, "out": 0.0})
+            bucket["in"] += _to_amount(row[i_in]) if i_in < len(row) else 0.0
+            bucket["out"] += _to_amount(row[i_out]) if i_out < len(row) else 0.0
+    return totals
+
+
+def _signed_words(amount: float, currency: str) -> str:
+    words = amount_in_words(amount, currency)
+    return f"سالب {words}" if round(amount, 2) < 0 else words
+
+
+def _totals_flowables(totals: dict[str, dict[str, float]], font_name: str, content_width: float) -> list:
+    """"الإجماليات حسب العملة": one row per currency with the total received,
+    the total paid out and the net — each in figures AND in words."""
+    if not totals:
+        return []
+    headers = ["العملة", "إجمالي الدخول", "بالحروف", "إجمالي الخروج", "بالحروف", "الصافي", "بالحروف"]
+    weights = [0.7, 1.2, 2.4, 1.2, 2.4, 1.2, 2.4]
+    unit = content_width / sum(weights)
+    rev_widths = list(reversed([w * unit for w in weights]))
+
+    title_style = ParagraphStyle("TotalsTitle", fontName=font_name, fontSize=11, leading=15, alignment=1, textColor=colors.white)
+    header_style = ParagraphStyle("TotalsHeader", fontName=font_name, fontSize=8, alignment=1, textColor=colors.white, wordWrap="CJK")
+    header_style_latin = ParagraphStyle("TotalsHeaderLatin", fontName=font_name, fontSize=8, alignment=1, textColor=colors.white)
+    cell_style = ParagraphStyle("TotalsCell", fontName=font_name, fontSize=8, alignment=1, wordWrap="CJK")
+    cell_style_latin = ParagraphStyle("TotalsCellLatin", fontName=font_name, fontSize=8, alignment=1)
+
+    title_table = Table([[Paragraph(shape_arabic("الإجماليات حسب العملة"), title_style)]], colWidths=[content_width])
+    title_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), BRAND_COLOR),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+
+    display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 8, font_name, 8), _style_for(h, header_style, header_style_latin)) for i, h in enumerate(reversed(headers))]
+    rows = []
+    for ccy, t in totals.items():
+        net = t["in"] - t["out"]
+        rows.append([
+            ccy,
+            f"{t['in']:,.2f}", amount_in_words(t["in"], ccy),
+            f"{t['out']:,.2f}", amount_in_words(t["out"], ccy),
+            f"{net:,.2f}", _signed_words(net, ccy),
+        ])
+    display_rows = [[_cell_paragraph(cell, rev_widths[i] - 8, font_name, 8, cell_style, cell_style_latin) for i, cell in enumerate(reversed(row))] for row in rows]
+    table = Table([display_headers] + display_rows, repeatRows=1, colWidths=rev_widths)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return [Spacer(1, 0.3 * cm), KeepTogether([title_table, table])]
+
+
+def build_pdf(title: str, headers: list[str], rows: list[list], default_currency: str = "") -> io.BytesIO:
     font_name = _ensure_font_registered()
     buf = io.BytesIO()
     page_width, page_height = landscape(A4)
@@ -359,6 +447,7 @@ def build_pdf(title: str, headers: list[str], rows: list[list]) -> io.BytesIO:
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     elements.append(table)
+    elements.extend(_totals_flowables(compute_currency_totals([(title, headers, rows)], default_currency), font_name, content_width))
 
     doc.build(elements, onFirstPage=draw_page_furniture, onLaterPages=draw_page_furniture)
     buf.seek(0)
@@ -432,6 +521,9 @@ def build_sectioned_excel(sections: list[tuple[str, list[str], list[list]]]) -> 
     ws.title = "كشف الحساب"
     ws.sheet_view.rightToLeft = True
 
+    # A kind with no movements isn't listed at all; if nothing has any, the
+    # first one stays so the sheet still says "no data" instead of being blank.
+    sections = [sec for sec in sections if sec[2]] or sections[:1]
     max_cols = max((len(headers) for _, headers, _ in sections), default=1)
     title_font = Font(bold=True, size=12, color="FFFFFF")
     title_fill = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
@@ -534,6 +626,10 @@ def build_sectioned_pdf(
     cell_style = ParagraphStyle("SectionedCell", fontName=font_name, fontSize=8, alignment=1, wordWrap="CJK")
     cell_style_latin = ParagraphStyle("SectionedCellLatin", fontName=font_name, fontSize=8, alignment=1)
 
+    all_sections = sections
+    # Only kinds that have rows are drawn (e.g. no empty "السلف" table); when
+    # nothing has any, keep the first so the page still says "no data".
+    sections = [sec for sec in all_sections if sec[2]] or all_sections[:1]
     for name, headers, rows in sections:
         title_table = Table([[Paragraph(shape_arabic(name), section_title_style)]], colWidths=[content_width])
         title_table.setStyle(TableStyle([
@@ -578,7 +674,10 @@ def build_sectioned_pdf(
             elements.append(table)
             elements.append(Spacer(1, 0.4 * cm))
 
-    if closing_line:
+    totals_block = _totals_flowables(compute_currency_totals(sections), font_name, content_width)
+    elements.extend(totals_block)
+    # The old "الإجمالي: ..." line says the same thing the totals block now does.
+    if closing_line and not (totals_block and closing_line.startswith("الإجمالي:")):
         elements.append(Paragraph(shape_arabic(closing_line), closing_style))
 
     doc.build(elements, onFirstPage=draw_page_furniture, onLaterPages=draw_page_furniture)

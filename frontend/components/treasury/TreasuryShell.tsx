@@ -12,6 +12,8 @@ import { CurrencyFlag } from '@/components/ui/currency-flag'
 import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
+import { DateRangeFields } from '@/components/DateRangeFields'
+import { DetailsField } from '@/components/DetailsField'
 
 interface StatementSection { name: string; headers: string[]; rows: string[][] }
 
@@ -29,6 +31,7 @@ interface TransferRow {
   requestedBy: string
   timestamp: string
   notes: string | null
+  details?: string | null
 }
 
 const vaultTypeLabels: Record<string, string> = { main: 'رئيسية', branch: 'فرع', cashier: 'صندوق' }
@@ -60,10 +63,13 @@ const tabs = [
 export type TabKey = typeof tabs[number]['key']
 
 type TransferAccountType = 'vault' | 'bank_account' | 'customer'
+// Which vault/bank account a bank_entry edit or undo applies to when it starts from a
+// movements list instead of that account's own statement.
+type MovementEntity = { kind: 'vault' | 'bank_account'; id: string }
 type AccountOption = { type: TransferAccountType; id: string; label: string }
 
 function emptyTransferForm() {
-  return { sourceType: 'vault' as TransferAccountType, sourceId: '', destType: 'vault' as TransferAccountType, destId: '', currency: 'LYD', amount: '', notes: '' }
+  return { sourceType: 'vault' as TransferAccountType, sourceId: '', destType: 'vault' as TransferAccountType, destId: '', currency: 'LYD', amount: '', notes: '', details: '' }
 }
 function emptyVaultForm() {
   return { id: '', name: '', type: 'branch', branch: '', manager: '' }
@@ -133,13 +139,16 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [expenses, setExpenses] = useState<DailyExpenseDTO[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [movements, setMovements] = useState<Movement[]>([])
-  const [movementsDate, setMovementsDate] = useState(new Date().toISOString().slice(0, 10))
+  const [movementsDateFrom, setMovementsDateFrom] = useState(new Date().toISOString().slice(0, 10))
+  const [movementsDateTo, setMovementsDateTo] = useState(new Date().toISOString().slice(0, 10))
   const [movementsVaultId, setMovementsVaultId] = useState('')
   const [movementsLoading, setMovementsLoading] = useState(false)
-  const [bankMovementsDate, setBankMovementsDate] = useState(new Date().toISOString().slice(0, 10))
+  const [bankMovementsDateFrom, setBankMovementsDateFrom] = useState(new Date().toISOString().slice(0, 10))
+  const [bankMovementsDateTo, setBankMovementsDateTo] = useState(new Date().toISOString().slice(0, 10))
   const [bankMovementsAccountId, setBankMovementsAccountId] = useState('')
   const [bankMovementsDownloading, setBankMovementsDownloading] = useState<string | null>(null)
-  const [customerBankMovementsDate, setCustomerBankMovementsDate] = useState(new Date().toISOString().slice(0, 10))
+  const [customerBankMovementsDateFrom, setCustomerBankMovementsDateFrom] = useState(new Date().toISOString().slice(0, 10))
+  const [customerBankMovementsDateTo, setCustomerBankMovementsDateTo] = useState(new Date().toISOString().slice(0, 10))
   const [customerBankMovementsAccountId, setCustomerBankMovementsAccountId] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -180,7 +189,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
   const [bankOpAccount, setBankOpAccount] = useState<BankAccount | null>(null)
   const [bankOpType, setBankOpType] = useState<'deposit' | 'withdraw'>('deposit')
-  const [bankOpForm, setBankOpForm] = useState({ vaultId: '', amount: '', interestRate: '', notes: '' })
+  const [bankOpForm, setBankOpForm] = useState({ vaultId: '', amount: '', interestRate: '', notes: '', details: '' })
   const [bankOpError, setBankOpError] = useState('')
   const [savingBankOp, setSavingBankOp] = useState(false)
 
@@ -222,13 +231,16 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   // approved transfer — "تراجع" reverses it in one step, "تعديل" fixes its
   // amount/notes by reversing then reapplying with the corrected values.
   // Same underlying never-delete-only-reverse mechanism either way.
-  const [undoTarget, setUndoTarget] = useState<{ kind: 'bank_entry' | 'transfer'; id: string; label: string } | null>(null)
+  const [undoTarget, setUndoTarget] = useState<{ kind: 'bank_entry' | 'transfer'; id: string; label: string; entity?: MovementEntity } | null>(null)
   const [undoReason, setUndoReason] = useState('')
   const [undoSaving, setUndoSaving] = useState(false)
   const [undoError, setUndoError] = useState('')
 
-  const [amountEditTarget, setAmountEditTarget] = useState<{ kind: 'bank_entry' | 'transfer'; id: string; label: string; amount: number; notes: string } | null>(null)
-  const [amountEditForm, setAmountEditForm] = useState({ amount: '', notes: '', reason: '' })
+  const [amountEditTarget, setAmountEditTarget] = useState<{ kind: 'bank_entry' | 'transfer'; id: string; label: string; amount: number; notes: string; direction?: 'in' | 'out'; entity?: MovementEntity } | null>(null)
+  const [amountEditForm, setAmountEditForm] = useState<{
+    amount: string; notes: string; reason: string; direction: 'in' | 'out'
+    source: string; dest: string; currency: string; description: string; details: string
+  }>({ amount: '', notes: '', reason: '', direction: 'in', source: '', dest: '', currency: '', description: '', details: '' })
   const [amountEditSaving, setAmountEditSaving] = useState(false)
   const [amountEditError, setAmountEditError] = useState('')
   const [statementDateFrom, setStatementDateFrom] = useState('')
@@ -257,7 +269,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const [manualEntryTarget, setManualEntryTarget] = useState<{ kind: 'vault' | 'bank_account'; id: string; name: string; currency?: string } | null>(null)
   const [manualEntryForm, setManualEntryForm] = useState({
     opType: 'deposit' as QuickOpType, customerId: '', direction: 'in' as 'in' | 'out',
-    currency: 'LYD', amount: '', description: '', dueDate: '', notes: '',
+    currency: 'LYD', amount: '', description: '', dueDate: '', notes: '', details: '',
   })
   const [manualEntryError, setManualEntryError] = useState('')
   const [savingManualEntry, setSavingManualEntry] = useState(false)
@@ -300,7 +312,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const loadMovements = async () => {
     setMovementsLoading(true)
     try {
-      const params = new URLSearchParams({ date_from: movementsDate, date_to: movementsDate })
+      const params = new URLSearchParams()
+      if (movementsDateFrom) params.set('date_from', movementsDateFrom)
+      if (movementsDateTo) params.set('date_to', movementsDateTo)
       if (movementsVaultId) params.set('vault_id', movementsVaultId)
       const res = await api.get<Movement[]>(`/movements?${params.toString()}`)
       setMovements(res)
@@ -313,7 +327,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
 
   useEffect(() => {
     if (tab === 'movements') loadMovements()
-  }, [tab, movementsDate, movementsVaultId])
+  }, [tab, movementsDateFrom, movementsDateTo, movementsVaultId])
 
   const loadStatement = async () => {
     if (!statementTarget) return
@@ -348,14 +362,15 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     setStatementTarget({ kind, id, name })
   }
 
-  const undoPath = (t: { kind: 'bank_entry' | 'transfer'; id: string }) => {
+  const undoPath = (t: { kind: 'bank_entry' | 'transfer'; id: string; entity?: MovementEntity }) => {
     if (t.kind === 'transfer') return `/transfers/${t.id}`
-    const base = statementTarget?.kind === 'vault' ? '/vaults' : '/bank_accounts'
-    return `${base}/${statementTarget?.id}/movements/${t.id}`
+    const entity = t.entity ?? (statementTarget ? { kind: statementTarget.kind as 'vault' | 'bank_account', id: statementTarget.id } : null)
+    const base = entity?.kind === 'vault' ? '/vaults' : '/bank_accounts'
+    return `${base}/${entity?.id}/movements/${t.id}`
   }
 
-  const openUndoModal = (kind: 'bank_entry' | 'transfer', id: string, label: string) => {
-    setUndoTarget({ kind, id, label })
+  const openUndoModal = (kind: 'bank_entry' | 'transfer', id: string, label: string, entity?: MovementEntity) => {
+    setUndoTarget({ kind, id, label, entity })
     setUndoReason('')
     setUndoError('')
   }
@@ -369,7 +384,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     try {
       await api.post(`${undoPath(undoTarget)}/reverse`, { reason: undoReason.trim() })
       setUndoTarget(null)
-      await Promise.all([load(), loadStatement()])
+      await Promise.all([load(), loadStatement(), loadMovements()])
     } catch (err) {
       setUndoError(err instanceof ApiError ? err.message : 'تعذر التراجع عن العملية')
     } finally {
@@ -377,9 +392,25 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     }
   }
 
-  const openAmountEditModal = (kind: 'bank_entry' | 'transfer', id: string, label: string, amount: number, notes: string) => {
-    setAmountEditTarget({ kind, id, label, amount, notes })
-    setAmountEditForm({ amount: String(amount), notes: notes || '', reason: '' })
+  const amountEditOriginalTransfer = amountEditTarget?.kind === 'transfer' ? transfers.find((t) => t.id === amountEditTarget.id) : undefined
+  const amountEditOriginalDescription = amountEditTarget?.kind === 'bank_entry' && amountEditTarget.label.startsWith('قيد يدوي')
+    ? amountEditTarget.label.replace(/^قيد يدوي\s*[:：]?\s*/, '') : ''
+
+  const openAmountEditModal = (kind: 'bank_entry' | 'transfer', id: string, label: string, amount: number, notes: string, direction?: 'in' | 'out', entity?: MovementEntity) => {
+    setAmountEditTarget({ kind, id, label, amount, notes, direction, entity })
+    // A transfer's accounts and currency come from its own record, so every
+    // entry point (statement row, transfer tables) only needs to pass the id.
+    const tr = kind === 'transfer' ? transfers.find((t) => t.id === id) : undefined
+    // A manual entry's label is "قيد يدوي: <description>" — that tail is the editable part.
+    const manualDescription = kind === 'bank_entry' && label.startsWith('قيد يدوي') ? label.replace(/^قيد يدوي\s*[:：]?\s*/, '') : ''
+    setAmountEditForm({
+      amount: String(amount), notes: notes || '', reason: '', direction: direction || 'in',
+      source: tr ? `${tr.sourceType}:${tr.sourceId}` : '', dest: tr ? `${tr.destType}:${tr.destId}` : '',
+      currency: tr?.currency || '', description: manualDescription,
+      // What the statement shows now (the typed wording, or the automatic one);
+      // a transfer's own row shows من/إلى instead, so only its typed text counts.
+      details: kind === 'transfer' ? (tr?.details || '') : (label || ''),
+    })
     setAmountEditError('')
   }
 
@@ -392,9 +423,35 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     setAmountEditError('')
     setAmountEditSaving(true)
     try {
-      await api.put(undoPath(amountEditTarget), { amount, notes: amountEditForm.notes || null, reason: amountEditForm.reason.trim() })
+      // Direction only goes along when it was actually changed — a plain
+      // amount/notes fix keeps sending exactly what it did before.
+      const directionChanged = amountEditTarget.kind === 'bank_entry' && !!amountEditTarget.direction && amountEditForm.direction !== amountEditTarget.direction
+      const changes: Record<string, unknown> = {}
+      if (directionChanged) changes.direction = amountEditForm.direction
+      // Sent only when edited, so an untouched automatic wording stays automatic.
+      const originalDetails = amountEditTarget.kind === 'transfer' ? (amountEditOriginalTransfer?.details || '') : amountEditTarget.label
+      if (amountEditForm.details.trim() !== originalDetails.trim()) changes.details = amountEditForm.details.trim()
+      if (amountEditTarget.kind === 'bank_entry' && amountEditOriginalDescription && amountEditForm.description.trim() !== amountEditOriginalDescription) {
+        changes.description = amountEditForm.description.trim()
+      }
+      if (amountEditTarget.kind === 'transfer' && amountEditOriginalTransfer) {
+        const orig = amountEditOriginalTransfer
+        if (amountEditForm.source !== `${orig.sourceType}:${orig.sourceId}`) {
+          const a = accountOptions.find((o) => `${o.type}:${o.id}` === amountEditForm.source)
+          if (a) Object.assign(changes, { source_type: a.type, source_id: a.id, source_name: a.label })
+        }
+        if (amountEditForm.dest !== `${orig.destType}:${orig.destId}`) {
+          const a = accountOptions.find((o) => `${o.type}:${o.id}` === amountEditForm.dest)
+          if (a) Object.assign(changes, { dest_type: a.type, dest_id: a.id, dest_name: a.label })
+        }
+        if (amountEditForm.currency && amountEditForm.currency !== orig.currency) changes.currency = amountEditForm.currency
+      }
+      await api.put(undoPath(amountEditTarget), {
+        amount, notes: amountEditForm.notes || null, reason: amountEditForm.reason.trim(),
+        ...changes,
+      })
       setAmountEditTarget(null)
-      await Promise.all([load(), loadStatement()])
+      await Promise.all([load(), loadStatement(), loadMovements()])
     } catch (err) {
       setAmountEditError(err instanceof ApiError ? err.message : 'تعذر تعديل العملية')
     } finally {
@@ -436,13 +493,15 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     setBankMovementsDownloading(key)
     setError('')
     try {
-      const params = new URLSearchParams({ date: bankMovementsDate, format })
+      const params = new URLSearchParams({ format })
+      if (bankMovementsDateFrom) params.set('date_from', bankMovementsDateFrom)
+      if (bankMovementsDateTo) params.set('date_to', bankMovementsDateTo)
       if (bankMovementsAccountId) params.set('account_id', bankMovementsAccountId)
       const path = `/bank_accounts/company_transfers/export?${params.toString()}`
       if (format === 'pdf') {
         await openFile(path)
       } else {
-        await downloadFile(path, `company_bank_transfers_${bankMovementsDate}.xlsx`)
+        await downloadFile(path, 'company_bank_transfers.xlsx')
       }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر تحميل الملف')
@@ -594,7 +653,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     setManualEntryTarget({ kind, id, name, currency })
     setManualEntryForm({
       opType: isCustomerOwnedTarget(kind, id) ? 'other' : 'deposit', customerId: '', direction: 'in',
-      currency: currency || 'LYD', amount: '', description: '', dueDate: '', notes: '',
+      currency: currency || 'LYD', amount: '', description: '', dueDate: '', notes: '', details: '',
     })
     setManualEntryError('')
   }
@@ -603,7 +662,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     e.preventDefault()
     if (!manualEntryTarget) return
     setManualEntryError('')
-    const { opType, customerId, currency, amount: amountStr, description, dueDate, notes, direction } = manualEntryForm
+    const { opType, customerId, currency, amount: amountStr, description, dueDate, notes, direction, details } = manualEntryForm
     const amount = parseFloat(amountStr)
     const customer = customers.find((c) => c.id === customerId)
     const isVault = manualEntryTarget.kind === 'vault'
@@ -631,7 +690,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         await api.post(`/customers/${customer!.id}/${opType}`, {
           vault_id: isVault ? manualEntryTarget.id : null,
           bank_account_id: isVault ? null : manualEntryTarget.id,
-          currency, amount, notes: notes.trim() || null,
+          currency, amount, notes: notes.trim() || null, details: details.trim() || null,
         })
       } else if (opType === 'advance') {
         await api.post('/advances', {
@@ -678,6 +737,20 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
     ...customers.map((c) => ({ type: 'customer' as const, id: c.id, label: `${c.name} (عميل)` })),
   ], [vaults, bankAccounts, customers])
 
+  // The transfer's own accounts stay selectable even when one is no longer in
+  // the live lists (a removed vault), so the select always shows what it has now.
+  const transferEditOptions: AccountOption[] = (() => {
+    const o = amountEditOriginalTransfer
+    if (!o) return accountOptions
+    const extra: AccountOption[] = []
+    for (const [type, id, name] of [[o.sourceType, o.sourceId, o.sourceName], [o.destType, o.destId, o.destName]] as const) {
+      if (!accountOptions.some((a) => a.type === type && a.id === id) && !extra.some((a) => a.type === type && a.id === id)) {
+        extra.push({ type: type as TransferAccountType, id, label: `${name} (غير متاح حالياً)` })
+      }
+    }
+    return [...extra, ...accountOptions]
+  })()
+
   const accountLabel = (type: TransferAccountType, id: string) => accountOptions.find((a) => a.type === type && a.id === id)
 
   // Newest-first, capped to a page of results — each list is already the full
@@ -722,22 +795,26 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   )
   const filteredBankMovements = useMemo(
     () => companyBankTransfers.filter((t) => {
-      if (!t.timestamp.startsWith(bankMovementsDate)) return false
+      const day = t.timestamp.slice(0, 10)
+      if (bankMovementsDateFrom && day < bankMovementsDateFrom) return false
+      if (bankMovementsDateTo && day > bankMovementsDateTo) return false
       if (bankMovementsAccountId) return t.sourceId === bankMovementsAccountId || t.destId === bankMovementsAccountId
       return true
     }),
-    [companyBankTransfers, bankMovementsDate, bankMovementsAccountId]
+    [companyBankTransfers, bankMovementsDateFrom, bankMovementsDateTo, bankMovementsAccountId]
   )
   const fBankMovements = useTableFilters(filteredBankMovements, { onChange: () => setBankMovementsPage(1) })
   const pagedBankMovements = paginate(fBankMovements.filtered, bankMovementsPage)
 
   const filteredCustomerBankMovements = useMemo(
     () => customerBankTransfers.filter((t) => {
-      if (!t.timestamp.startsWith(customerBankMovementsDate)) return false
+      const day = t.timestamp.slice(0, 10)
+      if (customerBankMovementsDateFrom && day < customerBankMovementsDateFrom) return false
+      if (customerBankMovementsDateTo && day > customerBankMovementsDateTo) return false
       if (customerBankMovementsAccountId) return t.sourceId === customerBankMovementsAccountId || t.destId === customerBankMovementsAccountId
       return true
     }),
-    [customerBankTransfers, customerBankMovementsDate, customerBankMovementsAccountId]
+    [customerBankTransfers, customerBankMovementsDateFrom, customerBankMovementsDateTo, customerBankMovementsAccountId]
   )
   const fCustomerBankMovements = useTableFilters(filteredCustomerBankMovements, { onChange: () => setCustomerBankMovementsPage(1) })
   const pagedCustomerBankMovements = paginate(fCustomerBankMovements.filtered, customerBankMovementsPage)
@@ -846,6 +923,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         currency: transferForm.currency,
         amount,
         notes: transferForm.notes.trim() || null,
+        details: transferForm.details.trim() || null,
       })
       setShowTransferModal(false)
       await load()
@@ -1111,7 +1189,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const openBankOp = (account: BankAccount, type: 'deposit' | 'withdraw') => {
     setBankOpAccount(account)
     setBankOpType(type)
-    setBankOpForm({ vaultId: '', amount: '', interestRate: '', notes: '' })
+    setBankOpForm({ vaultId: '', amount: '', interestRate: '', notes: '', details: '' })
     setBankOpError('')
   }
 
@@ -1131,6 +1209,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
         amount: parseFloat(bankOpForm.amount),
         interest_rate: bankOpType === 'deposit' ? (parseFloat(bankOpForm.interestRate) || 0) : undefined,
         notes: bankOpForm.notes.trim() || null,
+        details: bankOpForm.details.trim() || null,
       })
       const account = bankOpAccount
       const type = bankOpType
@@ -1718,14 +1797,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       {tab === 'movements' && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
-              <DateInput
-                value={movementsDate}
-                onChange={(e) => setMovementsDate(e.target.value)}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              />
-            </div>
+            <DateRangeFields from={movementsDateFrom} to={movementsDateTo} onChange={(f, t) => { setMovementsDateFrom(f); setMovementsDateTo(t) }} />
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">الخزنة</label>
               <select
@@ -1768,25 +1840,61 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     <th className="px-6 py-4 font-medium">المبلغ</th>
                     <th className="px-6 py-4 font-medium">الرصيد بعد</th>
                     <th className="px-6 py-4 font-medium">بواسطة</th>
+                    {canReverse && <th className="px-6 py-4 font-medium">إجراءات</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {movementsLoading ? (
-                    <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
+                    <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">جاري التحميل...</td></tr>
                   ) : movements.length === 0 ? (
-                    <tr><td colSpan={6} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
+                    <tr><td colSpan={7} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذه الفترة</td></tr>
                   ) : fMovements.filtered.map((m) => {
                     const isIn = m.amountIn > 0
+                    // A bank deposit/withdraw or manual entry is edited as itself; a
+                    // transfer's movement edits the transfer it came from. Anything
+                    // else (trades, customer entries, interest...) has its own screen.
+                    const ref = m.referenceId || ''
+                    const entity: MovementEntity | null = m.entityType === 'vault' || m.entityType === 'bank_account' ? { kind: m.entityType, id: m.entityId } : null
+                    const isEntry = !!entity && (ref.startsWith('bae_') || ref.startsWith('me_'))
+                    const tr = ref ? transfers.find((t) => t.id === ref && t.status === 'approved') : undefined
+                    const trLabel = tr ? `${tr.sourceName} ← ${tr.destName}` : ''
+                    const movementAmount = isIn ? m.amountIn : m.amountOut
                     return (
                       <tr key={m.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-6 py-4 text-muted-foreground">{m.timestamp}</td>
                         <td className="px-6 py-4 font-medium text-foreground">{m.entityName}</td>
-                        <td className="px-6 py-4 text-muted-foreground">{m.type}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{m.details || m.type}</td>
                         <td className={`px-6 py-4 font-bold ${isIn ? 'text-success' : 'text-danger'}`} dir="ltr">
                           {isIn ? '+' : '-'}{(isIn ? m.amountIn : m.amountOut).toLocaleString()} {m.currency}
                         </td>
                         <td className="px-6 py-4">{m.balanceAfter.toLocaleString()}</td>
                         <td className="px-6 py-4 text-muted-foreground">{m.user}</td>
+                        {canReverse && (
+                          <td className="px-6 py-4">
+                            {(isEntry || tr) && (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => tr
+                                    ? openAmountEditModal('transfer', tr.id, trLabel, tr.amount, tr.notes || '')
+                                    : openAmountEditModal('bank_entry', ref, m.details || m.type, movementAmount, m.notes || '', isIn ? 'in' : 'out', entity!)}
+                                  title="تعديل العملية"
+                                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => tr ? openUndoModal('transfer', tr.id, trLabel) : openUndoModal('bank_entry', ref, m.details || m.type, entity!)}
+                                  title="تراجع عن العملية"
+                                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
+                                >
+                                  <Undo2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -1800,14 +1908,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       {tab === 'bank_movements' && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
-              <DateInput
-                value={bankMovementsDate}
-                onChange={(e) => setBankMovementsDate(e.target.value)}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              />
-            </div>
+            <DateRangeFields from={bankMovementsDateFrom} to={bankMovementsDateTo} onChange={(f, t) => { setBankMovementsDateFrom(f); setBankMovementsDateTo(t) }} />
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">الحساب البنكي</label>
               <select
@@ -1875,7 +1976,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </thead>
                 <tbody className="divide-y divide-border">
                   {filteredBankMovements.length === 0 ? (
-                    <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
+                    <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذه الفترة</td></tr>
                   ) : pagedBankMovements.map((t) => {
                     const st = statusLabels[t.status] || statusLabels.pending
                     const label = `${t.sourceName} ← ${t.destName}`
@@ -2214,14 +2315,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       {tab === 'customer_bank_movements' && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">التاريخ</label>
-              <DateInput
-                value={customerBankMovementsDate}
-                onChange={(e) => setCustomerBankMovementsDate(e.target.value)}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              />
-            </div>
+            <DateRangeFields from={customerBankMovementsDateFrom} to={customerBankMovementsDateTo} onChange={(f, t) => { setCustomerBankMovementsDateFrom(f); setCustomerBankMovementsDateTo(t) }} />
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">حساب العميل البنكي</label>
               <select
@@ -2273,7 +2367,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 </thead>
                 <tbody className="divide-y divide-border">
                   {filteredCustomerBankMovements.length === 0 ? (
-                    <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذا اليوم</td></tr>
+                    <tr><td colSpan={10} className="px-6 py-10 text-center text-muted-foreground">لا توجد حركات في هذه الفترة</td></tr>
                   ) : pagedCustomerBankMovements.map((t) => {
                     const st = statusLabels[t.status] || statusLabels.pending
                     const label = `${t.sourceName} ← ${t.destName}`
@@ -2608,6 +2702,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   />
                 </div>
               </div>
+              <DetailsField value={transferForm.details} onChange={(v) => setTransferForm({ ...transferForm, details: v })} />
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea
@@ -2768,6 +2863,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   />
                 </div>
               )}
+              <DetailsField value={bankOpForm.details} onChange={(v) => setBankOpForm({ ...bankOpForm, details: v })} />
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea
@@ -3404,6 +3500,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   <input value={manualEntryForm.description} onChange={(e) => setManualEntryForm({ ...manualEntryForm, description: e.target.value })} placeholder="مثال: تصحيح خطأ عد، مصروف نثري..." className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               )}
+              {(manualEntryForm.opType === 'deposit' || manualEntryForm.opType === 'withdraw') && (
+                <DetailsField value={manualEntryForm.details} onChange={(v) => setManualEntryForm({ ...manualEntryForm, details: v })} />
+              )}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea value={manualEntryForm.notes} onChange={(e) => setManualEntryForm({ ...manualEntryForm, notes: e.target.value })} rows={2} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
@@ -3517,7 +3616,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                 <>
                   {/* Same column structure and red-negative rule as a customer statement
                       (frontend/app/(dashboard)/customers/statement/page.tsx) — المرجع/
-                      التاريخ/التفاصيل/دخول/خروج/العملة/ملاحظات/الرصيد بالأرقام+بالحروف/بواسطة,
+                      التاريخ/التفاصيل/دخول/خروج/العملة/الرصيد بالأرقام/ملاحظات/بواسطة,
                       with a negative "الرصيد بالأرقام" cell drawn in red (no سلفة wording:
                       that's only meaningful for a customer's own balance, not a company
                       vault/bank account). */}
@@ -3526,8 +3625,12 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                     const exitIdx = section.headers.indexOf('خروج')
                     const notesIdx = section.headers.indexOf('ملاحظات')
                     const hasFlow = entryIdx !== -1 && exitIdx !== -1
-                    const showActions = canReverse && (statementTarget?.kind === 'bank_account' || statementTarget?.kind === 'vault')
                     const ids = statementEntryIds[section.name] || []
+                    // No column at all for a section where no row can be edited (e.g. interest).
+                    const showActions = canReverse && (statementTarget?.kind === 'bank_account' || statementTarget?.kind === 'vault') && ids.some(Boolean)
+                    // The transfers section's columns are من/إلى (row[2]/row[3]), not
+                    // the movement layout, and its ids are Transfer ids.
+                    const isTransferSection = section.name === 'التحويلات بين الحسابات'
                     return (
                       <div key={section.name}>
                         <p className="text-sm font-medium text-foreground mb-2">{section.name}</p>
@@ -3545,6 +3648,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                                 const amountStr = (hasFlow ? (row[entryIdx] || row[exitIdx]) : '') || '0'
                                 const amount = parseFloat(amountStr.replace(/,/g, '')) || 0
                                 const notes = notesIdx !== -1 ? row[notesIdx] || '' : ''
+                                const direction: 'in' | 'out' = hasFlow && row[entryIdx] ? 'in' : 'out'
                                 return (
                                   <tr key={i}>
                                     {row.map((cell, j) => {
@@ -3566,7 +3670,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                                           <div className="flex items-center gap-1.5">
                                             <button
                                               type="button"
-                                              onClick={() => openAmountEditModal('bank_entry', entryId, row[2] || '', amount, notes)}
+                                              onClick={() => isTransferSection
+                                                ? openAmountEditModal('transfer', entryId, `${row[2]} ← ${row[3]}`, amount, notes)
+                                                : openAmountEditModal('bank_entry', entryId, row[2] || '', amount, notes, direction)}
                                               title="تعديل العملية"
                                               className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
                                             >
@@ -3574,7 +3680,9 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                                             </button>
                                             <button
                                               type="button"
-                                              onClick={() => openUndoModal('bank_entry', entryId, row[2] || '')}
+                                              onClick={() => isTransferSection
+                                                ? openUndoModal('transfer', entryId, `${row[2]} ← ${row[3]}`)
+                                                : openUndoModal('bank_entry', entryId, row[2] || '')}
                                               title="تراجع عن العملية"
                                               className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-danger transition-colors"
                                             >
@@ -3707,15 +3815,89 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
       {/* Edit amount/notes Modal — bank account entry or transfer */}
       {amountEditTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+          <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-card shadow-xl">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
               <h3 className="text-lg font-semibold text-foreground">تعديل العملية</h3>
               <button onClick={() => setAmountEditTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
             </div>
-            <form onSubmit={submitAmountEdit} className="space-y-4 p-6 text-right">
+            <form onSubmit={submitAmountEdit} className="space-y-3 p-5 text-right">
               <p className="text-xs text-muted-foreground">
                 سيتم عكس أثر "{amountEditTarget.label}" الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة.
               </p>
+              {amountEditTarget.kind === 'bank_entry' && amountEditTarget.direction && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">نوع العملية</label>
+                  <select
+                    value={amountEditForm.direction}
+                    onChange={(e) => setAmountEditForm({ ...amountEditForm, direction: e.target.value as 'in' | 'out' })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="in">دخول (إيداع)</option>
+                    <option value="out">خروج (سحب)</option>
+                  </select>
+                  {amountEditForm.direction !== amountEditTarget.direction && (
+                    <p className="mt-1 text-xs text-warning">سيتحول القيد من {amountEditTarget.direction === 'in' ? 'دخول إلى خروج' : 'خروج إلى دخول'} ويُعدَّل الرصيد وفق ذلك.</p>
+                  )}
+                </div>
+              )}
+              {amountEditTarget.kind === 'bank_entry' && amountEditOriginalDescription && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">وصف القيد</label>
+                  <input
+                    value={amountEditForm.description}
+                    onChange={(e) => setAmountEditForm({ ...amountEditForm, description: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+              )}
+              {amountEditTarget.kind === 'transfer' && amountEditOriginalTransfer && (
+                <>
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">من</label>
+                      <select
+                        value={amountEditForm.source}
+                        onChange={(e) => setAmountEditForm({ ...amountEditForm, source: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      >
+                        {transferEditOptions.map((a) => <option key={`${a.type}:${a.id}`} value={`${a.type}:${a.id}`}>{a.label}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex justify-center">
+                      <button
+                        type="button"
+                        onClick={() => setAmountEditForm({ ...amountEditForm, source: amountEditForm.dest, dest: amountEditForm.source })}
+                        title="عكس الاتجاه"
+                        className="flex items-center gap-1 rounded-md border border-border px-3 py-1 text-xs hover:bg-muted transition-colors"
+                      >⇅ عكس الاتجاه</button>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1">إلى</label>
+                      <select
+                        value={amountEditForm.dest}
+                        onChange={(e) => setAmountEditForm({ ...amountEditForm, dest: e.target.value })}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      >
+                        {transferEditOptions.map((a) => <option key={`${a.type}:${a.id}`} value={`${a.type}:${a.id}`}>{a.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">العملة</label>
+                    <select
+                      value={amountEditForm.currency}
+                      onChange={(e) => setAmountEditForm({ ...amountEditForm, currency: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                    </select>
+                  </div>
+                </>
+              )}
+              {/* A manual entry's description above IS its details. */}
+              {!(amountEditTarget.kind === 'bank_entry' && amountEditOriginalDescription) && (
+                <DetailsField value={amountEditForm.details} onChange={(v) => setAmountEditForm({ ...amountEditForm, details: v })} />
+              )}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
                 <NumberInput

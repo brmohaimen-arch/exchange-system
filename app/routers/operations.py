@@ -14,7 +14,7 @@ from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission, check_branch_access
 from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
 from ..telegram_gateway import send_manager_alert as send_telegram_alert
-from .business import apply_transaction_reversal
+from .business import apply_transaction_reversal, execute_transfer_legs
 from pydantic import BaseModel
 from typing import Dict, Literal
 from datetime import datetime
@@ -73,6 +73,7 @@ class TransferCreate(BaseModel):
     currency: str
     amount: float
     notes: str | None = None
+    details: str | None = None  # hand-typed "التفاصيل" for the statement; empty = automatic
 
 # Inventory Count DTO
 class InventoryCountCreate(BaseModel):
@@ -154,7 +155,8 @@ def transfer_to_dict(t: Transfer):
         "status": t.status,
         "requestedBy": t.requested_by,
         "timestamp": t.timestamp,
-        "notes": t.notes
+        "notes": t.notes,
+        "details": t.details,
     }
 
 def approval_to_dict(a: ApprovalRequest):
@@ -602,7 +604,8 @@ def create_transfer(data: TransferCreate, actor: User = Depends(require_permissi
         status="pending",
         requested_by=actor.name,
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
-        notes=data.notes
+        notes=data.notes,
+        details=(data.details or "").strip()[:300] or None
     )
     db.add(transfer)
 
@@ -678,127 +681,13 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                         status_code=400
                     )
 
-                def _resolve_transfer_party(entity_type: str, entity_id: str):
-                    if entity_type == "vault":
-                        return db.get(Vault, entity_id)
-                    if entity_type == "bank_account":
-                        return db.get(BankAccount, entity_id)
-                    if entity_type == "customer":
-                        return db.get(Customer, entity_id)
-                    return None
-
-                def _party_balance(entity_type: str, entity_obj) -> float:
-                    if entity_type == "bank_account":
-                        return entity_obj.balance
-                    return entity_obj.balances.get(transfer.currency, 0.0)
-
-                src = _resolve_transfer_party(transfer.source_type, transfer.source_id)
-                if src is None:
-                    raise APIError(code="NOT_FOUND", message_ar=f"مصدر التحويل ({transfer.source_name}) غير موجود", message_en="Transfer source not found", status_code=404)
-                if transfer.source_type == "bank_account" and src.currency != transfer.currency:
-                    raise APIError(
-                        code="CURRENCY_MISMATCH",
-                        message_ar=f"عملة حساب المصدر ({src.currency}) لا تطابق عملة التحويل ({transfer.currency})",
-                        message_en="Source bank account currency does not match the transfer currency",
-                        status_code=400
-                    )
-
-                # The destination is validated to exist BEFORE the source is
-                # touched — previously this was only checked for the source,
-                # so a transfer whose destination was deleted (or never valid)
-                # would silently debit the source and credit nothing: the
-                # money simply vanished with a 200 OK and a journal entry that
-                # falsely claimed it arrived.
-                dst = _resolve_transfer_party(transfer.dest_type, transfer.dest_id)
-                if dst is None:
-                    raise APIError(code="DEST_NOT_FOUND", message_ar=f"وجهة التحويل ({transfer.dest_name}) غير موجودة", message_en="Transfer destination not found", status_code=404)
-                if transfer.dest_type == "bank_account" and dst.currency != transfer.currency:
-                    raise APIError(
-                        code="CURRENCY_MISMATCH",
-                        message_ar=f"عملة حساب الوجهة ({dst.currency}) لا تطابق عملة التحويل ({transfer.currency})",
-                        message_en="Destination bank account currency does not match the transfer currency",
-                        status_code=400
-                    )
-
-                # A vault (physical cash) can't fund more than it holds; a bank
-                # account is allowed to go negative funding a transfer, same as
-                # everywhere else a bank account's balance is checked.
-                src_balance = _party_balance(transfer.source_type, src)
-                if transfer.source_type != "bank_account" and src_balance < transfer.amount:
-                    raise APIError(
-                        code="INSUFFICIENT_BALANCE",
-                        message_ar=f"الرصيد المتاح في {transfer.source_name} ({src_balance} {transfer.currency}) غير كافٍ لتنفيذ التحويل بقيمة ({transfer.amount} {transfer.currency})",
-                        message_en=f"Insufficient balance in {transfer.source_name} for this transfer",
-                        status_code=400
-                    )
-
+                # Validates both sides, moves the money, records the Movements and
+                # books the journal entry - shared with editing an executed
+                # transfer (execute_transfer_legs in business.py) so the two
+                # can never drift apart.
+                execute_transfer_legs(db, transfer, actor.name)
                 approval.status = "approved"
                 transfer.status = "approved"
-                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-
-                if transfer.source_type == "bank_account":
-                    src.balance -= transfer.amount
-                    src_after = src.balance
-                else:
-                    src_bal = src.balances.copy()
-                    src_after = src_bal.get(transfer.currency, 0.0) - transfer.amount
-                    src_bal[transfer.currency] = src_after
-                    src.balances = src_bal
-
-                # Recorded as a Movement so this transfer shows up in that
-                # entity's statement and — same as every other money-moving
-                # operation — can be undone via "عكس القيد" if approved by
-                # mistake, instead of only being fixable with a manual
-                # opposite transfer.
-                db.add(Movement(
-                    id=new_id(f"m_xfer_src_{transfer.id}"), timestamp=timestamp, entity_type=transfer.source_type,
-                    entity_id=transfer.source_id, entity_name=transfer.source_name, currency=transfer.currency,
-                    type=f"تحويل صادر إلى {transfer.dest_name}", amount_in=0.0, amount_out=transfer.amount,
-                    balance_before=src_balance, balance_after=src_after, reference_id=transfer.id, user=actor.name
-                ))
-
-                if transfer.dest_type == "bank_account":
-                    dst_before = dst.balance
-                    dst.balance += transfer.amount
-                    dst_after = dst.balance
-                else:
-                    dst_bal = dst.balances.copy()
-                    dst_before = dst_bal.get(transfer.currency, 0.0)
-                    dst_after = dst_before + transfer.amount
-                    dst_bal[transfer.currency] = dst_after
-                    dst.balances = dst_bal
-
-                db.add(Movement(
-                    id=new_id(f"m_xfer_dst_{transfer.id}"), timestamp=timestamp, entity_type=transfer.dest_type,
-                    entity_id=transfer.dest_id, entity_name=transfer.dest_name, currency=transfer.currency,
-                    type=f"تحويل وارد من {transfer.source_name}", amount_in=transfer.amount, amount_out=0.0,
-                    balance_before=dst_before, balance_after=dst_after, reference_id=transfer.id, user=actor.name
-                ))
-
-                # Doc requirement: every financial transaction must produce a balanced journal entry.
-                equivalent_lyd = transfer.amount
-                if transfer.currency != "LYD":
-                    rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == transfer.currency, ExchangeRate.to_currency == "LYD"))
-                    if rate_row:
-                        equivalent_lyd = transfer.amount * rate_row.sell_rate
-                jv_lines = [
-                    {
-                        "accountName": f"{transfer.dest_name} - {transfer.currency}", "currency": transfer.currency,
-                        "debit": transfer.amount, "credit": 0.0,
-                        "originalAmount": transfer.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
-                    },
-                    {
-                        "accountName": f"{transfer.source_name} - {transfer.currency}", "currency": transfer.currency,
-                        "debit": 0.0, "credit": transfer.amount,
-                        "originalAmount": transfer.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd
-                    },
-                ]
-                db.add(JournalEntry(
-                    id=f"JV-{timestamp[:10].replace('-', '')}-{transfer.id}", date=timestamp,
-                    tx_type="تحويل بين الحسابات", reference=transfer.id,
-                    description=f"قيد تلقائي لتحويل {transfer.amount} {transfer.currency} من {transfer.source_name} إلى {transfer.dest_name}",
-                    user=actor.name, status="approved", lines=jv_lines
-                ))
             else:
                 approval.status = "approved"
 

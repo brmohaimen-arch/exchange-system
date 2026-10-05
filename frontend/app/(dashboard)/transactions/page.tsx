@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState, FormEvent } from 'react'
+import { DetailsField } from '@/components/DetailsField'
 import { ArrowRightLeft, DollarSign, Repeat, Loader2, Lock, Clock, PlayCircle, X, Printer, Pencil, MessageCircle, RotateCcw } from 'lucide-react'
 import { api, newId, openFile, Currency, Customer, ExchangeRate, Vault, Transaction, Shift } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
@@ -35,6 +36,7 @@ interface OpForm {
   rate: string
   commission: string
   paymentMethod: string
+  details: string
 }
 
 interface ExchangeForm {
@@ -48,17 +50,20 @@ interface ExchangeForm {
   rate: string
   commission: string
   paymentMethod: string
+  details: string
 }
 
 function emptyOpForm(rate = '', vaultId = ''): OpForm {
-  return { vaultId, customerId: '', newCustomerName: '', newCustomerPhone: '', currency: '', amount: '', rate, commission: '0', paymentMethod: 'cash' }
+  return { vaultId, customerId: '', newCustomerName: '', newCustomerPhone: '', currency: '', amount: '', rate, commission: '0', paymentMethod: 'cash', details: '' }
 }
 
 function emptyExchangeForm(vaultId = ''): ExchangeForm {
-  return { vaultId, customerId: '', newCustomerName: '', newCustomerPhone: '', fromCurrency: '', toCurrency: '', amount: '', rate: '', commission: '0', paymentMethod: 'cash' }
+  return { vaultId, customerId: '', newCustomerName: '', newCustomerPhone: '', fromCurrency: '', toCurrency: '', amount: '', rate: '', commission: '0', paymentMethod: 'cash', details: '' }
 }
 
 interface EditForm {
+  type: string
+  details: string
   amount: string
   rate: string
   commission: string
@@ -101,7 +106,7 @@ export default function TransactionsPage() {
   const [historyPage, setHistoryPage] = useState(1)
 
   const [editingTx, setEditingTx] = useState<Transaction | null>(null)
-  const [editForm, setEditForm] = useState<EditForm>({ amount: '', rate: '', commission: '0', notes: '' })
+  const [editForm, setEditForm] = useState<EditForm>({ type: 'buy', details: '', amount: '', rate: '', commission: '0', notes: '' })
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState('')
   const [sendingReceiptId, setSendingReceiptId] = useState<string | null>(null)
@@ -291,6 +296,7 @@ export default function TransactionsPage() {
         rate,
         commission: parseFloat(form.commission) || 0,
         paymentMethod: form.paymentMethod,
+        details: form.details.trim() || null,
         id: newId('tx'),
       })
       setSuccessMsg(`تم تنفيذ عملية ${isBuy ? 'الشراء' : 'البيع'} بنجاح`)
@@ -331,6 +337,7 @@ export default function TransactionsPage() {
         rate,
         commission: parseFloat(exchangeForm.commission) || 0,
         paymentMethod: exchangeForm.paymentMethod,
+        details: exchangeForm.details.trim() || null,
         id: newId('tx'),
       })
       setSuccessMsg('تم تنفيذ عملية تبديل العملة بنجاح')
@@ -346,7 +353,7 @@ export default function TransactionsPage() {
 
   const openEditModal = (tx: Transaction) => {
     setEditingTx(tx)
-    setEditForm({ amount: String(tx.amount), rate: String(tx.rate), commission: String(tx.commission), notes: tx.notes || '' })
+    setEditForm({ type: tx.type, details: tx.details || '', amount: String(tx.amount), rate: String(tx.rate), commission: String(tx.commission), notes: tx.notes || '' })
     setEditError('')
   }
 
@@ -361,7 +368,13 @@ export default function TransactionsPage() {
     setEditError('')
     setEditSaving(true)
     try {
-      await api.put(`/transactions/${editingTx.id}`, { amount, rate, commission, notes: editForm.notes || null })
+      await api.put(`/transactions/${editingTx.id}`, {
+        amount, rate, commission, notes: editForm.notes || null,
+        // Only a buy<->sell switch is offered; sent only when it really changed.
+        ...(editForm.type !== editingTx.type ? { type: editForm.type } : {}),
+        // Sent only when edited ("" = back to the automatic wording).
+        ...(editForm.details.trim() !== (editingTx.details || '') ? { details: editForm.details.trim() } : {}),
+      })
       setSuccessMsg(`تم تعديل العملية ${editingTx.id} بنجاح`)
       setEditingTx(null)
       await load()
@@ -560,6 +573,7 @@ export default function TransactionsPage() {
                   {Object.entries(paymentMethodLabels).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </div>
+              <DetailsField value={buyForm.details} onChange={(v) => setBuyForm({ ...buyForm, details: v })} />
             </div>
 
             {buyError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{buyError}</p>}
@@ -671,6 +685,7 @@ export default function TransactionsPage() {
                   {Object.entries(paymentMethodLabels).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </div>
+              <DetailsField value={sellForm.details} onChange={(v) => setSellForm({ ...sellForm, details: v })} />
             </div>
 
             {sellError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{sellError}</p>}
@@ -795,6 +810,7 @@ export default function TransactionsPage() {
                 {Object.entries(paymentMethodLabels).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
             </div>
+              <DetailsField value={exchangeForm.details} onChange={(v) => setExchangeForm({ ...exchangeForm, details: v })} />
           </div>
 
           {exchangeError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{exchangeError}</p>}
@@ -945,15 +961,31 @@ export default function TransactionsPage() {
       {/* Edit Transaction Modal */}
       {editingTx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
+          <div className="w-full max-w-md max-h-[calc(100vh-2rem)] overflow-y-auto rounded-xl border border-border bg-card shadow-xl">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
               <h3 className="text-lg font-semibold text-foreground">تعديل العملية {editingTx.id}</h3>
               <button onClick={() => setEditingTx(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
             </div>
-            <form onSubmit={submitEdit} className="space-y-4 p-6 text-right">
+            <form onSubmit={submitEdit} className="space-y-3 p-5 text-right">
               <p className="text-xs text-muted-foreground">
-                سيتم عكس أثر العملية الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة. النوع والعميل والخزنة وطريقة الدفع لا يمكن تغييرها هنا.
+                سيتم عكس أثر العملية الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة. العميل والخزنة وطريقة الدفع لا يمكن تغييرها هنا.
               </p>
+              {['buy', 'sell'].includes(editingTx.type) && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">نوع العملية</label>
+                  <select
+                    value={editForm.type}
+                    onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="buy">شراء</option>
+                    <option value="sell">بيع</option>
+                  </select>
+                  {editForm.type !== editingTx.type && (
+                    <p className="mt-1 text-xs text-warning">ستتحول العملية من {editingTx.type === 'buy' ? 'شراء إلى بيع' : 'بيع إلى شراء'} وتُعدَّل الأرصدة وفق ذلك.</p>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
                 <NumberInput
@@ -982,6 +1014,7 @@ export default function TransactionsPage() {
                   />
                 </div>
               </div>
+              <DetailsField value={editForm.details} onChange={(v) => setEditForm({ ...editForm, details: v })} />
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
                 <textarea

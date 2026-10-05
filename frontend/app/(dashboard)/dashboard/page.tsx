@@ -79,8 +79,9 @@ export default function DashboardPage() {
   const myPendingShift = shifts.find((s) => s.vaultId === myVault?.id && s.status === 'pending_open')
   const pendingApprovalsCount = approvals.filter((a) => a.status === 'pending').length
 
-  const todaysTxCount = transactions.filter((t) => t.timestamp?.startsWith(today)).length
-  const myTodaysTx = transactions.filter((t) => t.timestamp?.startsWith(today) && t.vaultId === myVault?.id)
+  // A reversed (undone) operation no longer counts as one done today.
+  const todaysTxCount = transactions.filter((t) => t.status !== 'reversed' && t.timestamp?.startsWith(today)).length
+  const myTodaysTx = transactions.filter((t) => t.status !== 'reversed' && t.timestamp?.startsWith(today) && t.vaultId === myVault?.id)
   const activeCustomers = customers.filter((c) => c.isActive).length
   // Just the main vault's own LYD balance — not a company-wide total across every
   // vault, and not converting other currencies into a LYD-equivalent estimate.

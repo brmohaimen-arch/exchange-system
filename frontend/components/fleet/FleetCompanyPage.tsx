@@ -153,7 +153,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const [undoTxError, setUndoTxError] = useState('')
 
   const [editTxTarget, setEditTxTarget] = useState<FleetTransactionWithVehicle | null>(null)
-  const [editTxForm, setEditTxForm] = useState({ amount: '', category: '', date: '', notes: '', reason: '' })
+  const [editTxForm, setEditTxForm] = useState<{ amount: string; category: string; date: string; notes: string; reason: string; type: FleetTransactionType; accountId: string; counterparty: string }>({ amount: '', category: '', date: '', notes: '', reason: '', type: 'expense', accountId: '', counterparty: '' })
   const [editTxSaving, setEditTxSaving] = useState(false)
   const [editTxError, setEditTxError] = useState('')
 
@@ -655,7 +655,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
 
   const openEditTx = (t: FleetTransactionWithVehicle) => {
     setEditTxTarget(t)
-    setEditTxForm({ amount: String(t.amount), category: t.category, date: t.date, notes: t.notes || '', reason: '' })
+    setEditTxForm({ amount: String(t.amount), category: t.category, date: t.date, notes: t.notes || '', reason: '', type: t.type, accountId: t.accountId || '', counterparty: t.counterparty || '' })
     setEditTxError('')
   }
 
@@ -672,6 +672,10 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
     try {
       await api.put(`${base}/fleet/transactions/${editTxTarget.id}`, {
         amount, category: editTxForm.category.trim(), date: editTxForm.date, notes: editTxForm.notes || null, reason: editTxForm.reason.trim(),
+        ...(editTxForm.type !== editTxTarget.type ? { type: editTxForm.type } : {}),
+        // "" means "no account" (the cash wallet); only sent when it really changed.
+        ...(editTxForm.accountId !== (editTxTarget.accountId || '') ? { account_id: editTxForm.accountId } : {}),
+        ...(editTxForm.counterparty.trim() !== (editTxTarget.counterparty || '') ? { counterparty: editTxForm.counterparty.trim() } : {}),
       })
       setEditTxTarget(null)
       await Promise.all([load(), loadSummary(), loadAccounts(), loadStatement()])
@@ -910,7 +914,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
             <p className="rounded-xl border border-border bg-card py-8 text-center text-sm text-muted-foreground shadow-sm">جاري التحميل...</p>
           ) : warehouseStmtSections.every((s) => s.rows.length === 0) ? (
             <p className="rounded-xl border border-border bg-card py-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد بيانات</p>
-          ) : warehouseStmtSections.map((section) => (
+          ) : warehouseStmtSections.filter((s) => s.rows.length > 0).map((section) => (
             <div key={section.name} className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
               <div className="border-b border-border bg-secondary/30 px-5 py-3"><h4 className="text-sm font-semibold text-foreground">{section.name}</h4></div>
               {section.rows.length === 0 ? (
@@ -1740,61 +1744,104 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
 
       {/* Edit amount/category/date/notes Modal — generic transaction only (a sale can only be undone) */}
       {editTxTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
-            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-4">
+          <div className="flex w-full max-w-lg max-h-[calc(100vh-2rem)] flex-col rounded-xl border border-border bg-card shadow-xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-3">
               <h3 className="text-lg font-semibold text-foreground">تعديل العملية</h3>
               <button onClick={() => setEditTxTarget(null)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
             </div>
-            <form onSubmit={submitEditTx} className="space-y-4 p-6 text-right">
-              <p className="text-xs text-muted-foreground">
-                سيتم عكس أثر "{editTxTarget.vehicleName} — {editTxTarget.category}" الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة.
-              </p>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">المبلغ</label>
-                <NumberInput
-                  value={editTxForm.amount}
-                  onChange={(e) => setEditTxForm({ ...editTxForm, amount: e.target.value })}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  autoFocus
-                />
+            <form onSubmit={submitEditTx} className="flex min-h-0 flex-1 flex-col text-right">
+              <div className="space-y-3 overflow-y-auto p-6">
+                <p className="text-xs text-muted-foreground">
+                  سيتم عكس أثر "{editTxTarget.vehicleName} — {editTxTarget.category}" الحالي على الأرصدة ثم تطبيقه من جديد بالقيم المعدّلة.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">نوع العملية</label>
+                    <select
+                      value={editTxForm.type}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, type: e.target.value as FleetTransactionType })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value="income">إيراد (دخول)</option>
+                      <option value="expense">مصروف (خروج)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">التاريخ</label>
+                    <DateInput
+                      value={editTxForm.date}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, date: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">الحساب</label>
+                    <select
+                      value={editTxForm.accountId}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, accountId: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value="">نقدي — عبر المحفظة النقدية</option>
+                      {accounts.filter((a) => a.currency === editTxTarget.currency && (a.isActive || a.id === editTxTarget.accountId)).map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">
+                      {editTxForm.type === 'income' ? 'من (مصدر الإيراد)' : 'إلى (وجهة المصروف)'}
+                    </label>
+                    <input
+                      value={editTxForm.counterparty}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, counterparty: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">المبلغ ({editTxTarget.currency})</label>
+                    <NumberInput
+                      value={editTxForm.amount}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, amount: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">التصنيف</label>
+                    <input
+                      value={editTxForm.category}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, category: e.target.value })}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                </div>
+                {editTxForm.type !== editTxTarget.type && (
+                  <p className="text-xs text-warning">سيتحول القيد من {editTxTarget.type === 'income' ? 'إيراد إلى مصروف' : 'مصروف إلى إيراد'} ويُعدَّل رصيد الحساب وفق ذلك.</p>
+                )}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
+                    <textarea
+                      value={editTxForm.notes}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, notes: e.target.value })}
+                      rows={2}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">سبب التعديل</label>
+                    <textarea
+                      value={editTxForm.reason}
+                      onChange={(e) => setEditTxForm({ ...editTxForm, reason: e.target.value })}
+                      rows={2}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                </div>
+                {editTxError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{editTxError}</p>}
               </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">التصنيف</label>
-                <input
-                  value={editTxForm.category}
-                  onChange={(e) => setEditTxForm({ ...editTxForm, category: e.target.value })}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">التاريخ</label>
-                <DateInput
-                  value={editTxForm.date}
-                  onChange={(e) => setEditTxForm({ ...editTxForm, date: e.target.value })}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">ملاحظات</label>
-                <textarea
-                  value={editTxForm.notes}
-                  onChange={(e) => setEditTxForm({ ...editTxForm, notes: e.target.value })}
-                  rows={2}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">سبب التعديل</label>
-                <textarea
-                  value={editTxForm.reason}
-                  onChange={(e) => setEditTxForm({ ...editTxForm, reason: e.target.value })}
-                  rows={2}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-              </div>
-              {editTxError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{editTxError}</p>}
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex shrink-0 justify-end gap-2 border-t border-border px-6 py-3">
                 <button type="button" onClick={() => setEditTxTarget(null)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={editTxSaving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
                   {editTxSaving && <Loader2 className="h-4 w-4 animate-spin" />} حفظ التعديل

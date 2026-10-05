@@ -301,6 +301,8 @@ class Transaction(Base):
     branch: Mapped[str] = mapped_column(String(100), ForeignKey("branches.id"))
     timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
     expected_profit: Mapped[float] = mapped_column(Float, default=0.0)
+    # Hand-typed wording for the statement's "التفاصيل" column (empty = automatic).
+    details: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 class Movement(Base):
     __tablename__ = "movements"
@@ -323,6 +325,10 @@ class Movement(Base):
     # _movement_source_notes() to look notes up from, so this is a direct
     # place to store them instead of silently dropping them.
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Hand-typed wording for the statement's "التفاصيل" column. Empty = the
+    # statement writes it automatically from `type` (which stays the machine
+    # category the sections are grouped by).
+    details: Mapped[str | None] = mapped_column(String(300), nullable=True)
     # "active" | "reversed" — a bank account deposit/withdraw/manual-entry/
     # transfer leg that's been corrected or undone (see
     # business.py's _reverse_movement_entries) is marked reversed rather than
@@ -427,6 +433,8 @@ class Transfer(Base):
     requested_by: Mapped[str] = mapped_column(String(100), nullable=False)
     timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Hand-typed wording for the statement's "التفاصيل" column (empty = automatic).
+    details: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -658,6 +666,8 @@ class CustomerAccountEntry(Base):
     user: Mapped[str] = mapped_column(String(100), nullable=False)
     shift_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("shifts.id"), nullable=True)
     timestamp: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Hand-typed wording for the statement's "التفاصيل" column (empty = automatic).
+    details: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 class DollarCardRecipient(Base):
     """A pure paperwork record for the Libyan government's $2000-per-person

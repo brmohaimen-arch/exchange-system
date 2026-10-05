@@ -39,6 +39,15 @@ class EditMovementAmountRequest(BaseModel):
     amount: float
     notes: str | None = None
     reason: str
+    # "in"/"out" from the edited row's own account's point of view — sent only
+    # when the operation's direction itself should change (a deposit that
+    # should have been a withdrawal); omitted, the direction is kept as is.
+    direction: str | None = None
+    # A manual entry's free-text description ("قيد يدوي: ...") — only valid on one.
+    description: str | None = None
+    # Hand-typed wording for the statement's "التفاصيل" column: omitted keeps
+    # what the row has, "" goes back to the automatic wording.
+    details: str | None = None
 
 # Request bodies
 class BankCreate(BaseModel):
@@ -139,6 +148,7 @@ class POSOperation(BaseModel):
     paymentMethod: str  # cash, customer_account, bank_account, debt
     bankAccountId: str | None = None
     notes: str | None = None
+    details: str | None = None  # hand-typed "التفاصيل" for the statement; empty = automatic
     id: str | None = None
     user: str | None = None
 
@@ -255,6 +265,7 @@ def transaction_to_dict(t: Transaction):
         "paymentMethod": t.payment_method,
         "status": t.status,
         "notes": t.notes,
+        "details": t.details,
         "user": t.user,
         "branch": t.branch,
         "timestamp": t.timestamp,
@@ -277,7 +288,25 @@ def movement_to_dict(m: Movement):
         "referenceId": m.reference_id,
         "user": m.user,
         "notes": m.notes,
+        "details": m.details,
     }
+
+def _clean_details(value: str | None) -> str | None:
+    """The hand-typed statement wording, trimmed — empty means "write it automatically"."""
+    value = (value or "").strip()
+    return value[:300] or None
+
+def _stamp_details(db: Session, reference_id: str, details: str | None, skip_reversal_legs: bool = False):
+    """Puts the hand-typed "التفاصيل" on every Movement leg booked under this
+    reference (an operation usually has one leg per account it touched)."""
+    details = _clean_details(details)
+    if not details:
+        return
+    db.flush()  # the legs were just added; the session doesn't autoflush
+    for m in db.scalars(select(Movement).where(Movement.reference_id == reference_id)).all():
+        if skip_reversal_legs and m.type.startswith("عكس"):
+            continue
+        m.details = details
 
 # ----------------- BANKS -----------------
 @router.get("/banks")
@@ -644,12 +673,14 @@ class CustomerAccountOp(BaseModel):
     currency: str
     amount: float
     notes: str | None = None
+    details: str | None = None  # hand-typed "التفاصيل" for the statement; empty = written automatically
 
 class CustomerTransferOp(BaseModel):
     to_customer_id: str
     currency: str
     amount: float
     notes: str | None = None
+    details: str | None = None
 
 def customer_account_entry_to_dict(e: CustomerAccountEntry):
     return {
@@ -670,6 +701,7 @@ def customer_account_entry_to_dict(e: CustomerAccountEntry):
         "user": e.user,
         "shiftId": e.shift_id,
         "timestamp": e.timestamp,
+        "details": e.details,
     }
 
 def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccountOp, actor: User, db: Session) -> CustomerAccountEntry:
@@ -771,7 +803,7 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         other_source=data.other_source if not (vault or bank_acc) else None,
         currency=data.currency, amount=data.amount,
         balance_before=cust_before, balance_after=cust_after, notes=data.notes, user=actor.name,
-        shift_id=shift.id if shift else None, timestamp=timestamp
+        shift_id=shift.id if shift else None, timestamp=timestamp, details=_clean_details(data.details)
     )
     db.add(entry)
 
@@ -812,7 +844,8 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
             id=entry_id, type=op_type, vault_id=vault.id, vault_name=vault.name, shift_id=shift.id if shift else None,
             customer_id=customer.id, customer_name=customer.name, from_currency=data.currency, to_currency=data.currency,
             amount=data.amount, rate=1.0, commission=0.0, total_amount=data.amount, payment_method="cash",
-            status="approved", notes=data.notes, user=actor.name, branch=vault.branch, timestamp=timestamp, expected_profit=0.0
+            status="approved", notes=data.notes, user=actor.name, branch=vault.branch, timestamp=timestamp, expected_profit=0.0,
+            details=_clean_details(data.details)
         ))
 
     equivalent_lyd = data.amount
@@ -853,6 +886,7 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
         description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {data.currency} {'في' if is_deposit else 'من'} حساب العميل {customer.name} عبر {source_kind} {source_label}",
         username=actor.username
     )
+    _stamp_details(db, entry_id, data.details)
     db.commit()
     return entry
 
@@ -884,7 +918,9 @@ def _reverse_customer_entry(db: Session, reference_id: str, actor_name: str, rea
             if shift:
                 expected = shift.expected_balances.copy()
                 delta = tx.amount if tx.type == "deposit" else -tx.amount
-                expected[tx.currency] = expected.get(tx.currency, 0.0) - delta
+                # A deposit/withdraw Transaction has the same currency on both
+                # sides (see _run_customer_account_op), so from_currency is it.
+                expected[tx.from_currency] = expected.get(tx.from_currency, 0.0) - delta
                 shift.expected_balances = expected
 
 @router.post("/customers/{customer_id}/entries/{entry_id}/reverse")
@@ -905,6 +941,21 @@ class EditCustomerEntryRequest(BaseModel):
     amount: float
     notes: str | None = None
     reason: str
+    # "deposit"/"withdraw" - only honored for a customer deposit/withdraw (a
+    # customer-to-customer transfer has no such choice); omitted, kept as is.
+    type: str | None = None
+    # Where the cash came from / went to, when that was picked wrong:
+    # source_type "vault" | "bank_account" | "other" with source_value the
+    # vault/account id (or the free-text label for "other"). Omitted, kept.
+    source_type: str | None = None
+    source_value: str | None = None
+    # Currency, when it was picked wrong (deposit/withdraw or transfer).
+    currency: str | None = None
+    # Customer-to-customer transfer only: who sent it / who received it.
+    from_customer_id: str | None = None
+    to_customer_id: str | None = None
+    # Hand-typed "التفاصيل": omitted keeps it, "" goes back to automatic wording.
+    details: str | None = None
 
 @router.put("/customers/{customer_id}/entries/{entry_id}")
 def edit_customer_entry(customer_id: str, entry_id: str, data: EditCustomerEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
@@ -920,11 +971,25 @@ def edit_customer_entry(customer_id: str, entry_id: str, data: EditCustomerEntry
     entry = db.get(CustomerAccountEntry, entry_id)
     if not entry or entry.customer_id != customer_id or entry.type not in ("deposit", "withdraw"):
         raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذه العملية على هذا العميل", message_en="No such deposit/withdraw entry for this customer", status_code=404)
-    op_type, currency = entry.type, entry.currency
+    if data.type is not None and data.type not in ("deposit", "withdraw"):
+        raise APIError(code="INVALID_TYPE", message_ar="نوع العملية يجب أن يكون إيداع أو سحب", message_en="type must be 'deposit' or 'withdraw'", status_code=400)
+    # A deposit entered by mistake that should have been a withdrawal (or the
+    # reverse) is just the same operation re-created as the other type, with
+    # the same customer/source/currency.
+    op_type, currency = data.type or entry.type, data.currency or entry.currency
+    vault_id, bank_account_id, other_source = entry.vault_id, entry.bank_account_id, entry.other_source
+    if data.source_type is not None:
+        if data.source_type not in ("vault", "bank_account", "other") or not (data.source_value or "").strip():
+            raise APIError(code="INVALID_SOURCE", message_ar="مصدر العملية غير صالح", message_en="source_type must be vault, bank_account or other, with a value", status_code=400)
+        value = data.source_value.strip()
+        vault_id = value if data.source_type == "vault" else None
+        bank_account_id = value if data.source_type == "bank_account" else None
+        other_source = value if data.source_type == "other" else None
     _reverse_customer_entry(db, entry_id, actor.name, f"تعديل العملية بواسطة {actor.name} — {reason}")
     new_entry = _run_customer_account_op(
         op_type, customer_id,
-        CustomerAccountOp(vault_id=entry.vault_id, bank_account_id=entry.bank_account_id, other_source=entry.other_source, currency=currency, amount=data.amount, notes=data.notes),
+        CustomerAccountOp(vault_id=vault_id, bank_account_id=bank_account_id, other_source=other_source, currency=currency, amount=data.amount, notes=data.notes,
+                          details=data.details if data.details is not None else entry.details),
         actor, db,
     )
     return success_response(data=customer_account_entry_to_dict(new_entry), message_ar="تم تعديل العملية بنجاح")
@@ -973,13 +1038,13 @@ def _run_customer_transfer(customer_id: str, data: CustomerTransferOp, actor: Us
         id=f"{transfer_id}_out", type="transfer_out", customer_id=from_customer.id, customer_name=from_customer.name,
         other_source=f"تحويل إلى العميل {to_customer.name} ({to_customer.id})",
         currency=data.currency, amount=data.amount, balance_before=from_before, balance_after=from_after,
-        notes=data.notes, user=actor.name, timestamp=timestamp
+        notes=data.notes, user=actor.name, timestamp=timestamp, details=_clean_details(data.details)
     )
     in_entry = CustomerAccountEntry(
         id=f"{transfer_id}_in", type="transfer_in", customer_id=to_customer.id, customer_name=to_customer.name,
         other_source=f"تحويل من العميل {from_customer.name} ({from_customer.id})",
         currency=data.currency, amount=data.amount, balance_before=to_before, balance_after=to_after,
-        notes=data.notes, user=actor.name, timestamp=timestamp
+        notes=data.notes, user=actor.name, timestamp=timestamp, details=_clean_details(data.details)
     )
     db.add(out_entry)
     db.add(in_entry)
@@ -1019,6 +1084,7 @@ def _run_customer_transfer(customer_id: str, data: CustomerTransferOp, actor: Us
         description=f"تحويل {data.amount} {data.currency} من حساب العميل {from_customer.name} إلى حساب العميل {to_customer.name}",
         username=actor.username
     )
+    _stamp_details(db, transfer_id, data.details)
     return out_entry, in_entry
 
 @router.post("/customers/{customer_id}/transfer")
@@ -1061,13 +1127,16 @@ def edit_customer_transfer(transfer_id: str, data: EditCustomerEntryRequest, act
     in_entry = db.get(CustomerAccountEntry, f"{transfer_id}_in")
     if not out_entry or not in_entry:
         raise APIError(code="NOT_FOUND", message_ar="لم يتم العثور على هذا التحويل", message_en="No such transfer", status_code=404)
-    customer_id, to_customer_id, currency = out_entry.customer_id, in_entry.customer_id, out_entry.currency
+    customer_id = data.from_customer_id or out_entry.customer_id
+    to_customer_id = data.to_customer_id or in_entry.customer_id
+    currency = data.currency or out_entry.currency
     _reverse_customer_entry(db, transfer_id, actor.name, f"تعديل العملية بواسطة {actor.name} — {reason}")
     # A fresh transfer_id, not the old one — the old (now-reversed) rows keep
     # their ids rather than being deleted, so reusing them would collide;
     # every other edit endpoint in this "never delete, only reverse" family
     # mints a new id for the corrected entry the same way.
-    _run_customer_transfer(customer_id, CustomerTransferOp(to_customer_id=to_customer_id, currency=currency, amount=data.amount, notes=data.notes), actor, db)
+    _run_customer_transfer(customer_id, CustomerTransferOp(to_customer_id=to_customer_id, currency=currency, amount=data.amount, notes=data.notes,
+                                                         details=data.details if data.details is not None else out_entry.details), actor, db)
     db.commit()
     return success_response(message_ar="تم تعديل التحويل بنجاح")
 
@@ -1114,7 +1183,10 @@ def _reversed_journal_refs():
     a live (non-reversed) transaction's own id: editing a transaction also
     flips its journal entry while the transaction itself stays valid."""
     live_tx = select(Transaction.id).where(Transaction.status != "reversed")
-    return select(JournalEntry.reference).where(JournalEntry.status == "reversed", JournalEntry.reference.not_in(live_tx))
+    # Same for an approved transfer: editing one books a reversed journal
+    # entry under its id while the transfer itself stays valid.
+    live_transfer = select(Transfer.id).where(Transfer.status == "approved")
+    return select(JournalEntry.reference).where(JournalEntry.status == "reversed", JournalEntry.reference.not_in(live_tx), JournalEntry.reference.not_in(live_transfer))
 
 def _not_reversed_movement():
     """SQL clause: hide every Movement (the original legs AND the "عكس عملية" /
@@ -1195,8 +1267,8 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     # sell hands the customer to_currency (an entry), a buy/exchange takes
     # from_currency off them (an exit). Nothing here is guessed from text.
     bal_headers = _balance_headers(True)
-    flow_headers = (["المرجع", "العميل", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + bal_headers + ["بواسطة"] if show_customer_col
-                     else ["المرجع", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + bal_headers + ["بواسطة"])
+    flow_headers = (["المرجع", "العميل", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة"] + bal_headers + ["ملاحظات", "بواسطة"] if show_customer_col
+                     else ["المرجع", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة"] + bal_headers + ["ملاحظات", "بواسطة"])
     trade_headers = flow_headers
 
     # Running customer balance per currency. Deposits/withdrawals/transfers
@@ -1286,11 +1358,11 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
         else:
             in_currency, in_amount = t.to_currency, t.total_amount
             out_currency, out_amount = t.from_currency, t.amount
-        detail = f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — عبر {cash_source_label(vault_name=t.vault_name)}"
+        detail = t.details or f"{_RECEIPT_TYPE_LABELS.get(t.type, t.type)} — عبر {cash_source_label(vault_name=t.vault_name)}"
         if not currency or currency == in_currency:
-            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, f"{in_amount:,.2f}", "", in_currency, t.notes or ""] + bal_cols(t.customer_id, in_currency, t.timestamp) + [t.user], t.customer_id)))
+            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, f"{in_amount:,.2f}", "", in_currency] + bal_cols(t.customer_id, in_currency, t.timestamp) + [t.notes or "", t.user], t.customer_id)))
         if not currency or currency == out_currency:
-            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, "", f"{out_amount:,.2f}", out_currency, t.notes or ""] + bal_cols(t.customer_id, out_currency, t.timestamp) + [t.user], t.customer_id)))
+            trade_rows_with_ts.append((t.timestamp, prefixed([t.timestamp, detail, "", f"{out_amount:,.2f}", out_currency] + bal_cols(t.customer_id, out_currency, t.timestamp) + [t.notes or "", t.user], t.customer_id)))
     trade_rows_with_ts.sort(key=lambda r: r[0])
     trade_rows = [[str(i)] + row for i, (_, row) in enumerate(trade_rows_with_ts, start=1)]
 
@@ -1301,18 +1373,27 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     for e in entries:
         if e.type in ("deposit", "withdraw"):
             source_label = cash_source_label(e.vault_name, e.bank_account_name, e.other_source)
-            detail = f"إيداع نقدي — من {source_label}" if e.type == "deposit" else f"سحب نقدي — إلى {source_label}"
-            entry_ref = {"kind": "entry", "id": e.id, "customerId": e.customer_id}
+            detail = e.details or (f"إيداع نقدي — من {source_label}" if e.type == "deposit" else f"سحب نقدي — إلى {source_label}")
+            # What the edit form pre-fills (and may change): where the cash
+            # came from / went to, and the currency.
+            entry_ref = {
+                "kind": "entry", "id": e.id, "customerId": e.customer_id, "currency": e.currency,
+                "vaultId": e.vault_id, "bankAccountId": e.bank_account_id, "otherSource": e.other_source,
+            }
         else:
             # transfer_in / transfer_out — other_source already reads like
             # "تحويل من/إلى العميل X (id)", so it doubles as the detail text.
             # The edit/reverse endpoints key on the bare transfer id, shared
             # by both legs' Movement rows — not either suffixed entry id.
-            detail = e.other_source or e.type
+            detail = e.details or e.other_source or e.type
             base_id = e.id[:-4] if e.id.endswith("_out") else e.id[:-3] if e.id.endswith("_in") else e.id
-            entry_ref = {"kind": "transfer", "id": base_id, "customerId": e.customer_id}
+            # Both parties, whichever leg this row is: the sibling leg (same
+            # base id, the other suffix) knows the other customer.
+            sibling = db.get(CustomerAccountEntry, f"{base_id}_in" if e.type == "transfer_out" else f"{base_id}_out")
+            sender_id, receiver_id = (e.customer_id, sibling.customer_id if sibling else None) if e.type == "transfer_out" else (sibling.customer_id if sibling else None, e.customer_id)
+            entry_ref = {"kind": "transfer", "id": base_id, "customerId": e.customer_id, "currency": e.currency, "fromCustomerId": sender_id, "toCustomerId": receiver_id}
         entry, exit_ = entry_exit(e.amount, e.type in ("deposit", "transfer_in"))
-        row = prefixed([e.timestamp, detail, entry, exit_, e.currency, e.notes or ""] + bal_cols(e.customer_id, e.currency, e.timestamp, exact=e.balance_after) + [e.user], e.customer_id)
+        row = prefixed([e.timestamp, detail, entry, exit_, e.currency] + bal_cols(e.customer_id, e.currency, e.timestamp, exact=e.balance_after) + [e.notes or "", e.user], e.customer_id)
         dw_rows_with_ts.append((e.timestamp, row, entry_ref))
     dw_rows_with_ts.sort(key=lambda r: r[0])
     dw_rows = [[str(i)] + row for i, (_, row, _ref) in enumerate(dw_rows_with_ts, start=1)]
@@ -1326,11 +1407,11 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     for d in debts:
         detail = f"تسجيل دين جديد — استحقاق {d.due_date} (سجل دفتري، دون حركة نقدية)"
         entry, exit_ = entry_exit(d.amount, False)
-        row = prefixed([d.start_date, detail, entry, exit_, d.currency, d.notes or ""] + bal_cols(d.customer_id, d.currency, d.start_date) + [d.created_by or "—"], d.customer_id)
+        row = prefixed([d.start_date, detail, entry, exit_, d.currency] + bal_cols(d.customer_id, d.currency, d.start_date) + [d.notes or "", d.created_by or "—"], d.customer_id)
         debt_items.append((d.start_date, d.currency, row))
     for p in debt_payments:
         entry, exit_ = entry_exit(p.amount, True)
-        row = prefixed([p.timestamp, "تسديد دفعة دين (سجل دفتري، دون حركة نقدية)", entry, exit_, p.currency, p.notes or ""] + bal_cols(p.customer_id, p.currency, p.timestamp) + [p.user], p.customer_id)
+        row = prefixed([p.timestamp, "تسديد دفعة دين (سجل دفتري، دون حركة نقدية)", entry, exit_, p.currency] + bal_cols(p.customer_id, p.currency, p.timestamp) + [p.notes or "", p.user], p.customer_id)
         debt_items.append((p.timestamp, p.currency, row))
     debt_sections = _group_rows_by_currency("الديون", flow_headers, debt_items)
 
@@ -1339,12 +1420,12 @@ def _customers_statement_sections(db: Session, customers: list[Customer], date_f
     for a in advances:
         detail = f"صرف سلفة — من {cash_source_label(a.vault_name, a.bank_account_name)}"
         entry, exit_ = entry_exit(a.amount, False)
-        row = prefixed([a.timestamp, detail, entry, exit_, a.currency, a.notes or ""] + bal_cols(a.customer_id, a.currency, a.timestamp) + [a.created_by], a.customer_id)
+        row = prefixed([a.timestamp, detail, entry, exit_, a.currency] + bal_cols(a.customer_id, a.currency, a.timestamp) + [a.notes or "", a.created_by], a.customer_id)
         advance_items.append((a.timestamp, a.currency, row))
     for p in advance_payments:
         detail = f"تسديد دفعة سلفة — إلى {cash_source_label(p.vault_name, p.bank_account_name)}"
         entry, exit_ = entry_exit(p.amount, True)
-        row = prefixed([p.timestamp, detail, entry, exit_, p.currency, p.notes or ""] + bal_cols(p.customer_id, p.currency, p.timestamp) + [p.user], p.customer_id)
+        row = prefixed([p.timestamp, detail, entry, exit_, p.currency] + bal_cols(p.customer_id, p.currency, p.timestamp) + [p.notes or "", p.user], p.customer_id)
         advance_items.append((p.timestamp, p.currency, row))
     advance_sections = _group_rows_by_currency("السلف", flow_headers, advance_items)
 
@@ -1553,11 +1634,55 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
         description=f"{'إيداع' if is_deposit else 'سحب'} {data.amount} {account.currency} {'في' if is_deposit else 'من'} حساب {account.account_name} {source_desc}",
         username=actor.username
     )
+    _stamp_details(db, entry_id, data.details)
     db.commit()
     return account, entry_id
 
 
-def _reverse_movement_entries(db: Session, reference_id: str, actor_name: str, reason: str) -> list[Movement]:
+def _reverse_journal_entries(db: Session, reference_id: str, actor_name: str, reason: str) -> list[JournalEntry]:
+    """The accounting side of undoing an operation: flips every still-approved
+    journal entry booked under this reference to "reversed" and books its
+    mirror image (debit/credit swapped, id "REV-...") — the exact shape the
+    accounting page's "عكس قيد" produces — so the books show the operation
+    AND its cancellation instead of silently keeping an entry for money that
+    was moved back. Flipping the original also stops that page from offering
+    "عكس قيد" on it a second time (which would undo the balances twice).
+    Operations that never booked a journal entry (a plain bank deposit/
+    withdraw) simply have nothing here. Returns the entries it reversed."""
+    jvs = [j for j in db.scalars(select(JournalEntry).where(JournalEntry.reference == reference_id, JournalEntry.status == "approved")).all() if not j.id.startswith("REV-")]
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    for jv in jvs:
+        jv.status = "reversed"
+        jv.description = f"{jv.description} — (ملغي بسبب: {reason})"
+        db.add(JournalEntry(
+            id=f"REV-{jv.id}", date=timestamp, tx_type=f"إلغاء قيد {jv.tx_type}", reference=jv.reference,
+            description=f"قيد عكسي تلقائي لإلغاء القيد {jv.id} — السبب: {reason}", user=actor_name, status="approved",
+            lines=[{**l, "debit": l.get("credit", 0.0), "credit": l.get("debit", 0.0)} for l in jv.lines],
+        ))
+    return jvs
+
+
+def _rebook_journal_entries(db: Session, old_jvs: list[JournalEntry], new_reference: str, factor: float, flip: bool, actor_name: str, description_override: str | None = None):
+    """Books the corrected version of reversed journal entries under the new
+    reference an edit re-creates the operation with: the same accounts, every
+    amount scaled by factor (new amount / old amount), debit and credit
+    swapped when the edit flipped the direction."""
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    for jv in old_jvs:
+        lines = []
+        for l in jv.lines:
+            debit, credit = (l.get("debit") or 0.0) * factor, (l.get("credit") or 0.0) * factor
+            if flip:
+                debit, credit = credit, debit
+            lines.append({**l, "debit": debit, "credit": credit, "originalAmount": (l.get("originalAmount") or 0.0) * factor, "equivalentLYD": (l.get("equivalentLYD") or 0.0) * factor})
+        base = jv.description.split(" — (ملغي بسبب")[0]
+        db.add(JournalEntry(
+            id=new_id(f"JV-{new_reference}"), date=timestamp, tx_type=jv.tx_type, reference=new_reference,
+            description=description_override or f"{base} — (بعد التعديل بواسطة {actor_name})", user=actor_name, status="approved", lines=lines,
+        ))
+
+
+def _reverse_movement_entries(db: Session, reference_id: str, actor_name: str, reason: str, reversed_journal_out: list | None = None) -> list[Movement]:
     """Generic "never delete, only reverse" correction for a bank account/
     vault Movement-based operation (deposit, withdraw, manual entry, a
     transfer leg) — unlike a trade (Transaction), these have no separate
@@ -1593,6 +1718,10 @@ def _reverse_movement_entries(db: Session, reference_id: str, actor_name: str, r
                 entity.last_movement = timestamp
         m.status = "reversed"
 
+    reversed_jvs = _reverse_journal_entries(db, reference_id, actor_name, reason)
+    if reversed_journal_out is not None:
+        reversed_journal_out.extend(reversed_jvs)
+
     lead = rows[0]
     amount = lead.amount_in or lead.amount_out
     create_audit_log(
@@ -1603,19 +1732,39 @@ def _reverse_movement_entries(db: Session, reference_id: str, actor_name: str, r
     return rows
 
 
-def _edit_movement_entries(db: Session, reference_id: str, new_amount: float, new_notes: str | None, actor_name: str, reason: str) -> list[Movement]:
+# A bank-account op's deposit<->withdraw counterpart wording (and its vault
+# leg's) — used when an edit flips the direction, so the statement line reads
+# as the operation it now is rather than keeping the old name. A manual
+# entry's type ("قيد يدوي: <desc>") is direction-neutral and stays as is.
+_FLIPPED_MOVEMENT_TYPES = {
+    "إيداع في حساب بنكي": "سحب من حساب بنكي",
+    "إيداع خارجي في حساب بنكي (بدون خزنة)": "سحب خارجي من حساب بنكي (بدون خزنة)",
+    "تحويل نقدي إلى بنك": "سحب نقدي من بنك",
+}
+_FLIPPED_MOVEMENT_TYPES.update({v: k for k, v in list(_FLIPPED_MOVEMENT_TYPES.items())})
+
+
+def _edit_movement_entries(db: Session, reference_id: str, new_amount: float, new_notes: str | None, actor_name: str, reason: str, flip_direction: bool = False, new_description: str | None = None, new_details: str | None = None) -> list[Movement]:
     """Edits a bank account/vault Movement-based operation (deposit, withdraw,
     manual entry, or one leg of a transfer) by reversing the old entry
     (_reverse_movement_entries) and creating a fresh one with the corrected
     amount — same "never delete, only reverse" rule, and the same
     reverse-then-reapply shape already used for editing a trade transaction.
-    Keeps the original entity/currency/type/direction/reference_id; only the
-    amount and notes change. Works uniformly whether the operation touched
-    one leg (a plain deposit/withdraw/manual entry) or two (a vault-backed
-    bank op, or a transfer's source+dest legs) — doesn't need to know which
-    endpoint originally created it."""
-    old_rows = _reverse_movement_entries(db, reference_id, actor_name, f"تعديل العملية بواسطة {actor_name} — {reason}")
+    Keeps the original entity/currency; the amount and notes change, with
+    flip_direction every leg's direction (and the deposit/withdraw wording of
+    its type) is swapped too — a deposit entered by mistake that should have
+    been a withdrawal — and new_description re-words a manual entry. The
+    corrected entry is re-created under a FRESH reference (same prefix, so
+    it stays editable): its journal entry is re-booked under it too, and the
+    old reference — now carrying a reversed journal entry — stays out of
+    every statement without dragging the corrected rows down with it.
+    Works for one leg (a plain deposit/withdraw/manual entry) or two (a
+    vault-backed bank op)."""
+    reversed_jvs: list[JournalEntry] = []
+    old_rows = _reverse_movement_entries(db, reference_id, actor_name, f"تعديل العملية بواسطة {actor_name} — {reason}", reversed_journal_out=reversed_jvs)
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    new_reference = new_id(f"{'me' if reference_id.startswith('me_') else 'bae'}_edit")
+    old_amount = old_rows[0].amount_in or old_rows[0].amount_out
     new_rows = []
     for old in old_rows:
         entity = None
@@ -1623,26 +1772,44 @@ def _edit_movement_entries(db: Session, reference_id: str, new_amount: float, ne
             entity = db.get(Vault, old.entity_id)
         elif old.entity_type == "bank_account":
             entity = db.get(BankAccount, old.entity_id)
-        is_in = old.amount_in > 0
-        balance_before = entity.balances.get(old.currency, 0.0) if (entity is not None and old.entity_type == "vault") else (entity.balance if entity is not None else 0.0)
+        elif old.entity_type == "customer":
+            entity = db.get(Customer, old.entity_id)
+        has_balances_dict = old.entity_type in ("vault", "customer")
+        is_in = (old.amount_in > 0) != flip_direction
+        new_type = _FLIPPED_MOVEMENT_TYPES.get(old.type, old.type) if flip_direction else old.type
+        if new_description is not None and old.type.startswith("قيد يدوي"):
+            new_type = f"قيد يدوي: {new_description}"
+        balance_before = entity.balances.get(old.currency, 0.0) if (entity is not None and has_balances_dict) else (entity.balance if entity is not None else 0.0)
+        # A vault is real physical cash and can never go negative (a bank
+        # account may) — an edit that turns this leg into, or enlarges, a cash
+        # payout the drawer can't cover is refused just like a fresh one would be.
+        if not is_in and old.entity_type == "vault" and balance_before < new_amount:
+            raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"رصيد الخزنة غير كافٍ ({balance_before:,.2f} {old.currency}) لتنفيذ هذا التعديل", message_en="Insufficient vault balance for this edit", status_code=400)
         delta = new_amount if is_in else -new_amount
         balance_after = balance_before + delta
         if entity is not None:
-            if old.entity_type == "vault":
+            if has_balances_dict:
                 bals = entity.balances.copy()
                 bals[old.currency] = balance_after
                 entity.balances = bals
             else:
                 entity.balance = balance_after
-            entity.last_movement = timestamp
+            if old.entity_type != "customer":
+                entity.last_movement = timestamp
         new_row = Movement(
             id=new_id(f"m_edit_{reference_id}"), timestamp=timestamp, entity_type=old.entity_type, entity_id=old.entity_id,
-            entity_name=old.entity_name, currency=old.currency, type=old.type,
+            entity_name=old.entity_name, currency=old.currency, type=new_type,
             amount_in=new_amount if is_in else 0.0, amount_out=new_amount if not is_in else 0.0,
-            balance_before=balance_before, balance_after=balance_after, reference_id=reference_id, user=actor_name, notes=new_notes,
+            balance_before=balance_before, balance_after=balance_after, reference_id=new_reference, user=actor_name, notes=new_notes,
+            # Keeps the hand-typed wording across the edit unless a new one was given.
+            details=_clean_details(new_details if new_details is not None else old.details),
         )
         db.add(new_row)
         new_rows.append(new_row)
+    _rebook_journal_entries(
+        db, reversed_jvs, new_reference, new_amount / old_amount if old_amount else 1.0, flip_direction, actor_name,
+        description_override=(f"قيد يدوي ({new_description}) بعد التعديل بواسطة {actor_name}" if new_description is not None and reversed_jvs and reversed_jvs[0].tx_type == "قيد يدوي" else None),
+    )
     return new_rows
 
 
@@ -1667,16 +1834,48 @@ def withdraw_from_bank_account(account_id: str, data: CustomerAccountOp, actor: 
     account, _entry_id = _run_bank_account_op("withdraw", account_id, data, actor, db)
     return success_response(data=bank_account_to_dict(account), message_ar="تم تسجيل السحب بنجاح")
 
+# Only an operation recorded purely as vault/bank-account Movement rows —
+# a bank deposit/withdraw ("bae_...") or a manual entry ("me_...") — can be
+# edited/undone straight from a statement row. Everything else that leaves a
+# Movement behind (a trade, a transfer, a customer deposit/withdraw, an
+# advance or its repayment, a debt payment, interest, a balance adjustment,
+# a shift close, an inventory count, a journal reversal) also owns a record
+# of its own that would silently fall out of step with the balance if just
+# its Movement leg were undone here, so those have no edit/undo on a
+# statement row at all (they keep their own flow, where one exists).
+_EDITABLE_REFERENCE_PREFIXES = ("bae_", "me_")
+
+def _is_editable_movement_reference(ref: str | None) -> bool:
+    return bool(ref) and ref.startswith(_EDITABLE_REFERENCE_PREFIXES)
+
 def _guard_reference_not_linked(db: Session, entry_id: str):
-    # A trade, a transfer, or a customer deposit/withdraw each carries its own
-    # edit/reverse flow (the two-person approval reversal for trades;
-    # /transfers/{id}/reverse for transfers; the dedicated customer-entry
-    # endpoints) — undoing just the vault/bank-account leg here would desync
-    # it from that entity's own status/balance, so those reference_ids are
-    # rejected up front. A customer entry funded by a bank account creates no
-    # Transaction row (only a vault-funded one does), hence the separate check.
     if db.get(Transaction, entry_id) or db.get(Transfer, entry_id) or db.get(CustomerAccountEntry, entry_id):
         raise APIError(code="NOT_REVERSIBLE_HERE", message_ar="هذه العملية جزء من عملية صرافة أو تحويل أو حساب عميل — استخدم زر التراجع/التعديل الخاص بها من صفحتها", message_en="This entry belongs to a trade, transfer, or customer entry; use that operation's own edit/reverse action", status_code=400)
+    if not _is_editable_movement_reference(entry_id):
+        raise APIError(code="NOT_REVERSIBLE_HERE", message_ar="لا يمكن تعديل هذه الحركة أو التراجع عنها من كشف الحساب — فهي مرتبطة بسجل آخر (سلفة أو دين أو فائدة أو جرد أو غيرها)", message_en="This movement belongs to another record and can't be edited or undone from a statement row", status_code=400)
+
+def _wants_direction_flip(rows: list[Movement], entity_type: str, entity_id: str, direction: str | None) -> bool:
+    """Whether the edit asks for the row on this entity to point the other
+    way (a deposit that should have been a withdrawal) — the whole
+    operation's legs all flip together when it does."""
+    if direction is None:
+        return False
+    if direction not in ("in", "out"):
+        raise APIError(code="INVALID_DIRECTION", message_ar="اتجاه العملية يجب أن يكون دخول أو خروج", message_en="direction must be 'in' or 'out'", status_code=400)
+    mine = next(m for m in rows if m.entity_type == entity_type and m.entity_id == entity_id)
+    return (mine.amount_in > 0) != (direction == "in")
+
+def _manual_entry_description(rows: list[Movement], description: str | None) -> str | None:
+    """The re-worded description for an edit of a manual entry, or None when
+    the edit doesn't touch it. Only a manual entry has a free-text description."""
+    if description is None:
+        return None
+    description = description.strip()
+    if not description:
+        raise APIError(code="INVALID_DESCRIPTION", message_ar="وصف العملية مطلوب", message_en="Description is required", status_code=400)
+    if not any(m.type.startswith("قيد يدوي") for m in rows):
+        raise APIError(code="NOT_A_MANUAL_ENTRY", message_ar="الوصف يُعدَّل للقيود اليدوية فقط", message_en="Only a manual entry has an editable description", status_code=400)
+    return description
 
 def _bank_account_entry_rows(db: Session, account_id: str, entry_id: str) -> list[Movement]:
     _guard_reference_not_linked(db, entry_id)
@@ -1722,8 +1921,9 @@ def edit_bank_account_entry(account_id: str, entry_id: str, data: EditMovementAm
     account = db.get(BankAccount, account_id)
     if not account:
         raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
-    _bank_account_entry_rows(db, account_id, entry_id)
-    _edit_movement_entries(db, entry_id, data.amount, data.notes, actor.name, reason)
+    rows = _bank_account_entry_rows(db, account_id, entry_id)
+    flip = _wants_direction_flip(rows, "bank_account", account_id, data.direction)
+    _edit_movement_entries(db, entry_id, data.amount, data.notes, actor.name, reason, flip_direction=flip, new_description=_manual_entry_description(rows, data.description), new_details=data.details)
     db.commit()
     account = db.get(BankAccount, account_id)
     return success_response(data=bank_account_to_dict(account), message_ar="تم تعديل العملية بنجاح")
@@ -1755,8 +1955,9 @@ def edit_vault_entry(vault_id: str, entry_id: str, data: EditMovementAmountReque
     vault = db.get(Vault, vault_id)
     if not vault:
         raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة المحددة غير موجودة", message_en="Vault not found", status_code=400)
-    _vault_entry_rows(db, vault_id, entry_id)
-    _edit_movement_entries(db, entry_id, data.amount, data.notes, actor.name, reason)
+    rows = _vault_entry_rows(db, vault_id, entry_id)
+    flip = _wants_direction_flip(rows, "vault", vault_id, data.direction)
+    _edit_movement_entries(db, entry_id, data.amount, data.notes, actor.name, reason, flip_direction=flip, new_description=_manual_entry_description(rows, data.description), new_details=data.details)
     db.commit()
     return success_response(data={"id": vault.id, "balances": vault.balances}, message_ar="تم تعديل العملية بنجاح")
 
@@ -1767,6 +1968,106 @@ def _approved_transfer_or_404(db: Session, transfer_id: str) -> Transfer:
     if transfer.status != "approved":
         raise APIError(code="NOT_APPROVED", message_ar="لا يمكن التراجع عن تحويل لم تتم الموافقة عليه بعد", message_en="Only an approved transfer can be reversed/edited", status_code=400)
     return transfer
+
+def execute_transfer_legs(db: Session, transfer: Transfer, actor_name: str, journal_id: str | None = None):
+    """Moves a transfer's money: validates BOTH sides fully before touching
+    anything, debits the source, credits the destination, records a Movement
+    for each (so it shows in both statements and can be undone), and books
+    the balanced journal entry. Shared by the approval of a pending transfer
+    and by editing an executed one, so the two can never drift apart. Does not
+    touch any status and does not commit - the caller does."""
+    def party(entity_type: str, entity_id: str):
+        if entity_type == "vault":
+            return db.get(Vault, entity_id)
+        if entity_type == "bank_account":
+            return db.get(BankAccount, entity_id)
+        if entity_type == "customer":
+            return db.get(Customer, entity_id)
+        return None
+
+    def balance_of(entity_type: str, entity_obj) -> float:
+        if entity_type == "bank_account":
+            return entity_obj.balance
+        return entity_obj.balances.get(transfer.currency, 0.0)
+
+    src = party(transfer.source_type, transfer.source_id)
+    if src is None:
+        raise APIError(code="NOT_FOUND", message_ar=f"مصدر التحويل ({transfer.source_name}) غير موجود", message_en="Transfer source not found", status_code=404)
+    if transfer.source_type == "bank_account" and src.currency != transfer.currency:
+        raise APIError(code="CURRENCY_MISMATCH", message_ar=f"عملة حساب المصدر ({src.currency}) لا تطابق عملة التحويل ({transfer.currency})", message_en="Source bank account currency does not match the transfer currency", status_code=400)
+
+    # The destination is validated to exist BEFORE the source is touched - a
+    # transfer whose destination was deleted would otherwise silently debit
+    # the source and credit nothing.
+    dst = party(transfer.dest_type, transfer.dest_id)
+    if dst is None:
+        raise APIError(code="DEST_NOT_FOUND", message_ar=f"وجهة التحويل ({transfer.dest_name}) غير موجودة", message_en="Transfer destination not found", status_code=404)
+    if transfer.dest_type == "bank_account" and dst.currency != transfer.currency:
+        raise APIError(code="CURRENCY_MISMATCH", message_ar=f"عملة حساب الوجهة ({dst.currency}) لا تطابق عملة التحويل ({transfer.currency})", message_en="Destination bank account currency does not match the transfer currency", status_code=400)
+
+    # A vault (physical cash) can not fund more than it holds; a bank account
+    # is allowed to go negative funding a transfer, same as everywhere else a
+    # bank account balance is checked.
+    src_balance = balance_of(transfer.source_type, src)
+    if transfer.source_type != "bank_account" and src_balance < transfer.amount:
+        raise APIError(code="INSUFFICIENT_BALANCE", message_ar=f"الرصيد المتاح في {transfer.source_name} ({src_balance} {transfer.currency}) غير كافٍ لتنفيذ التحويل بقيمة ({transfer.amount} {transfer.currency})", message_en=f"Insufficient balance in {transfer.source_name} for this transfer", status_code=400)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+
+    if transfer.source_type == "bank_account":
+        src.balance -= transfer.amount
+        src_after = src.balance
+    else:
+        src_bal = src.balances.copy()
+        src_after = src_bal.get(transfer.currency, 0.0) - transfer.amount
+        src_bal[transfer.currency] = src_after
+        src.balances = src_bal
+
+    # Recorded as a Movement so this transfer shows up in that entity's
+    # statement and, same as every other money-moving operation, can be
+    # undone if approved by mistake.
+    db.add(Movement(
+        id=new_id(f"m_xfer_src_{transfer.id}"), timestamp=timestamp, entity_type=transfer.source_type,
+        entity_id=transfer.source_id, entity_name=transfer.source_name, currency=transfer.currency,
+        type=f"تحويل صادر إلى {transfer.dest_name}", amount_in=0.0, amount_out=transfer.amount,
+        balance_before=src_balance, balance_after=src_after, reference_id=transfer.id, user=actor_name, details=_clean_details(transfer.details)
+    ))
+
+    if transfer.dest_type == "bank_account":
+        dst_before = dst.balance
+        dst.balance += transfer.amount
+        dst_after = dst.balance
+    else:
+        dst_bal = dst.balances.copy()
+        dst_before = dst_bal.get(transfer.currency, 0.0)
+        dst_after = dst_before + transfer.amount
+        dst_bal[transfer.currency] = dst_after
+        dst.balances = dst_bal
+
+    db.add(Movement(
+        id=new_id(f"m_xfer_dst_{transfer.id}"), timestamp=timestamp, entity_type=transfer.dest_type,
+        entity_id=transfer.dest_id, entity_name=transfer.dest_name, currency=transfer.currency,
+        type=f"تحويل وارد من {transfer.source_name}", amount_in=transfer.amount, amount_out=0.0,
+        balance_before=dst_before, balance_after=dst_after, reference_id=transfer.id, user=actor_name, details=_clean_details(transfer.details)
+    ))
+
+    # Doc requirement: every financial transaction must produce a balanced journal entry.
+    equivalent_lyd = transfer.amount
+    if transfer.currency != "LYD":
+        rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == transfer.currency, ExchangeRate.to_currency == "LYD"))
+        if rate_row:
+            equivalent_lyd = transfer.amount * rate_row.sell_rate
+    db.add(JournalEntry(
+        id=journal_id or f"JV-{timestamp[:10].replace('-', '')}-{transfer.id}", date=timestamp,
+        tx_type="تحويل بين الحسابات", reference=transfer.id,
+        description=f"قيد تلقائي لتحويل {transfer.amount} {transfer.currency} من {transfer.source_name} إلى {transfer.dest_name}",
+        user=actor_name, status="approved",
+        lines=[
+            {"accountName": f"{transfer.dest_name} - {transfer.currency}", "currency": transfer.currency, "debit": transfer.amount, "credit": 0.0, "originalAmount": transfer.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+            {"accountName": f"{transfer.source_name} - {transfer.currency}", "currency": transfer.currency, "debit": 0.0, "credit": transfer.amount, "originalAmount": transfer.amount, "exchangeRate": 1.0, "equivalentLYD": equivalent_lyd},
+        ],
+    ))
+
 
 @router.post("/transfers/{transfer_id}/reverse")
 def reverse_transfer(transfer_id: str, data: ReverseEntryRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
@@ -1783,19 +2084,63 @@ def reverse_transfer(transfer_id: str, data: ReverseEntryRequest, actor: User = 
     db.commit()
     return success_response(message_ar="تم التراجع عن التحويل بنجاح")
 
+class EditTransferRequest(BaseModel):
+    amount: float
+    notes: str | None = None
+    reason: str
+    # Re-aim the transfer: each side is only touched when its type/id/name are
+    # all given (the frontend sends them together, same as when creating one).
+    source_type: str | None = None
+    source_id: str | None = None
+    source_name: str | None = None
+    dest_type: str | None = None
+    dest_id: str | None = None
+    dest_name: str | None = None
+    currency: str | None = None
+    # Hand-typed "التفاصيل": omitted keeps it, "" goes back to automatic wording.
+    details: str | None = None
+
 @router.put("/transfers/{transfer_id}")
-def edit_transfer(transfer_id: str, data: EditMovementAmountRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
-    """Fixes the amount/notes of an already-executed transfer without
-    touching which two accounts it moved money between."""
+def edit_transfer(transfer_id: str, data: EditTransferRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
+    """Fixes an already-executed transfer: the amount/notes, and also which
+    accounts it went between and in which currency (sent to the wrong
+    account, or the wrong way round). The old money movement is reversed -
+    balances AND journal - and the corrected transfer is executed through
+    the same logic approval uses, so every validation a fresh transfer
+    gets (currency match, vault funds, destination exists) applies here too;
+    if any fails nothing is changed."""
     reason = data.reason.strip()
     if not reason:
         raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
     transfer = _approved_transfer_or_404(db, transfer_id)
-    _edit_movement_entries(db, transfer_id, data.amount, data.notes, actor.name, reason)
+
+    source = (data.source_type, data.source_id, data.source_name)
+    dest = (data.dest_type, data.dest_id, data.dest_name)
+    for side in (source, dest):
+        if any(side) and not all(side):
+            raise APIError(code="INCOMPLETE_ACCOUNT", message_ar="بيانات الحساب غير مكتملة", message_en="An account must be given as type, id and name together", status_code=400)
+    new_source = source if all(source) else (transfer.source_type, transfer.source_id, transfer.source_name)
+    new_dest = dest if all(dest) else (transfer.dest_type, transfer.dest_id, transfer.dest_name)
+    if new_source[:2] == new_dest[:2]:
+        raise APIError(code="SAME_ACCOUNT", message_ar="لا يمكن التحويل من الحساب إلى نفسه", message_en="Cannot transfer an account to itself", status_code=400)
+
+    old_summary = f"{transfer.amount:,.2f} {transfer.currency} من {transfer.source_name} إلى {transfer.dest_name}"
+    _reverse_movement_entries(db, transfer_id, actor.name, f"تعديل التحويل بواسطة {actor.name} — {reason}")
+    transfer.source_type, transfer.source_id, transfer.source_name = new_source
+    transfer.dest_type, transfer.dest_id, transfer.dest_name = new_dest
+    transfer.currency = data.currency or transfer.currency
     transfer.amount = data.amount
     transfer.notes = data.notes
+    if data.details is not None:
+        transfer.details = _clean_details(data.details)
+    execute_transfer_legs(db, transfer, actor.name, journal_id=new_id(f"JV-EDIT-{transfer_id}"))
+    create_audit_log(
+        db, action=AuditAction.UPDATE, entity_type="Transfer", entity_id=transfer_id,
+        description=f"تم تعديل التحويل من ({old_summary}) إلى {transfer.amount:,.2f} {transfer.currency} من {transfer.source_name} إلى {transfer.dest_name} — السبب: {reason}",
+        username=actor.username,
+    )
     db.commit()
     return success_response(message_ar="تم تعديل التحويل بنجاح")
 
@@ -2651,7 +2996,7 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     # بالأرقام + بالحروف pair, and a negative بالأرقام cell ("-500.00") is
     # already drawn in red by the same generic rule every other statement uses
     # (export_utils._is_negative_amount) — no سلفة wording, just "سالب <words>".
-    mv_headers = ["المرجع", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + _balance_headers(False) + ["بواسطة"]
+    mv_headers = ["المرجع", "التاريخ", "التفاصيل", "دخول", "خروج", "العملة"] + _balance_headers(False) + ["ملاحظات", "بواسطة"]
 
     def mv_rows(items: list[Movement]) -> list[list]:
         rows = []
@@ -2659,8 +3004,8 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
             is_in = m.amount_in > 0
             entry = f"{m.amount_in:,.2f}" if is_in else ""
             exit_ = f"{m.amount_out:,.2f}" if not is_in else ""
-            rows.append([str(i), m.timestamp, m.type, entry, exit_, m.currency, _movement_source_notes(db, m)]
-                        + _balance_cells(m.balance_after, m.currency, False) + [m.user])
+            rows.append([str(i), m.timestamp, m.details or m.type, entry, exit_, m.currency]
+                        + _balance_cells(m.balance_after, m.currency, False) + [_movement_source_notes(db, m), m.user])
         return rows
 
     sections = [
@@ -2676,7 +3021,7 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     # an edit/reverse call needs, for the bank-account statement's on-screen
     # action buttons only. Not used by the PDF/Excel export.
     entry_ids: dict[str, list[str | None]] = {
-        name: [m.reference_id for m in groups[key]]
+        name: [m.reference_id if _is_editable_movement_reference(m.reference_id) else None for m in groups[key]]
         for name, key in [
             ("معاملات الصرافة", "trade"), ("إيداع وسحب العملاء", "customer"), ("السلف", "advance"),
             ("فوائد بنكية", "interest"), ("قيود يدوية", "manual"),
@@ -2702,6 +3047,9 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
         entry, exit_ = (f"{t.amount:,.2f}", "") if is_in else ("", f"{t.amount:,.2f}")
         tr_rows.append([str(i), t.timestamp, t.source_name, t.dest_name, entry, exit_, t.currency, t.notes or "", t.requested_by])
     sections.append(("التحويلات بين الحسابات", tr_headers, tr_rows))
+    # An approved transfer owns the Transfer record itself, so its row's id is
+    # the transfer id (edited/undone through the transfer endpoints).
+    entry_ids["التحويلات بين الحسابات"] = [t.id for t in transfers]
 
     totals: dict[str, dict[str, float]] = {}
     for m in movements:
@@ -2864,18 +3212,15 @@ def _pair_movements_by_operation(movements: list) -> list[tuple]:
     return pairs
 
 def _balance_cells(balance: float, currency: str, with_sides: bool) -> list[str]:
-    """The per-row balance columns: الرصيد بالأرقام, الرصيد بالحروف and — for
-    statements that name a side — له / عليه (the amount sits under the side it
-    belongs to: positive = له, negative = عليه). Vault/bank-of-the-company
-    statements skip the two side columns."""
+    """The per-row balance columns: الرصيد بالأرقام and — for statements that
+    name a side — له / عليه (the amount sits under the side it belongs to:
+    positive = له, negative = عليه). Vault/bank-of-the-company statements skip
+    the two side columns. (The amount in words lives in the totals block under
+    the PDF table now, not in a column on every row.)"""
     if with_sides:
         # Signed: عليه (the customer owes) carries a minus, which the PDF/Excel draw in red.
-        return [
-            f"{balance:,.2f}", amount_in_words(balance, currency),
-            f"{balance:,.2f}" if balance > 0 else "", f"-{abs(balance):,.2f}" if balance < 0 else "",
-        ]
-    words = amount_in_words(balance, currency)
-    return [f"{balance:,.2f}", (f"سالب {words}" if balance < 0 else words)]
+        return [f"{balance:,.2f}", f"{balance:,.2f}" if balance > 0 else "", f"-{abs(balance):,.2f}" if balance < 0 else ""]
+    return [f"{balance:,.2f}"]
 
 
 def _chain_ordered(movements: list) -> list:
@@ -2917,7 +3262,7 @@ def _ledger_sequence(movements: list, opening: float | None = None) -> list[dict
             items.append({"m": None, "ts": m.timestamp, "in": delta if delta > 0 else 0.0, "out": -delta if delta < 0 else 0.0,
                           "after": m.balance_before, "type": "تعديل رصيد يدوي (غير مسجَّل)", "currency": m.currency,
                           "entity_name": m.entity_name, "notes": "فرق بين رصيدين متتاليين — تعديل يدوي على الرصيد", "user": "—"})
-        items.append({"m": m, "ts": m.timestamp, "in": m.amount_in, "out": m.amount_out, "after": m.balance_after, "type": m.type,
+        items.append({"m": m, "ts": m.timestamp, "in": m.amount_in, "out": m.amount_out, "after": m.balance_after, "type": m.details or m.type,
                       "currency": m.currency, "entity_name": m.entity_name, "notes": None, "user": m.user})
         prev_after = m.balance_after
     return items
@@ -2937,7 +3282,7 @@ def _merged_ledger(movements: list) -> list[dict]:
 
 
 def _balance_headers(with_sides: bool) -> list[str]:
-    return ["الرصيد بالأرقام", "الرصيد بالحروف"] + (["له", "عليه"] if with_sides else [])
+    return ["الرصيد بالأرقام"] + (["له", "عليه"] if with_sides else [])
 
 
 def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, date_from: str, date_to: str, currency: str):
@@ -2963,16 +3308,15 @@ def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, dat
     owner = db.get(BankAccount, entity_id) if entity_kind == "bank_account" else None
     with_sides = bool(owner and owner.customer_id)
 
-    headers = ["المرجع", "التاريخ", "اليوم", "التفاصيل", "دخول", "خروج", "ملاحظات"] + _balance_headers(with_sides) + ["بواسطة"]
-    rows = [["-", date_from or (movements[0].timestamp[:10] if movements else ""), "", "رصيد افتتاحي — رصيد سابق", "", "", ""] + _balance_cells(opening_balance, currency, with_sides) + ["-"]]
+    headers = ["المرجع", "التاريخ", "اليوم", "التفاصيل", "دخول", "خروج"] + _balance_headers(with_sides) + ["ملاحظات", "بواسطة"]
+    rows = [["-", date_from or (movements[0].timestamp[:10] if movements else ""), "", "رصيد افتتاحي — رصيد سابق", "", ""] + _balance_cells(opening_balance, currency, with_sides) + ["", "-"]]
     for i, it in enumerate(lines, start=1):
         date_part = it["ts"][:10]
         rows.append([
             str(i), date_part, _arabic_weekday(date_part), it["type"],
             f"{it['in']:,.2f}" if it["in"] else "",
             f"{it['out']:,.2f}" if it["out"] else "",
-            it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"]),
-        ] + _balance_cells(it["after"], currency, with_sides) + [it["user"]])
+        ] + _balance_cells(it["after"], currency, with_sides) + [it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"]), it["user"]])
     return headers, rows
 
 def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, entity_name: str, format: str, date_from: str, date_to: str, currency: str):
@@ -2982,7 +3326,7 @@ def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, e
         buf = build_excel(title, headers, rows)
         return buf.read(), "xlsx"
     try:
-        buf = build_pdf(title, headers, rows)
+        buf = build_pdf(title, headers, rows, default_currency=currency)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحركة: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return buf.read(), "pdf"
@@ -2994,7 +3338,7 @@ def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, e
 def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to: str, currency: str):
     # One row per movement; every row carries its account's balance after it
     # in figures, in words, and under له / عليه.
-    headers = ["المرجع", "التاريخ", "اليوم", "الحساب", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + _balance_headers(True) + ["بواسطة"]
+    headers = ["المرجع", "التاريخ", "اليوم", "الحساب", "التفاصيل", "دخول", "خروج", "العملة"] + _balance_headers(True) + ["ملاحظات", "بواسطة"]
     accounts = db.scalars(select(BankAccount).where(BankAccount.customer_id.isnot(None))).all()
     accounts_by_id = {a.id: a for a in accounts}
     if not accounts_by_id:
@@ -3019,8 +3363,8 @@ def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to
         rows.append([
             str(i), date_part, _arabic_weekday(date_part), account_label, it["type"],
             f"{it['in']:,.2f}" if it["in"] > 0 else "", f"{it['out']:,.2f}" if it["out"] > 0 else "",
-            it["currency"], it["notes"] if m is None else _movement_source_notes(db, m),
-        ] + _balance_cells(it["after"], it["currency"], True) + [it["user"]])
+            it["currency"],
+        ] + _balance_cells(it["after"], it["currency"], True) + [it["notes"] if m is None else _movement_source_notes(db, m), it["user"]])
     return headers, rows
 
 def _all_customer_bank_accounts_ledger_export(db: Session, format: str, date_from: str, date_to: str, currency: str):
@@ -3065,7 +3409,7 @@ def _vaults_ledger_rows(db: Session, vault_ids: list[str], date_from: str, date_
     # balance after it in figures and in words. Shared by the closing
     # statement (one day) and the all-vaults statement (any range); currency
     # "" = every currency, otherwise only that currency's movements.
-    headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "التفاصيل", "دخول", "خروج", "العملة", "ملاحظات"] + _balance_headers(False) + ["بواسطة"]
+    headers = ["المرجع", "التاريخ", "اليوم", "الخزنة", "التفاصيل", "دخول", "خروج", "العملة"] + _balance_headers(False) + ["ملاحظات", "بواسطة"]
     if not vault_ids:
         return headers, []
     query = select(Movement).where(Movement.entity_type == "vault", Movement.entity_id.in_(vault_ids), _not_reversed_movement())
@@ -3082,8 +3426,8 @@ def _vaults_ledger_rows(db: Session, vault_ids: list[str], date_from: str, date_
         rows.append([
             str(i), date_part, _arabic_weekday(date_part), it["entity_name"], it["type"],
             f"{it['in']:,.2f}" if it["in"] > 0 else "", f"{it['out']:,.2f}" if it["out"] > 0 else "",
-            it["currency"], it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"]),
-        ] + _balance_cells(it["after"], it["currency"], False) + [it["user"]])
+            it["currency"],
+        ] + _balance_cells(it["after"], it["currency"], False) + [it["notes"] if it["m"] is None else _movement_source_notes(db, it["m"]), it["user"]])
     return headers, rows
 
 def _closing_full_ledger_rows(db: Session, vault_ids: list[str], date: str, currency: str = ""):
@@ -3152,18 +3496,23 @@ def export_bank_account_daily_ledger(account_id: str, format: str = "pdf", date_
     disposition = "attachment" if ext == "xlsx" else "inline"
     return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="daily_ledger_{account_id}.{ext}"'})
 
-_TRANSFER_STATUS_LABELS_AR = {"pending": "بانتظار الموافقة", "approved": "تمت الموافقة", "rejected": "مرفوضة"}
+_TRANSFER_STATUS_LABELS_AR = {"pending": "بانتظار الموافقة", "approved": "تمت الموافقة", "rejected": "مرفوضة", "reversed": "تم التراجع عنها"}
 
 
-def _company_bank_transfers_rows(db: Session, date: str, account_id: str):
+def _company_bank_transfers_rows(db: Session, date_from: str, date_to: str, account_id: str):
     """Same filter the on-screen "حركة حسابات الشركة البنكية" tab uses
     client-side: every Transfer touching a company-owned (not customer-owned)
-    bank account on either side, for one day, optionally narrowed to one
+    bank account on either side, for a date range, optionally narrowed to one
     account — kept in sync with TreasuryShell.tsx's companyBankTransfers/
     filteredBankMovements so the export matches exactly what's on screen."""
     company_account_ids = {a.id for a in db.scalars(select(BankAccount).where(BankAccount.customer_id.is_(None))).all()}
     bank_accounts_by_id = {a.id: a for a in db.scalars(select(BankAccount)).all()}
-    transfers = db.scalars(select(Transfer).where(Transfer.timestamp.like(f"{date}%")).order_by(Transfer.timestamp)).all()
+    transfers_query = select(Transfer)
+    if date_from:
+        transfers_query = transfers_query.where(Transfer.timestamp >= date_from)
+    if date_to:
+        transfers_query = transfers_query.where(Transfer.timestamp <= date_to + " 23:59:59")
+    transfers = db.scalars(transfers_query.order_by(Transfer.timestamp)).all()
 
     def is_company_bank_side(entity_type: str, entity_id: str) -> bool:
         return entity_type == "bank_account" and entity_id in company_account_ids
@@ -3174,7 +3523,7 @@ def _company_bank_transfers_rows(db: Session, date: str, account_id: str):
         acc = bank_accounts_by_id.get(entity_id)
         return acc.account_number if acc else "—"
 
-    headers = ["الوقت", "من", "رقم حساب المرسل", "إلى", "رقم حساب المستلم", "العملة", "المبلغ", "ملاحظات", "الحالة", "بواسطة"]
+    headers = ["الوقت", "من", "رقم حساب المرسل", "إلى", "رقم حساب المستلم", "العملة", "المبلغ", "الحالة", "ملاحظات", "بواسطة"]
     rows = []
     for t in transfers:
         if not (is_company_bank_side(t.source_type, t.source_id) or is_company_bank_side(t.dest_type, t.dest_id)):
@@ -3184,15 +3533,16 @@ def _company_bank_transfers_rows(db: Session, date: str, account_id: str):
         rows.append([
             t.timestamp, t.source_name, account_number(t.source_type, t.source_id),
             t.dest_name, account_number(t.dest_type, t.dest_id), t.currency, f"{t.amount:,.2f}",
-            t.notes or "—", _TRANSFER_STATUS_LABELS_AR.get(t.status, t.status), t.requested_by,
+            _TRANSFER_STATUS_LABELS_AR.get(t.status, t.status), t.notes or "—", t.requested_by,
         ])
     return headers, rows
 
 
 @router.get("/bank_accounts/company_transfers/export")
-def export_company_bank_transfers(date: str, account_id: str = "", format: str = "pdf", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
-    headers, rows = _company_bank_transfers_rows(db, date, account_id)
-    title = f"حركة حسابات الشركة البنكية — دخول وخروج ({date})"
+def export_company_bank_transfers(date_from: str = "", date_to: str = "", account_id: str = "", format: str = "pdf", actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
+    headers, rows = _company_bank_transfers_rows(db, date_from, date_to, account_id)
+    period = f"{date_from} → {date_to}" if date_from and date_to and date_from != date_to else (date_from or date_to or "كل الفترات")
+    title = f"حركة حسابات الشركة البنكية — دخول وخروج ({period})"
     if format == "xlsx":
         buf = build_excel(title, headers, rows)
         content, ext = buf.read(), "xlsx"
@@ -3204,7 +3554,7 @@ def export_company_bank_transfers(date: str, account_id: str = "", format: str =
         content, ext = buf.read(), "pdf"
     media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == "xlsx" else "application/pdf"
     disposition = "attachment" if ext == "xlsx" else "inline"
-    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="company_bank_transfers_{date}.{ext}"'})
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers={"Content-Disposition": f'{disposition}; filename="company_bank_transfers.{ext}"'})
 
 
 def _send_entity_daily_ledger_whatsapp(db: Session, entity_kind: str, entity_id: str, entity_name: str, date_from: str, date_to: str, currency: str, actor: User):
@@ -3501,7 +3851,8 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
         user=username,
         branch=vault.branch,
         timestamp=timestamp,
-        expected_profit=expected_profit
+        expected_profit=expected_profit,
+        details=_clean_details(data.details)
     )
     db.add(tx)
 
@@ -3678,6 +4029,7 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
                 )
                 send_telegram_alert(db, alert_msg)
 
+    _stamp_details(db, tx_id, data.details)
     db.commit()
     return success_response(data=transaction_to_dict(tx))
 
@@ -3833,6 +4185,11 @@ class TransactionEditRequest(BaseModel):
     rate: float
     commission: float = 0.0
     notes: str | None = None
+    # "buy" <-> "sell" only (an exchange has no such counterpart): the entry
+    # was booked the wrong way round. Omitted, the type is kept as is.
+    type: str | None = None
+    # Hand-typed "التفاصيل": omitted keeps it, "" goes back to automatic wording.
+    details: str | None = None
 
 @router.put("/transactions/{tx_id}")
 def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Depends(require_permission("إنشاء عملية عكسية")), db: Session = Depends(get_db)):
@@ -3856,6 +4213,9 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
         raise APIError(code="INVALID_RATE", message_ar="يجب أن يكون سعر الصرف أكبر من صفر", message_en="Rate must be positive", status_code=400)
     if data.commission < 0:
         raise APIError(code="INVALID_COMMISSION", message_ar="لا يمكن أن تكون العمولة بقيمة سالبة", message_en="Commission cannot be negative", status_code=400)
+    new_type = data.type or tx.type
+    if new_type != tx.type and {tx.type, new_type} != {"buy", "sell"}:
+        raise APIError(code="INVALID_TYPE", message_ar="يمكن التحويل بين شراء وبيع فقط", message_en="Only a buy can be switched to a sell and the other way round", status_code=400)
 
     vault = db.get(Vault, tx.vault_id)
     customer = db.get(Customer, tx.customer_id) if tx.customer_id else None
@@ -3875,6 +4235,16 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
     # 1. Undo the old effect (vault/bank/customer balances, debt, shift, journal).
     # Raises if a linked debt was already paid down, exactly like a normal reversal would.
     apply_transaction_reversal(db, tx_id, actor.name, f"تعديل العملية بواسطة {actor.name}")
+
+    # 1b. A buy turned into a sell (or back): the foreign currency is the same
+    # leg either way, but the two currencies swap sides (a buy is
+    # from=foreign/to=LYD, a sell from=LYD/to=foreign) and the forward math
+    # below follows the new type. Done after the undo, which used the old one.
+    old_type = tx.type
+    if new_type != tx.type:
+        tx.type = new_type
+        tx.from_currency, tx.to_currency = tx.to_currency, tx.from_currency
+        is_buy, is_sell = new_type == "buy", new_type == "sell"
 
     # 2. Recompute cashier receive/pay with the edited values, same formulas as execute_pos_operation
     if is_buy:
@@ -4002,6 +4372,8 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
     tx.commission = data.commission
     tx.total_amount = cashier_pay_amount if (is_buy or is_exchange) else cashier_receive_amount
     tx.notes = data.notes
+    if data.details is not None:
+        tx.details = _clean_details(data.details)
     tx.status = "approved"
     tx.expected_profit = expected_profit
     tx.timestamp = timestamp
@@ -4041,6 +4413,8 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
                 balance_after=vault.balances.get(cashier_pay_currency, 0.0), reference_id=tx_id, user=username
             ))
 
+    _stamp_details(db, tx_id, tx.details, skip_reversal_legs=True)
+
     # 11. Journal entry for the reapplied values
     lines = [
         {
@@ -4072,7 +4446,7 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
 
     create_audit_log(
         db, action=AuditAction.UPDATE, entity_type="Transaction", entity_id=tx_id,
-        description=f"تم تعديل العملية {tx_id}: المبلغ {old_amount} → {data.amount}، السعر {old_rate} → {data.rate}، العمولة {old_commission} → {data.commission}"
+        description=f"تم تعديل العملية {tx_id}: المبلغ {old_amount} → {data.amount}، السعر {old_rate} → {data.rate}، العمولة {old_commission} → {data.commission}" + (f"، النوع {old_type} → {new_type}" if old_type != new_type else "")
     )
 
     db.commit()

@@ -162,7 +162,10 @@ export default function AllCustomersStatementPage() {
             <input value={rowSearch} onChange={(e) => setRowSearch(e.target.value)} placeholder="بحث داخل الكشف (عميل، تفاصيل، ملاحظات، مبلغ، تاريخ...)" className="w-full rounded-md border border-input bg-background py-2 pl-3 pr-9 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
           </div>
 
-          {statement.sections.map((section0) => { const section = { ...section0, rows: section0.rows.filter((r) => matchesQuery(rowSearch, ...r)) }; return (
+          {statement.sections.every((s) => s.rows.length === 0) && (
+            <p className="rounded-xl border border-border bg-card py-8 text-center text-sm text-muted-foreground shadow-sm">لا توجد حركات في هذه الفترة</p>
+          )}
+          {statement.sections.filter((s) => s.rows.length > 0).map((section0) => { const section = { ...section0, rows: section0.rows.filter((r) => matchesQuery(rowSearch, ...r)) }; return (
             <div key={section.name} className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
               <div className="border-b border-border px-6 py-3 bg-secondary/30">
                 <h4 className="text-sm font-semibold text-foreground">{section.name}</h4>
