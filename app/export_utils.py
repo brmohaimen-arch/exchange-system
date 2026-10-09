@@ -28,7 +28,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, KeepTogether
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, KeepTogether, HRFlowable
 from reportlab.lib.styles import ParagraphStyle
 
 from .arabic_numbers import amount_in_words
@@ -144,7 +144,7 @@ def _wrap_before_shaping(text: str, max_width_pts: float, font_name: str, font_s
     return lines or [text]
 
 
-def shape_arabic(text, max_width_pts: float | None = None, font_name: str = _FONT_NAME, font_size: float = 9) -> str:
+def shape_arabic(text, max_width_pts: float | None = None, font_name: str = _FONT_NAME, font_size: float = 9, rtl: bool = False) -> str:
     """Reshape + bidi-reorder a string for correct PDF rendering. Non-string /
     empty values pass through as an empty cell rather than raising.
 
@@ -174,7 +174,10 @@ def shape_arabic(text, max_width_pts: float | None = None, font_name: str = _FON
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     lines = _wrap_before_shaping(escaped, max_width_pts, font_name, font_size) if max_width_pts else [escaped]
-    return "<br/>".join(get_display(arabic_reshaper.reshape(line)) for line in lines)
+    # rtl=True forces a right-to-left paragraph even when the line starts with Latin text
+    # ("EUR 55.00 — له ..."), which would otherwise be laid out left-to-right.
+    base_dir = "R" if rtl else None
+    return "<br/>".join(get_display(arabic_reshaper.reshape(line), base_dir=base_dir) for line in lines)
 
 
 # Free-text columns (notes, descriptions) need far more room than a serial
@@ -340,53 +343,64 @@ def _signed_words(amount: float, currency: str) -> str:
     return f"سالب {words}" if round(amount, 2) < 0 else words
 
 
+def _text_block_style(font_name: str, size: float = 11) -> ParagraphStyle:
+    return ParagraphStyle("StatementTextLine", fontName=font_name, fontSize=size, leading=size + 7, alignment=2, wordWrap="CJK")
+
+
+def _text_lines_flowables(title: str, lines: list[tuple[str, bool]], font_name: str, content_width: float) -> list:
+    """A closing block written as plain text, not a table: a title line, then one
+    line per entry (the bool marks a line that should be drawn in red)."""
+    title_style = ParagraphStyle("StatementTextTitle", fontName=font_name, fontSize=12.5, leading=18, alignment=2, textColor=BRAND_COLOR)
+    line_style = _text_block_style(font_name)
+    red_style = ParagraphStyle("StatementTextRed", parent=line_style, textColor=colors.HexColor(_RED))
+    flow = [
+        Spacer(1, 0.35 * cm),
+        HRFlowable(width="100%", thickness=0.8, color=BRAND_COLOR, spaceBefore=2, spaceAfter=6),
+        Paragraph(shape_arabic(title, content_width - 10, font_name, 12.5, rtl=True), title_style),
+    ]
+    for text, red in lines:
+        if not text:
+            flow.append(Spacer(1, 0.15 * cm))
+            continue
+        flow.append(Paragraph(shape_arabic(text, content_width - 10, font_name, 11, rtl=True), red_style if red else line_style))
+    return [KeepTogether(flow)]
+
+
 def _totals_flowables(totals: dict[str, dict[str, float]], font_name: str, content_width: float) -> list:
-    """"الإجماليات حسب العملة": one row per currency with the total received,
+    """"الإجماليات حسب العملة" as plain text: for each currency the total received,
     the total paid out and the net — each in figures AND in words."""
     if not totals:
         return []
-    headers = ["العملة", "إجمالي الدخول", "بالحروف", "إجمالي الخروج", "بالحروف", "الصافي", "بالحروف"]
-    weights = [0.7, 1.2, 2.4, 1.2, 2.4, 1.2, 2.4]
-    unit = content_width / sum(weights)
-    rev_widths = list(reversed([w * unit for w in weights]))
-
-    title_style = ParagraphStyle("TotalsTitle", fontName=font_name, fontSize=11, leading=15, alignment=1, textColor=colors.white)
-    header_style = ParagraphStyle("TotalsHeader", fontName=font_name, fontSize=8, alignment=1, textColor=colors.white, wordWrap="CJK")
-    header_style_latin = ParagraphStyle("TotalsHeaderLatin", fontName=font_name, fontSize=8, alignment=1, textColor=colors.white)
-    cell_style = ParagraphStyle("TotalsCell", fontName=font_name, fontSize=8, alignment=1, wordWrap="CJK")
-    cell_style_latin = ParagraphStyle("TotalsCellLatin", fontName=font_name, fontSize=8, alignment=1)
-
-    title_table = Table([[Paragraph(shape_arabic("الإجماليات حسب العملة"), title_style)]], colWidths=[content_width])
-    title_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), BRAND_COLOR),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-
-    display_headers = [Paragraph(shape_arabic(h, rev_widths[i] - 8, font_name, 8), _style_for(h, header_style, header_style_latin)) for i, h in enumerate(reversed(headers))]
-    rows = []
-    for ccy, t in totals.items():
-        net = t["in"] - t["out"]
-        rows.append([
-            ccy,
-            f"{t['in']:,.2f}", amount_in_words(t["in"], ccy),
-            f"{t['out']:,.2f}", amount_in_words(t["out"], ccy),
-            f"{net:,.2f}", _signed_words(net, ccy),
-        ])
-    display_rows = [[_cell_paragraph(cell, rev_widths[i] - 8, font_name, 8, cell_style, cell_style_latin) for i, cell in enumerate(reversed(row))] for row in rows]
-    table = Table([display_headers] + display_rows, repeatRows=1, colWidths=rev_widths)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    return [Spacer(1, 0.3 * cm), KeepTogether([title_table, table])]
+    lines: list[tuple[str, bool]] = []
+    for i, (ccy, t) in enumerate(totals.items()):
+        net = round(t["in"] - t["out"], 2)
+        if i:
+            lines.append(("", False))
+        lines.append((f"{ccy} — إجمالي الدخول: {t['in']:,.2f} — {amount_in_words(t['in'], ccy)}", False))
+        lines.append((f"{ccy} — إجمالي الخروج: {t['out']:,.2f} — {amount_in_words(t['out'], ccy)}", False))
+        lines.append((f"{ccy} — الصافي: {net:,.2f} — {_signed_words(net, ccy)}", net < 0))
+    return _text_lines_flowables("الإجماليات حسب العملة", lines, font_name, content_width)
 
 
-def build_pdf(title: str, headers: list[str], rows: list[list], default_currency: str = "") -> io.BytesIO:
+def _balance_flowables(final_balances: dict[str, float], with_sides: bool, font_name: str, content_width: float) -> list:
+    """"الرصيد الحالي" as plain text under a statement: one line per currency with
+    the balance in figures, the side it sits on (له = the customer is owed /
+    holds it, عليه = the customer owes it, in red) and the amount in words."""
+    if not final_balances:
+        return []
+    lines: list[tuple[str, bool]] = []
+    for ccy, balance in final_balances.items():
+        balance = round(balance, 2)
+        if with_sides:
+            side = "له" if balance > 0 else "عليه" if balance < 0 else "لا له ولا عليه"
+            lines.append((f"{ccy} {abs(balance):,.2f} — {side} — {amount_in_words(abs(balance), ccy)}", balance < 0))
+        else:
+            lines.append((f"{ccy} {balance:,.2f} — {_signed_words(balance, ccy)}", balance < 0))
+    return _text_lines_flowables("الرصيد الحالي", lines, font_name, content_width)
+
+
+def build_pdf(title: str, headers: list[str], rows: list[list], default_currency: str = "",
+              final_balances: dict[str, float] | None = None, balance_sides: bool = False) -> io.BytesIO:
     font_name = _ensure_font_registered()
     buf = io.BytesIO()
     page_width, page_height = landscape(A4)
@@ -447,7 +461,12 @@ def build_pdf(title: str, headers: list[str], rows: list[list], default_currency
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     elements.append(table)
-    elements.extend(_totals_flowables(compute_currency_totals([(title, headers, rows)], default_currency), font_name, content_width))
+    # A statement that knows its current balance ends with that (له/عليه + in words);
+    # every other table keeps the per-currency totals block.
+    if final_balances is not None:
+        elements.extend(_balance_flowables(final_balances, balance_sides, font_name, content_width))
+    else:
+        elements.extend(_totals_flowables(compute_currency_totals([(title, headers, rows)], default_currency), font_name, content_width))
 
     doc.build(elements, onFirstPage=draw_page_furniture, onLaterPages=draw_page_furniture)
     buf.seek(0)
@@ -576,6 +595,7 @@ def build_sectioned_excel(sections: list[tuple[str, list[str], list[list]]]) -> 
 def build_sectioned_pdf(
     title: str, sections: list[tuple[str, list[str], list[list]]], closing_line: str = "",
     subtitle_lines: list[str] | None = None,
+    final_balances: dict[str, float] | None = None, balance_sides: bool = False,
 ) -> io.BytesIO:
     """Like build_statement_pdf, but for a statement kept separated by kind —
     each (name, headers, rows) renders as its own titled table, one under the
@@ -674,11 +694,16 @@ def build_sectioned_pdf(
             elements.append(table)
             elements.append(Spacer(1, 0.4 * cm))
 
-    totals_block = _totals_flowables(compute_currency_totals(sections), font_name, content_width)
-    elements.extend(totals_block)
-    # The old "الإجمالي: ..." line says the same thing the totals block now does.
-    if closing_line and not (totals_block and closing_line.startswith("الإجمالي:")):
-        elements.append(Paragraph(shape_arabic(closing_line), closing_style))
+    if final_balances is not None:
+        # The statement ends with the current balance (له/عليه, figures and words), which
+        # also replaces the old one-line "الأرصدة الحالية" / "الإجمالي" closing text.
+        elements.extend(_balance_flowables(final_balances, balance_sides, font_name, content_width))
+    else:
+        totals_block = _totals_flowables(compute_currency_totals(sections), font_name, content_width)
+        elements.extend(totals_block)
+        # The old "الإجمالي: ..." line says the same thing the totals block now does.
+        if closing_line and not (totals_block and closing_line.startswith("الإجمالي:")):
+            elements.append(Paragraph(shape_arabic(closing_line), closing_style))
 
     doc.build(elements, onFirstPage=draw_page_furniture, onLaterPages=draw_page_furniture)
     buf.seek(0)

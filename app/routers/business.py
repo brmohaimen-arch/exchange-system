@@ -1480,7 +1480,8 @@ def export_customer_statement(customer_id: str, format: str = "pdf", date_from: 
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="statement_{customer.id}.xlsx"'})
     try:
         info_line = f"الهاتف: {customer.phone}" + (f"  —  الرقم الوطني: {customer.id_number}" if customer.id_number else "")
-        buf = build_sectioned_pdf(f"كشف حساب — {customer.name}", sections, closing_line, subtitle_lines=[info_line])
+        buf = build_sectioned_pdf(f"كشف حساب — {customer.name}", sections, closing_line, subtitle_lines=[info_line],
+                                  final_balances=_present_balances(customer.balances, currency), balance_sides=True)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="statement_{customer.id}.pdf"'})
@@ -1496,7 +1497,8 @@ def send_customer_statement_whatsapp(customer_id: str, date_from: str = "", date
     sections, closing_line, _dw_entry_refs = _customer_statement_sections(db, customer, date_from, date_to, currency)
     try:
         info_line = f"الهاتف: {customer.phone}" + (f"  —  الرقم الوطني: {customer.id_number}" if customer.id_number else "")
-        buf = build_sectioned_pdf(f"كشف حساب — {customer.name}", sections, closing_line, subtitle_lines=[info_line])
+        buf = build_sectioned_pdf(f"كشف حساب — {customer.name}", sections, closing_line, subtitle_lines=[info_line],
+                                  final_balances=_present_balances(customer.balances, currency), balance_sides=True)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
 
@@ -1533,7 +1535,8 @@ def export_all_customers_statement(format: str = "pdf", date_from: str = "", dat
         buf = build_sectioned_excel(sections)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="statement_all_customers.xlsx"'})
     try:
-        buf = build_sectioned_pdf("كشف حساب شامل — جميع العملاء", sections, closing_line)
+        buf = build_sectioned_pdf("كشف حساب شامل — جميع العملاء", sections, closing_line,
+                                  final_balances=_present_balances(_sum_balances(customers), currency), balance_sides=True)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": 'inline; filename="statement_all_customers.pdf"'})
@@ -1546,7 +1549,8 @@ def send_all_customers_statement_whatsapp(date_from: str = "", date_to: str = ""
     customers = db.scalars(select(Customer)).all()
     sections, closing_line, _dw_entry_refs = _customers_statement_sections(db, customers, date_from, date_to, currency, show_customer_col=True)
     try:
-        buf = build_sectioned_pdf("كشف حساب شامل — جميع العملاء", sections, closing_line)
+        buf = build_sectioned_pdf("كشف حساب شامل — جميع العملاء", sections, closing_line,
+                                  final_balances=_present_balances(_sum_balances(customers), currency), balance_sides=True)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     result = send_whatsapp_document(db, manager_phone, buf.read(), "statement_all_customers.pdf", caption="كشف حساب شامل — جميع العملاء")
@@ -3062,13 +3066,52 @@ def _entity_statement_sections(db: Session, entity_kind: str, entity_id: str, da
     )
     return sections, closing_line, entry_ids
 
+
+def _sum_balances(customers) -> dict[str, float]:
+    """Every customer's balance added up per currency."""
+    total: dict[str, float] = {}
+    for c in customers:
+        for ccy, amt in c.balances.items():
+            total[ccy] = total.get(ccy, 0.0) + amt
+    return total
+
+def _present_balances(balances: dict, currency: str = "", fallback_currency: str = "LYD") -> dict[str, float]:
+    """The currencies to print under a statement: the non-zero ones (or only the
+    filtered currency); a statement with nothing outstanding still prints one
+    zero line instead of an empty block."""
+    shown = {c: float(b) for c, b in balances.items() if (not currency or c == currency) and abs(b) >= 0.005}
+    if not shown:
+        shown = {currency or fallback_currency: 0.0}
+    return shown
+
+def _entity_final_balances(db: Session, entity_kind: str, entity_id: str, currency: str = "") -> tuple[dict[str, float], bool]:
+    """(current balances, whether they carry a له/عليه side) of a vault or bank account."""
+    if entity_kind == "vault":
+        vault = db.get(Vault, entity_id)
+        return _present_balances(vault.balances if vault else {}, currency), False
+    account = db.get(BankAccount, entity_id)
+    if not account:
+        return _present_balances({}, currency), False
+    return _present_balances({account.currency: account.balance}, currency, account.currency), bool(account.customer_id)
+
+def _last_ledger_balance(headers: list[str], rows: list[list], currency: str) -> dict[str, float]:
+    """A single-account daily ledger ends at its last row's running balance."""
+    if "الرصيد بالأرقام" not in headers or not rows:
+        return {currency: 0.0}
+    cell = str(rows[-1][headers.index("الرصيد بالأرقام")]).replace(",", "").strip()
+    try:
+        return {currency: float(cell)}
+    except ValueError:
+        return {currency: 0.0}
+
 def _entity_statement_export(db: Session, entity_kind: str, entity_id: str, entity_name: str, format: str, date_from: str, date_to: str, currency: str):
     sections, closing_line, _entry_ids = _entity_statement_sections(db, entity_kind, entity_id, date_from, date_to, currency)
     if format == "xlsx":
         buf = build_sectioned_excel(sections)
         return buf.read(), "xlsx"
     try:
-        buf = build_sectioned_pdf(f"كشف حساب — {entity_name}", sections, closing_line)
+        final, sides = _entity_final_balances(db, entity_kind, entity_id, currency)
+        buf = build_sectioned_pdf(f"كشف حساب — {entity_name}", sections, closing_line, final_balances=final, balance_sides=sides)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحساب: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return buf.read(), "pdf"
@@ -3326,7 +3369,8 @@ def _entity_daily_ledger_export(db: Session, entity_kind: str, entity_id: str, e
         buf = build_excel(title, headers, rows)
         return buf.read(), "xlsx"
     try:
-        buf = build_pdf(title, headers, rows, default_currency=currency)
+        buf = build_pdf(title, headers, rows, default_currency=currency,
+                        final_balances=_last_ledger_balance(headers, rows, currency), balance_sides="له" in headers)
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء كشف الحركة: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
     return buf.read(), "pdf"

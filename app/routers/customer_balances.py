@@ -185,7 +185,8 @@ def _file(sections, closing, title: str, fmt: str):
     if fmt == "xlsx":
         return build_sectioned_excel(sections), "xlsx"
     try:
-        return build_sectioned_pdf(title, sections, closing), "pdf"
+        # The legend sentence (closing) stays on screen only; the PDF ends with the tables.
+        return build_sectioned_pdf(title, sections, ""), "pdf"
     except ArabicFontUnavailable as e:
         raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء الكشف: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
 

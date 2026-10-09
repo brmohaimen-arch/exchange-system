@@ -13,3 +13,6 @@ sql_app.db
 sql_app.db-journal
 sql_app.db-wal
 sql_app.db-shm
+
+# demo database (rebuilt by demo/seed_demo.py)
+demo/data/
