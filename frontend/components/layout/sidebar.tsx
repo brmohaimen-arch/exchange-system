@@ -21,15 +21,17 @@ interface NavItem {
   icon: typeof Landmark
   href: string
   permission?: string
+  // Shown when the user holds ANY of these (a page several roles legitimately use).
+  anyOf?: string[]
 }
 
 const navigation: NavItem[] = [
   { name: 'الرئيسية', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'العمليات', href: '/transactions', icon: ArrowRightLeft },
-  { name: 'الخزنة وحركة اليوم', href: '/treasury', icon: Landmark },
-  { name: 'الورديات وطلبات الموافقة', href: '/shifts', icon: Clock },
-  { name: 'الجرد والمصاريف', href: '/inventory', icon: ClipboardList },
-  { name: 'البنوك والفروع', href: '/banks', icon: Building2 },
+  { name: 'العمليات', href: '/transactions', icon: ArrowRightLeft, anyOf: ['تنفيذ بيع عملة', 'تنفيذ شراء عملة', 'رؤية سجل العمليات', 'إنشاء عملية عكسية'] },
+  { name: 'الخزنة وحركة اليوم', href: '/treasury', icon: Landmark, anyOf: ['إدارة الخزنات', 'رؤية سجل العمليات', 'تحويل بين الخزنات'] },
+  { name: 'الورديات وطلبات الموافقة', href: '/shifts', icon: Clock, anyOf: ['فتح وردية', 'إغلاق وردية', 'اعتماد الإقفالات', 'الموافقة على التحويلات'] },
+  { name: 'الجرد والمصاريف', href: '/inventory', icon: ClipboardList, anyOf: ['إدارة الخزنات', 'اعتماد الإقفالات'] },
+  { name: 'البنوك والفروع', href: '/banks', icon: Building2, anyOf: ['إدارة البنوك', 'إدارة الفروع'] },
   { name: 'العملات وأسعار الصرف', href: '/currencies', icon: Coins, permission: 'إدارة العملات' },
   { name: 'سجل أسعار العملات', href: '/currency-history', icon: LineChart, permission: 'إدارة سجل أسعار العملات' },
   { name: 'العملاء', href: '/customers', icon: Users, permission: 'إدارة العملاء' },
@@ -47,8 +49,15 @@ const BUILT_IN_HREFS: Record<string, string> = { bayan: '/fleet', imtiaz: '/imti
 const ICON_MAP: Record<string, typeof Truck> = { Truck, Car, Package, Building2, Boxes }
 const ICON_CHOICES = ['Truck', 'Car', 'Package', 'Building2', 'Boxes'] as const
 
-function companyHref(id: string) {
+export function companyHref(id: string) {
   return BUILT_IN_HREFS[id] || `/company/${id}`
+}
+
+/** A login that holds nothing but fleet-company permissions (an outside company's account):
+ *  it has no use for the office dashboard, so it lands straight on its own company. */
+export function isCompanyOnlyUser(permissions: string[] | undefined, companyPermissions: string[]): boolean {
+  if (!permissions || permissions.length === 0 || companyPermissions.length === 0) return false
+  return permissions.every((p) => companyPermissions.includes(p)) && permissions.some((p) => companyPermissions.includes(p))
 }
 
 function useFleetCompanies() {
@@ -123,9 +132,10 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose: () => void; onCre
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
   const router = useRouter()
-  const { hasPermission } = useAuth()
+  const { hasPermission, user } = useAuth()
   const branding = useBranding()
   const { companies, reload: reloadCompanies } = useFleetCompanies()
+  const companyOnly = isCompanyOnlyUser(user?.permissions, companies.map((c) => c.permission))
   const canCreateCompany = hasPermission('إدارة الإعدادات')
   const [showCreate, setShowCreate] = useState(false)
 
@@ -149,6 +159,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     .map((c) => ({ name: c.name, href: companyHref(c.id), icon: ICON_MAP[c.icon] || Truck }))
   const companyActive = visibleCompanies.some((c) => pathname === c.href)
   const [companiesOpen, setCompaniesOpen] = useState(companyActive)
+  // The companies load after the first render, so open the group once one of them is the current page
+  // (and always for a login that only has companies).
+  useEffect(() => { if (companyActive || companyOnly) setCompaniesOpen(true) }, [companyActive, companyOnly])
 
   return (
     <div className="flex h-full w-64 flex-col bg-card">
@@ -165,9 +178,16 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
         {navigation.map((item) => {
-          if (item.permission && !hasPermission(item.permission)) return null
+          const allowed =
+            (!item.permission || hasPermission(item.permission)) &&
+            (!item.anyOf || item.anyOf.some((p) => hasPermission(p))) &&
+            // an outside company's login has no office dashboard or office settings (the API refuses them anyway)
+            !(companyOnly && (item.href === '/dashboard' || item.href === '/settings'))
 
           const active = pathname === item.href
+          // The companies group sits in the slot before "التقارير". It is built before the
+          // permission check on purpose: a login without the reports permission (an outside
+          // company's account) must still get its own company link.
           const companiesGroup = item.href === '/reports' && (visibleCompanies.length > 0 || canCreateCompany) && (
             <div key="companies-group">
               <button
@@ -216,7 +236,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           return (
             <Fragment key={item.name}>
             {companiesGroup}
-            <Link
+            {allowed && <Link
               key={item.name}
               href={item.href}
               onClick={onNavigate}
@@ -234,7 +254,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                   {pendingApprovalsCount}
                 </span>
               )}
-            </Link>
+            </Link>}
             </Fragment>
           )
         })}

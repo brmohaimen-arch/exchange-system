@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { companyHref, isCompanyOnlyUser } from '@/components/layout/sidebar'
 import { ArrowUpRight, DollarSign, Users, Activity, CreditCard, Landmark, Clock, ShieldCheck, PlayCircle, Lock } from 'lucide-react'
-import { api, Transaction, Customer, Vault, Shift, ApprovalRequestDTO, BankAccount, ExchangeRate } from '@/lib/api-client'
+import { api, Transaction, Customer, Vault, Shift, ApprovalRequestDTO, BankAccount, ExchangeRate, FleetCompanyDef } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { formatDateTime } from '@/lib/format-date'
 
@@ -22,6 +24,19 @@ function fmt(n: number) {
 
 export default function DashboardPage() {
   const { user, hasPermission } = useAuth()
+  const router = useRouter()
+
+  // An outside company's login (nothing but company permissions) has no use for the office
+  // dashboard: send it straight to its own company page.
+  useEffect(() => {
+    if (!user) return
+    api.get<FleetCompanyDef[]>('/fleet_companies').then((companies) => {
+      if (isCompanyOnlyUser(user.permissions, companies.map((c) => c.permission))) {
+        const mine = companies.find((c) => user.permissions?.includes(c.permission))
+        if (mine) router.replace(companyHref(mine.id))
+      }
+    }).catch(() => {})
+  }, [user, router])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [transactions, setTransactions] = useState<Transaction[]>([])

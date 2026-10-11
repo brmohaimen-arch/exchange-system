@@ -11,12 +11,13 @@ from datetime import datetime, timedelta
 
 import bcrypt
 import jwt
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .core.errors import APIError
 from .database import get_db
-from .models import Role, SystemSetting, User
+from .models import FleetCompanyDef, Role, SystemSetting, User
 from .trial import is_trial_expired
 
 JWT_ALGORITHM = "HS256"
@@ -77,7 +78,48 @@ def create_access_token(db: Session, user: User) -> str:
     return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
 
 
+# A login that holds nothing but fleet-company permissions (an outside company's account)
+# — or no permission at all — is confined to its own corner of the API. Most read
+# endpoints for office data (customers, vaults, bank accounts, transfers, approvals...)
+# only ask "is someone logged in?", so without this a company login could read them by
+# calling the API directly even though the pages hide them. Deny-by-default: only the
+# paths below are reachable, whatever else is added to the app later.
+_RESTRICTED_ALLOWED_PREFIXES = (
+    "/api/fleet/", "/api/imtiaz/", "/api/itqan/", "/api/co/",  # the fleet companies (each also checks its own permission)
+    "/api/branding",                                          # name / logo
+    "/api/auth/me", "/api/auth/mfa",                          # own profile and own two-factor setup
+)
+_RESTRICTED_ALLOWED_GET_EXACT = ("/api/fleet_companies", "/api/currencies")  # company list, currency list for forms
+
+
+def is_restricted_to_fleet(db: Session, user: User) -> bool:
+    """True when every permission of this user's role is a fleet-company permission (or it has none)."""
+    role = db.get(Role, user.role)
+    permissions = role.permissions if role else []
+    if not permissions:
+        return True
+    company_permissions = set(db.scalars(select(FleetCompanyDef.permission)).all())
+    return all(p in company_permissions for p in permissions)
+
+
+def _enforce_fleet_only_scope(request: Request, db: Session, user: User) -> None:
+    path = request.url.path
+    if path.startswith(_RESTRICTED_ALLOWED_PREFIXES):
+        return
+    if request.method == "GET" and path.rstrip("/") in _RESTRICTED_ALLOWED_GET_EXACT:
+        return
+    if not is_restricted_to_fleet(db, user):
+        return
+    raise APIError(
+        code="FORBIDDEN_SCOPE",
+        message_ar="هذا الحساب مخصص لإدارة شركة الأسطول فقط ولا يملك صلاحية الوصول إلى هذه البيانات",
+        message_en="This account is limited to its fleet company and cannot access this data",
+        status_code=403,
+    )
+
+
 def get_current_user(
+    request: Request,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> User:
@@ -123,6 +165,7 @@ def get_current_user(
             message_en="User not found or inactive",
             status_code=401,
         )
+    _enforce_fleet_only_scope(request, db, user)
     return user
 
 
