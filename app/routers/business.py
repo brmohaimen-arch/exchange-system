@@ -3576,6 +3576,8 @@ def _company_bank_transfers_rows(db: Session, date_from: str, date_to: str, acco
     headers = ["الوقت", "من", "رقم حساب المرسل", "إلى", "رقم حساب المستلم", "العملة", "المبلغ", "الحالة", "ملاحظات", "بواسطة"]
     rows = []
     for t in transfers:
+        if t.status == "reversed":
+            continue  # a cancelled transfer never appears in a statement
         if not (is_company_bank_side(t.source_type, t.source_id) or is_company_bank_side(t.dest_type, t.dest_id)):
             continue
         if account_id and t.source_id != account_id and t.dest_id != account_id:

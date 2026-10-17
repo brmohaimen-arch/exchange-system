@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
 from ..models import (
-    JournalEntry, AuditLog, LoginLog, SystemSetting, Backup, AuditAction, User, Movement, Vault, BankAccount, Customer
+    JournalEntry, AuditLog, LoginLog, SystemSetting, Backup, AuditAction, User, Movement, Vault, BankAccount, Customer, Transaction, Transfer
 )
 from ..tracking import create_audit_log, verify_audit_chain
 from ..core.responses import success_response, error_response
@@ -161,6 +161,20 @@ def reverse_journal_entry(entry_id: str, data: ReversalRequest, actor: User = De
     specialized_message = _SPECIALIZED_REVERSAL_TX_TYPES.get(jv.tx_type)
     if specialized_message:
         raise APIError(code="USE_DEDICATED_REVERSAL", message_ar=specialized_message, message_en="This operation type has its own dedicated reversal flow", status_code=400)
+
+    # An entry that belongs to a live operation record (a vault-funded customer deposit/withdraw is
+    # also a Transaction, a transfer is also a Transfer) must be cancelled through that record:
+    # reversing only its journal entry here would put the money back while the operation itself
+    # stayed "approved" and kept showing in every statement.
+    linked_tx = db.get(Transaction, jv.reference)
+    linked_transfer = db.get(Transfer, jv.reference)
+    if (linked_tx and linked_tx.status != "reversed") or (linked_transfer and linked_transfer.status == "approved"):
+        raise APIError(
+            code="USE_DEDICATED_REVERSAL",
+            message_ar="هذه العملية مسجلة في سجل العمليات — ألغِها من صفحة العمليات أو من زر التراجع في كشف الحساب أو التحويلات، بدلاً من عكس قيدها من هنا",
+            message_en="This entry belongs to a recorded operation; cancel the operation itself instead of reversing its journal entry",
+            status_code=400,
+        )
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
