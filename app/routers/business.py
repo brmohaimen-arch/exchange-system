@@ -1149,6 +1149,12 @@ def _reversed_customer_entry_ids(db: Session, entries: list[CustomerAccountEntry
     JournalEntry-reference convention trades use (which never matches a
     transfer leg's suffixed id)."""
     reversed_refs = set(db.scalars(select(Movement.reference_id).where(Movement.entity_type == "customer", Movement.status == "reversed")).all())
+    # Also reversed through the OTHER two routes, which leave the entry itself untouched:
+    # a vault-funded deposit/withdraw is a Transaction too, and cancelling it from the
+    # operations page flips that Transaction to "reversed"; and the accounting page's
+    # "عكس قيد" flips the entry's journal entry. Either way it must leave the statement.
+    reversed_refs |= set(db.scalars(select(Transaction.id).where(Transaction.status == "reversed")).all())
+    reversed_refs |= set(db.scalars(_reversed_journal_refs()).all())
     hidden = set()
     for e in entries:
         base = e.id[:-4] if e.id.endswith("_out") else e.id[:-3] if e.id.endswith("_in") else e.id
