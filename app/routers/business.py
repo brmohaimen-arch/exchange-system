@@ -391,16 +391,27 @@ OTHER_BANK_SENTINEL = "__other__"
 _OTHER_BANK_ID = "bank_other_unspecified"
 _OTHER_BRANCH_ID = "bbr_other_unspecified"
 
+_OTHER_BANK_NAME = "أخرى (غير محدد)"
+_OTHER_BRANCH_NAME = "غير محدد"
+
 def _ensure_other_bank(db: Session) -> tuple[str, str, str, str]:
+    """The placeholder bank "أخرى (غير محدد)" and its branch (created on first use). If the
+    reserved placeholder row was edited into a real bank from the banks page (renamed, given a
+    city and code), it is left alone and a fresh placeholder is used instead — otherwise every
+    account filed as "unspecified" would silently show that real bank's name."""
     bank = db.get(Bank, _OTHER_BANK_ID)
+    if bank and bank.name != _OTHER_BANK_NAME:
+        bank = db.scalar(select(Bank).where(Bank.name == _OTHER_BANK_NAME))
     if not bank:
-        bank = Bank(id=_OTHER_BANK_ID, name="أخرى (غير محدد)", code="-", country="-", city="-", phone="-",
+        reserved_free = db.get(Bank, _OTHER_BANK_ID) is None
+        bank = Bank(id=_OTHER_BANK_ID if reserved_free else new_id("bank_other"), name=_OTHER_BANK_NAME, code="-", country="-", city="-", phone="-",
                     is_active=True, notes="بنك مؤقت لحسابات لم يُحدد بنكها الحقيقي بعد")
         db.add(bank)
         db.flush()
-    branch = db.get(BankBranch, _OTHER_BRANCH_ID)
+    branch = db.scalar(select(BankBranch).where(BankBranch.bank_id == bank.id, BankBranch.name == _OTHER_BRANCH_NAME))
     if not branch:
-        branch = BankBranch(id=_OTHER_BRANCH_ID, bank_id=bank.id, bank_name=bank.name, name="غير محدد",
+        reserved_free = db.get(BankBranch, _OTHER_BRANCH_ID) is None
+        branch = BankBranch(id=_OTHER_BRANCH_ID if reserved_free else new_id("bbr_other"), bank_id=bank.id, bank_name=bank.name, name=_OTHER_BRANCH_NAME,
                             city="-", address="-", phone="-", manager="-", is_active=True)
         db.add(branch)
         db.flush()
@@ -434,7 +445,7 @@ def update_bank_account(account_id: str, data: BankAccountCreate, actor: User = 
     if account.customer_id:
         owner = db.get(Customer, account.customer_id)
         if owner:
-            owner.bank_name = "غير محدد" if account.bank_id == _OTHER_BANK_ID else account.bank_name
+            owner.bank_name = "غير محدد" if account.bank_name == _OTHER_BANK_NAME else account.bank_name
     db.commit()
     return success_response(data=bank_account_to_dict(account))
 
