@@ -429,6 +429,12 @@ def update_bank_account(account_id: str, data: BankAccountCreate, actor: User = 
     _validate_bank_account_customer(db, data.customer_id)
     for k, v in _resolve_bank_account_payload(db, data).items():
         setattr(account, k, v)
+    # A customer's own account: keep the bank written in their profile equal to the account's bank, so a later
+    # profile edit never puts back an older bank name.
+    if account.customer_id:
+        owner = db.get(Customer, account.customer_id)
+        if owner:
+            owner.bank_name = "غير محدد" if account.bank_id == _OTHER_BANK_ID else account.bank_name
     db.commit()
     return success_response(data=bank_account_to_dict(account))
 
@@ -587,7 +593,10 @@ def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str 
         # Same account number as before. If the bank name in the profile was edited in THIS save, the
         # linked account follows it (changing it, or clearing it = "غير محدد"); an untouched bank name never
         # overrides a bank someone set on the account from the banks page.
-        if bank_name_changed:
+        # Typing an explicit "غير محدد" / "أخرى" always applies, even when the profile already says so (profiles saved
+        # before the account followed the profile hold that word while the account kept its old bank).
+        typed = (bank_name or "").strip().lower()
+        if bank_name_changed or (typed and typed in _UNSPECIFIED_BANK_NAMES):
             bank_id, resolved_name, branch_id, branch_label = _customer_bank_and_branch(db, bank_name)
             if previous.bank_id != bank_id:
                 create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankAccount", entity_id=previous.id,
