@@ -1325,10 +1325,11 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
   const submitAccount = async (e: FormEvent) => {
     e.preventDefault()
     setAccountFormError('')
-    const isOtherBank = accountForm.bankId === '__other__'
+    // The bank and the account number are optional: no bank chosen = "أخرى (غير محدد)", no number = left empty.
+    const isOtherBank = accountForm.bankId === '__other__' || accountForm.bankId === ''
     const bank = isOtherBank ? { id: '__other__', name: 'أخرى' } : banks.find((b) => b.id === accountForm.bankId)
-    if (!bank || !accountForm.accountName.trim() || !accountForm.accountNumber.trim()) {
-      setAccountFormError('البنك واسم الحساب ورقم الحساب حقول مطلوبة')
+    if (!bank || !accountForm.accountName.trim()) {
+      setAccountFormError('اسم الحساب حقل مطلوب')
       return
     }
     if (!isOtherBank && !accountForm.newBranch && !accountForm.branchId) {
@@ -3089,18 +3090,18 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
             </div>
             <form onSubmit={submitAccount} className="space-y-4 p-6 text-right max-h-[70vh] overflow-y-auto">
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">البنك *</label>
+                <label className="block text-sm font-medium text-foreground mb-1">البنك <span className="text-xs font-normal text-muted-foreground">(اختياري)</span></label>
                 <select value={accountForm.bankId} onChange={(e) => setAccountForm({ ...accountForm, bankId: e.target.value, branchId: '' })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
-                  <option value="">اختر بنكاً</option>
+                  <option value="">غير محدد (بدون بنك)</option>
                   {banks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   <option value="__other__">أخرى (سيتم تحديد البنك لاحقاً)</option>
                 </select>
-                {accountForm.bankId === '__other__' && (
+                {(accountForm.bankId === '__other__' || accountForm.bankId === '') && (
                   <p className="mt-1 text-xs text-muted-foreground">سيُسجَّل الحساب مؤقتاً تحت بنك "غير محدد" — يمكن تحديد البنك الحقيقي لاحقاً بتعديل الحساب.</p>
                 )}
               </div>
 
-              {accountForm.bankId !== '__other__' && (!accountForm.newBranch ? (
+              {accountForm.bankId !== '__other__' && accountForm.bankId !== '' && (!accountForm.newBranch ? (
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">الفرع</label>
                   <div className="flex items-center gap-2">
@@ -3135,7 +3136,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   <input value={accountForm.accountName} onChange={(e) => setAccountForm({ ...accountForm, accountName: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">رقم الحساب *</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم الحساب <span className="text-xs font-normal text-muted-foreground">(اختياري)</span></label>
                   <input value={accountForm.accountNumber} onChange={(e) => setAccountForm({ ...accountForm, accountNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
@@ -3168,7 +3169,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
               </div>
 
               {accountFormError && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{accountFormError}</p>}
-
+              
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setShowAccountModal(false)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">إلغاء</button>
                 <button type="submit" disabled={saving} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60">
