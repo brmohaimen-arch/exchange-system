@@ -542,7 +542,33 @@ def delete_bank_account(account_id: str, actor: User = Depends(require_permissio
     db.commit()
     return success_response(data={"deleted": True})
 
-def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str | None, account_number: str | None, currency: str | None, actor_name: str):
+# What a profile's "اسم بنك العميل" can say to mean "no real bank yet" — it files the account under the
+# placeholder "أخرى (غير محدد)" bank (the same one the account form's "أخرى" choice uses).
+_UNSPECIFIED_BANK_NAMES = {"", "غير محدد", "اخرى", "أخرى", "أخرى (غير محدد)", "اخرى (غير محدد)", "other", "unspecified", "unknown"}
+
+
+def _customer_bank_and_branch(db: Session, bank_name: str | None) -> tuple[str, str, str, str]:
+    """(bank_id, bank_name, branch_id, branch_name) for a typed bank name: the unspecified placeholder, or the
+    existing/new bank with that name plus its "حسابات العملاء" branch."""
+    typed = (bank_name or "").strip()
+    if typed.lower() in _UNSPECIFIED_BANK_NAMES:
+        return _ensure_other_bank(db)
+    bank = db.scalar(select(Bank).where(func.lower(Bank.name) == typed.lower()))
+    if not bank:
+        bank = Bank(id=new_id("bank_cust"), name=typed, code="-", country="-", city="-", phone="-",
+                    is_active=True, notes="أُنشئ تلقائياً من بيانات حساب عميل")
+        db.add(bank)
+        db.flush()
+    branch = db.scalar(select(BankBranch).where(BankBranch.bank_id == bank.id, BankBranch.name == "حسابات العملاء"))
+    if not branch:
+        branch = BankBranch(id=new_id("bbr_cust"), bank_id=bank.id, bank_name=bank.name, name="حسابات العملاء",
+                            city="-", address="-", phone="-", manager="-", is_active=True)
+        db.add(branch)
+        db.flush()
+    return bank.id, bank.name, branch.id, branch.name
+
+
+def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str | None, account_number: str | None, currency: str | None, actor_name: str, bank_name_changed: bool = False):
     """Keeps the customer's own external bank account (a BankAccount row tagged
     via customer_id, kept separate from the company's own accounts) in sync with
     the bank_name/bank_account_number typed into their profile. An existing
@@ -557,7 +583,18 @@ def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str 
         previous.customer_id = None
         previous = None
 
-    if not new_number or previous:
+    if previous:
+        # Same account number as before. If the bank name in the profile was edited in THIS save, the
+        # linked account follows it (changing it, or clearing it = "غير محدد"); an untouched bank name never
+        # overrides a bank someone set on the account from the banks page.
+        if bank_name_changed:
+            bank_id, resolved_name, branch_id, branch_label = _customer_bank_and_branch(db, bank_name)
+            if previous.bank_id != bank_id:
+                create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankAccount", entity_id=previous.id,
+                                 description=f"تم تغيير بنك حساب العميل {customer.name} من ({previous.bank_name}) إلى ({resolved_name}) من ملف العميل", username=actor_name)
+                previous.bank_id, previous.bank_name, previous.branch_id, previous.branch_name = bank_id, resolved_name, branch_id, branch_label
+        return
+    if not new_number:
         return
 
     existing = db.scalar(select(BankAccount).where(BankAccount.account_number == new_number, BankAccount.customer_id.is_(None)))
@@ -565,30 +602,16 @@ def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str 
         existing.customer_id = customer.id
         return
 
-    safe_bank_name = (bank_name or "").strip() or "بنك العميل"
-    bank = db.scalar(select(Bank).where(func.lower(Bank.name) == safe_bank_name.lower()))
-    if not bank:
-        bank = Bank(id=new_id("bank_cust"), name=safe_bank_name, code="-", country="-", city="-", phone="-",
-                    is_active=True, notes="أُنشئ تلقائياً من بيانات حساب عميل")
-        db.add(bank)
-        db.flush()
-
-    branch = db.scalar(select(BankBranch).where(BankBranch.bank_id == bank.id, BankBranch.name == "حسابات العملاء"))
-    if not branch:
-        branch = BankBranch(id=new_id("bbr_cust"), bank_id=bank.id, bank_name=bank.name, name="حسابات العملاء",
-                            city="-", address="-", phone="-", manager="-", is_active=True)
-        db.add(branch)
-        db.flush()
-
+    bank_id, resolved_bank_name, branch_id, branch_label = _customer_bank_and_branch(db, bank_name or "بنك العميل")
     account = BankAccount(
-        id=new_id("ba_cust"), bank_id=bank.id, bank_name=bank.name, branch_id=branch.id, branch_name=branch.name,
+        id=new_id("ba_cust"), bank_id=bank_id, bank_name=resolved_bank_name, branch_id=branch_id, branch_name=branch_label,
         account_name=customer.name, account_number=new_number, account_type="individual",
         currency=(currency or "LYD"), balance=0.0, is_active=True,
         notes="حساب بنكي خاص بالعميل — أُنشئ تلقائياً", customer_id=customer.id,
     )
     db.add(account)
     create_audit_log(db, action=AuditAction.CREATE, entity_type="BankAccount", entity_id=account.id,
-                     description=f"تم إنشاء حساب بنكي تلقائياً للعميل {customer.name} في {bank.name}", username=actor_name)
+                     description=f"تم إنشاء حساب بنكي تلقائياً للعميل {customer.name} في {resolved_bank_name}", username=actor_name)
 
 # ----------------- CUSTOMERS -----------------
 @router.get("/customers")
@@ -634,12 +657,13 @@ def update_customer(customer_id: str, data: CustomerCreate, actor: User = Depend
     c.balances = data.balances
     c.profit_pct = data.profit_pct
     c.notes = data.notes
+    bank_name_changed = (c.bank_name or "").strip() != (data.bank_name or "").strip()
     c.bank_name = data.bank_name
     c.bank_account_number = data.bank_account_number
     c.passport_number = data.passport_number
     was_active = c.is_active
     c.is_active = data.is_active
-    _sync_customer_bank_account(db, c, data.bank_name, data.bank_account_number, data.bank_currency, actor.name)
+    _sync_customer_bank_account(db, c, data.bank_name, data.bank_account_number, data.bank_currency, actor.name, bank_name_changed=bank_name_changed)
     action_desc = f"تم تعديل بيانات العميل: {c.name}"
     if was_active and not data.is_active:
         action_desc = f"تم إيقاف العميل: {c.name}"
