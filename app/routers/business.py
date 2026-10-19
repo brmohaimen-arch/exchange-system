@@ -3,7 +3,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, not_
 from ..database import get_db
 from ..models import (
     Bank, BankBranch, BankAccount, BankDeposit, Customer, Debt, DebtPaymentRecord, Advance, AdvancePaymentRecord, Transaction, Movement, JournalEntry,
@@ -3341,35 +3341,59 @@ def _chain_ordered(movements: list) -> list:
     return ordered
 
 
-def _ledger_sequence(movements: list, opening: float | None = None) -> list[dict]:
+def _ledger_sequence(movements: list, opening: float | None = None, hidden: list | None = None) -> list[dict]:
     """Ledger lines for one entity+currency. Where two consecutive movements
     don't join up (balance_before != previous balance_after — a balance that
     was changed by hand without being logged, in older data), an explicit
     "تعديل رصيد يدوي" line bridges the gap, so the running balance never jumps
-    unexplained."""
+    unexplained.
+
+    hidden = the movements of cancelled operations that are left out of the
+    statement. Normally their amount is already out of the recorded balances
+    (the cancellation put the money back), so nothing is left to explain. But
+    an operation cancelled the old way (journal entry only) keeps its amount
+    inside every later recorded balance: the gap it leaves between two shown
+    rows is then exactly what the hidden movements of that stretch add up to.
+    That gap is taken out of the running balance silently, instead of printing
+    the cancelled operation again as a "manual adjustment" line."""
     items: list[dict] = []
     prev_after = opening
+    offset = 0.0   # the hidden amounts already taken out of the recorded balances
+    pending = sorted(hidden or [], key=lambda h: h.timestamp)
     for m in _chain_ordered(movements):
-        if prev_after is not None and abs(m.balance_before - prev_after) > 0.005:
-            delta = m.balance_before - prev_after
-            items.append({"m": None, "ts": m.timestamp, "in": delta if delta > 0 else 0.0, "out": -delta if delta < 0 else 0.0,
-                          "after": m.balance_before, "type": "تعديل رصيد يدوي (غير مسجَّل)", "currency": m.currency,
-                          "entity_name": m.entity_name, "notes": "فرق بين رصيدين متتاليين — تعديل يدوي على الرصيد", "user": "—"})
-        items.append({"m": m, "ts": m.timestamp, "in": m.amount_in, "out": m.amount_out, "after": m.balance_after, "type": m.details or m.type,
+        hidden_net = 0.0
+        while pending and pending[0].timestamp <= m.timestamp:
+            h = pending.pop(0)
+            hidden_net += h.amount_in - h.amount_out
+        before = m.balance_before + offset
+        if prev_after is not None and abs(before - prev_after) > 0.005:
+            gap = before - prev_after
+            if abs(gap - hidden_net) < 0.005:
+                offset -= gap   # exactly the cancelled amount: carry on without it
+                before = prev_after
+            else:
+                items.append({"m": None, "ts": m.timestamp, "in": gap if gap > 0 else 0.0, "out": -gap if gap < 0 else 0.0,
+                              "after": before, "type": "تعديل رصيد يدوي (غير مسجَّل)", "currency": m.currency,
+                              "entity_name": m.entity_name, "notes": "فرق بين رصيدين متتاليين — تعديل يدوي على الرصيد", "user": "—"})
+        after = m.balance_after + offset
+        items.append({"m": m, "ts": m.timestamp, "in": m.amount_in, "out": m.amount_out, "before": before, "after": after, "type": m.details or m.type,
                       "currency": m.currency, "entity_name": m.entity_name, "notes": None, "user": m.user})
-        prev_after = m.balance_after
+        prev_after = after
     return items
 
 
-def _merged_ledger(movements: list) -> list[dict]:
+def _merged_ledger(movements: list, hidden: list | None = None) -> list[dict]:
     """Ledger lines for many entities/currencies together: each (entity, currency)
     sequence is built on its own (its balance chain is its own), then merged by time."""
     seqs: dict[tuple, list] = {}
     for m in movements:
         seqs.setdefault((m.entity_id, m.currency), []).append(m)
+    hidden_by_seq: dict[tuple, list] = {}
+    for h in hidden or []:
+        hidden_by_seq.setdefault((h.entity_id, h.currency), []).append(h)
     lines: list[dict] = []
-    for ms in seqs.values():
-        lines.extend(_ledger_sequence(ms))
+    for key, ms in seqs.items():
+        lines.extend(_ledger_sequence(ms, None, hidden_by_seq.get(key)))
     lines.sort(key=lambda it: it["ts"])
     return lines
 
@@ -3379,22 +3403,25 @@ def _balance_headers(with_sides: bool) -> list[str]:
 
 
 def _entity_daily_ledger_rows(db: Session, entity_kind: str, entity_id: str, date_from: str, date_to: str, currency: str):
-    query = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id, Movement.currency == currency, _not_reversed_movement())
-    opening_query = query
+    base = select(Movement).where(Movement.entity_type == entity_kind, Movement.entity_id == entity_id, Movement.currency == currency)
+    # The whole history up to the end of the range, so a cancelled amount that sits inside an earlier row's
+    # recorded balance is taken out of the opening balance and every running balance alike.
+    if date_to:
+        base = base.where(Movement.timestamp <= date_to + " 23:59:59")
+    all_movements = db.scalars(base.where(_not_reversed_movement()).order_by(Movement.timestamp.asc())).all()
+    hidden = db.scalars(base.where(not_(_not_reversed_movement())).order_by(Movement.timestamp.asc())).all()
+    all_lines = _ledger_sequence(all_movements, None, hidden)
     if date_from:
-        opening_before = db.scalars(opening_query.where(Movement.timestamp < date_from).order_by(Movement.timestamp.desc()))
-        opening_row = opening_before.first()
-        opening_balance = opening_row.balance_after if opening_row else 0.0
-        query = query.where(Movement.timestamp >= date_from)
+        before_range = [it for it in all_lines if it["ts"] < date_from]
+        opening_balance = before_range[-1]["after"] if before_range else 0.0
+        lines = [it for it in all_lines if it["ts"] >= date_from]
     else:
         opening_balance = None
-    if date_to:
-        query = query.where(Movement.timestamp <= date_to + " 23:59:59")
-    movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
-    lines = _ledger_sequence(movements, opening_balance)
+        lines = all_lines
+    movements = [it["m"] for it in lines if it["m"] is not None]
     if opening_balance is None:
         # No earlier history in range: the opening balance is whatever the first movement started from.
-        opening_balance = movements[0].balance_before if movements else 0.0
+        opening_balance = next((it["before"] for it in lines if it["m"] is not None), 0.0)
 
     # A customer's own bank account names sides (له/عليه); the company's vaults
     # and bank accounts don't need them.
@@ -3446,9 +3473,15 @@ def _all_customer_bank_accounts_ledger_rows(db: Session, date_from: str, date_to
     if date_to:
         query = query.where(Movement.timestamp <= date_to + " 23:59:59")
     movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
+    hidden_query = select(Movement).where(Movement.entity_type == "bank_account", Movement.entity_id.in_(accounts_by_id.keys()), not_(_not_reversed_movement()))
+    if currency:
+        hidden_query = hidden_query.where(Movement.currency == currency)
+    if date_to:
+        hidden_query = hidden_query.where(Movement.timestamp <= date_to + " 23:59:59")
+    hidden = db.scalars(hidden_query).all()
 
     rows = []
-    for i, it in enumerate(_merged_ledger(movements), start=1):
+    for i, it in enumerate(_merged_ledger(movements, hidden), start=1):
         m = it["m"]
         eid = m.entity_id if m else None
         account = accounts_by_id.get(eid) if eid else None
@@ -3514,8 +3547,14 @@ def _vaults_ledger_rows(db: Session, vault_ids: list[str], date_from: str, date_
     if currency:
         query = query.where(Movement.currency == currency)
     movements = db.scalars(query.order_by(Movement.timestamp.asc())).all()
+    hidden_query = select(Movement).where(Movement.entity_type == "vault", Movement.entity_id.in_(vault_ids), not_(_not_reversed_movement()))
+    if currency:
+        hidden_query = hidden_query.where(Movement.currency == currency)
+    if date_to:
+        hidden_query = hidden_query.where(Movement.timestamp <= date_to + " 23:59:59")
+    hidden = db.scalars(hidden_query).all()
     rows = []
-    for i, it in enumerate(_merged_ledger(movements), start=1):
+    for i, it in enumerate(_merged_ledger(movements, hidden), start=1):
         date_part = it["ts"][:10]
         rows.append([
             str(i), date_part, _arabic_weekday(date_part), it["entity_name"], it["type"],
