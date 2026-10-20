@@ -370,6 +370,29 @@ export interface FleetSummary {
   netProfitLyd: number
   incomeByCategoryLyd: Record<string, number>
   expenseByCategoryLyd: Record<string, number>
+  profitability?: FleetProfitability
+}
+
+/** The honest split: capital tied up in unsold cars, profit on sold cars, and what was spent (all LYD equivalents). */
+export interface FleetProfitability {
+  capital: { inventoryCount: number; inventoryCostLyd: number; purchaseLyd: number; expensesLyd: number }
+  sales: {
+    soldCount: number; salesLyd: number; costOfSoldLyd: number; purchaseOfSoldLyd: number; expensesOfSoldLyd: number
+    otherIncomeLyd: number; realizedProfitLyd: number; profitOnCostPct: number | null; marginPct: number | null
+  }
+  expenses: { onSoldByCategoryLyd: Record<string, number>; onStockByCategoryLyd: Record<string, number>; onSoldLyd: number; onStockLyd: number }
+  otherIncomeByCategoryLyd: Record<string, number>
+  otherIncomeTotalLyd: number
+}
+
+/** One vehicle's full cost / profit breakdown (LYD equivalents) from GET /fleet/analysis. */
+export interface FleetVehicleAnalysis {
+  id: string; autoNumber: number; name: string; type: string; chassisNumber: string | null; serialNumber: string | null
+  status: string; currency: string; purchaseDate: string | null; saleDate: string | null; buyerName: string | null; sellerName: string | null
+  warehouseName: string | null; purchasePrice: number; salePrice: number | null; saleCurrency: string | null
+  sold: boolean; purchaseLyd: number; expensesLyd: number; expensesByCategoryLyd: Record<string, number>; damageLyd: number; totalCostLyd: number
+  otherIncomeLyd: number; otherIncomeByCategoryLyd: Record<string, number>; saleLyd: number | null; profitLyd: number | null
+  profitOnCostPct: number | null; marginPct: number | null; daysInStock: number | null; breakEvenLyd: number | null
 }
 
 export interface Customer {

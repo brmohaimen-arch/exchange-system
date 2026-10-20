@@ -2,8 +2,8 @@
 
 import { useEffect, useState, FormEvent } from 'react'
 import { Plus, X, Loader2, Trash2, Package, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag, ArrowUpRight, ArrowDownRight, CalendarRange, Pencil, Undo2 } from 'lucide-react'
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
-import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from '@/components/ui/chart'
+import { FleetBreakdown } from '@/components/fleet/FleetBreakdown'
+import { FleetProfitability } from '@/components/fleet/FleetProfitability'
 import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, FleetWarehouse, FleetCompanyDef, Currency } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
@@ -13,34 +13,7 @@ import { DateInput } from '@/components/ui/date-input'
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
 
-interface PeriodTotals { income: number; expense: number; profit: number; count: number }
-interface PeriodKpis extends PeriodTotals { profitChangePct: number | null; incomeChangePct: number | null; previous: PeriodTotals }
-interface FleetKpis {
-  week: PeriodKpis & { from: string; to: string; daily: ({ date: string } & PeriodTotals)[] }
-  month: PeriodKpis & { label: string; trend: ({ month: string } & PeriodTotals)[] }
-}
-const kpiChartConfig: ChartConfig = { profit: { label: 'صافي الربح (د.ل)', color: '#7C3AED' } }
 const money = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 2 })
-
-function ChangeBadge({ pct, label }: { pct: number | null; label: string }) {
-  if (pct === null) return <span className="text-xs text-muted-foreground">لا توجد بيانات {label} للمقارنة</span>
-  const up = pct >= 0
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${up ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}`} dir="ltr">
-      {up ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
-      {up ? '+' : ''}{pct}%
-    </span>
-  )
-}
-
-function MiniStat({ label, value, tone }: { label: string; value: string; tone?: 'success' | 'danger' }) {
-  return (
-    <div className="rounded-lg bg-secondary/40 px-4 py-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={`mt-1 text-lg font-bold ${tone === 'success' ? 'text-success' : tone === 'danger' ? 'text-danger' : 'text-foreground'}`} dir="ltr">{value}</p>
-    </div>
-  )
-}
 
 const VEHICLE_STATUSES = ['عرض', 'صيانة', 'متوقف', 'تم البيع']
 const DAMAGE_STATUSES = ['مُبلغ عنه', 'قيد الإصلاح', 'تم الإصلاح']
@@ -132,9 +105,8 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
   const [error, setError] = useState('')
   const [page, setPage] = useState(1)
 
-  const [view, setView] = useState<'vehicles' | 'statement' | 'accounts' | 'warehouses' | 'warehouse_statement'>('vehicles')
+  const [view, setView] = useState<'vehicles' | 'profitability' | 'statement' | 'accounts' | 'warehouses' | 'warehouse_statement'>('vehicles')
   const [summary, setSummary] = useState<FleetSummary | null>(null)
-  const [kpis, setKpis] = useState<FleetKpis | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(true)
   const [statementDateFrom, setStatementDateFrom] = useState('')
   const [statementDateTo, setStatementDateTo] = useState('')
@@ -209,7 +181,6 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
 
   const loadSummary = async () => {
     setSummaryLoading(true)
-    loadKpis()
     try {
       const params = new URLSearchParams()
       if (statementDateFrom) params.set('date_from', statementDateFrom)
@@ -273,14 +244,6 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
       await loadWarehouses()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'تعذر حذف المخزن')
-    }
-  }
-
-  const loadKpis = async () => {
-    try {
-      setKpis(await api.get<FleetKpis>(`${base}/fleet/kpis`))
-    } catch {
-      /* KPIs are supplementary; the rest of the page still works without them */
     }
   }
 
@@ -766,31 +729,10 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
 
       {error && <p className="rounded-md bg-danger/10 px-4 py-2 text-sm text-danger">{error}</p>}
 
-      {/* Company-wide KPI dashboard */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2"><TrendingUp className="h-4 w-4 text-success" /> إجمالي الإيرادات</div>
-          <p className="text-2xl font-bold text-foreground" dir="ltr">{summaryLoading ? '—' : (summary?.totalIncomeLyd ?? 0).toLocaleString()} د.ل</p>
-        </div>
-        <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2"><TrendingDown className="h-4 w-4 text-danger" /> إجمالي التكاليف</div>
-          <p className="text-2xl font-bold text-foreground" dir="ltr">{summaryLoading ? '—' : (summary?.totalCostsLyd ?? 0).toLocaleString()} د.ل</p>
-          <p className="text-xs text-muted-foreground mt-1">مصروفات {(summary?.totalExpenseLyd ?? 0).toLocaleString()} + أضرار {(summary?.totalDamageCostLyd ?? 0).toLocaleString()}</p>
-        </div>
-        <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2"><Landmark className="h-4 w-4 text-primary" /> صافي الربح</div>
-          <p className={`text-2xl font-bold ${(summary?.netProfitLyd ?? 0) < 0 ? 'text-danger' : 'text-foreground'}`} dir="ltr">{summaryLoading ? '—' : (summary?.netProfitLyd ?? 0).toLocaleString()} د.ل</p>
-        </div>
-        <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2"><Truck className="h-4 w-4 text-primary" /> عدد المركبات/المعدات</div>
-          <p className="text-2xl font-bold text-foreground">{summaryLoading ? '—' : summary?.vehicleCount ?? 0}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {summary && Object.entries(summary.statusCounts).map(([s, c]) => `${s}: ${c}`).join(' · ')}
-          </p>
-        </div>
-      </div>
+      {/* Capital vs profit vs expenses — no charts, just the numbers */}
+      <FleetBreakdown summary={summary} loading={summaryLoading} vehicleCount={summary?.vehicleCount ?? 0} statusCounts={summary?.statusCounts ?? {}} />
 
-      {/* Cash wallet + weekly / monthly performance */}
+      {/* Cash wallets */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {wallets.map((w) => (
           <div key={w.id} className="rounded-xl border border-success/30 bg-success/5 p-6 shadow-sm">
@@ -800,45 +742,13 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
           </div>
         ))}
       </div>
-      {kpis && (
-        <div className="grid gap-6 lg:grid-cols-2">
-          {([
-            { key: 'week', title: 'أداء الأسبوع', icon: TrendingUp, sub: `${kpis.week.from.replace(/-/g, '/')} → ${kpis.week.to.replace(/-/g, '/')} · آخر 7 أيام`, prevLabel: 'الأسبوع السابق', k: kpis.week, series: kpis.week.daily.map((d) => ({ x: d.date.slice(5).replace('-', '/'), profit: d.profit })) },
-            { key: 'month', title: 'مؤشرات الشهر', icon: CalendarRange, sub: `${kpis.month.label.replace('-', '/')} · حتى اليوم`, prevLabel: 'الشهر السابق', k: kpis.month, series: kpis.month.trend.map((m) => ({ x: m.month.replace('-', '/'), profit: m.profit })) },
-          ] as const).map((c) => (
-            <div key={c.key} className="rounded-xl border border-border bg-card p-6 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="flex items-center gap-2 text-base font-semibold text-foreground"><c.icon className="h-5 w-5 text-primary" /> {c.title}</h3>
-                  <p className="mt-0.5 text-xs text-muted-foreground" dir="ltr">{c.sub}</p>
-                </div>
-                <ChangeBadge pct={c.k.profitChangePct} label={c.prevLabel} />
-              </div>
-              <p className={`mt-4 text-3xl font-bold ${c.k.profit < 0 ? 'text-danger' : 'text-foreground'}`} dir="ltr">{money(c.k.profit)} <span className="text-sm font-medium text-muted-foreground">د.ل</span></p>
-              <p className="text-xs text-muted-foreground">صافي الربح — {c.prevLabel}: {money(c.k.previous.profit)} د.ل</p>
-              <ChartContainer config={kpiChartConfig} className="mt-4 h-40 w-full" dir="ltr" style={{ direction: 'ltr' }}>
-                <BarChart data={c.series} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
-                  <CartesianGrid vertical={false} strokeDasharray="3 3" />
-                  <XAxis dataKey="x" fontSize={11} tickLine={false} axisLine={false} />
-                  <YAxis fontSize={11} tickLine={false} axisLine={false} width={64} tickFormatter={(v: number) => `\u200E${v < 0 ? '\u2212' : ''}${Math.abs(v).toLocaleString('en-US')}`} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="profit" fill="var(--color-profit)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-              <div className="mt-4 grid grid-cols-3 gap-3">
-                <MiniStat label="الإيرادات" value={money(c.k.income)} tone="success" />
-                <MiniStat label="المصروفات والأضرار" value={money(c.k.expense)} tone="danger" />
-                <MiniStat label="عدد القيود" value={String(c.k.count)} />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* View switcher */}
       <div className="flex border-b border-border">
         <button onClick={() => setView('vehicles')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'vehicles' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
           <Truck className="h-3.5 w-3.5" /> المركبات والمعدات
+        </button>
+        <button onClick={() => setView('profitability')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'profitability' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+          <TrendingUp className="h-3.5 w-3.5" /> ربحية المركبات
         </button>
         <button onClick={() => setView('statement')} className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${view === 'statement' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
           <ListTree className="h-3.5 w-3.5" /> كشف حركات الشركة
@@ -853,6 +763,8 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
           <Landmark className="h-3.5 w-3.5" /> الحسابات
         </button>
       </div>
+
+      {view === 'profitability' && base !== null && <FleetProfitability base={base} company={company} refreshKey={vehicles.length} />}
 
       {view === 'statement' && (
         <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -908,7 +820,7 @@ export default function FleetCompanyPage({ company }: { company: FleetCompany })
         </div>
       )}
 
-      {view === 'warehouse_statement' ? (
+      {view === 'profitability' ? null : view === 'warehouse_statement' ? (
         <div className="space-y-4">
           {warehouseStmtLoading ? (
             <p className="rounded-xl border border-border bg-card py-8 text-center text-sm text-muted-foreground shadow-sm">جاري التحميل...</p>

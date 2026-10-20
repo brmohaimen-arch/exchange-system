@@ -1,6 +1,7 @@
 import io
 import re
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, date as _date
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -198,13 +199,14 @@ def vehicle_to_dict(v: FleetVehicle, balances: dict[str, float] | None = None, a
     account_names = account_names or {}
     sale_ccy = v.sale_currency or v.currency
     profit, profit_ccy = None, v.currency
+    econ = None
     if v.sale_price is not None:
-        if sale_ccy == v.currency or db is None:
+        if db is None:
             profit = v.sale_price - v.purchase_price
         else:
-            # Bought in one currency, sold in another: compare in LYD equivalents.
-            profit = _to_lyd(db, sale_ccy, v.sale_price) - _to_lyd(db, v.currency, v.purchase_price)
-            profit_ccy = "LYD"
+            # Profit after EVERY cost of the vehicle (purchase + expenses + damage), in LYD equivalents.
+            econ = _vehicle_economics(db, [v])[v.id]
+            profit, profit_ccy = econ["profitLyd"], "LYD"
     return {
         "id": v.id,
         "autoNumber": v.auto_number,
@@ -299,6 +301,81 @@ def transaction_to_dict(t: FleetTransaction, account_name: str | None = None):
         "balanceAfter": t.balance_after,
         "counterparty": t.counterparty,
     }
+
+
+PURCHASE_CATEGORY = "شراء المركبة/المعدة"
+SALE_CATEGORY = "بيع المركبة/المعدة"
+
+
+class _Rates:
+    """Current ->LYD rates, read once (same rule as _to_lyd: no rate = amount as is)."""
+    def __init__(self, db: Session):
+        self.map = {r.from_currency: r.sell_rate for r in db.scalars(select(ExchangeRate).where(ExchangeRate.to_currency == "LYD")).all()}
+
+    def lyd(self, currency: str, amount: float) -> float:
+        return amount if currency == "LYD" else amount * self.map.get(currency, 1.0)
+
+
+def _days_between(start: str | None, end: str | None) -> int | None:
+    try:
+        return max(0, (_date.fromisoformat((end or "")[:10]) - _date.fromisoformat((start or "")[:10])).days)
+    except ValueError:
+        return None
+
+
+def _vehicle_economics(db: Session, vehicles: list[FleetVehicle], rates: _Rates | None = None) -> dict[str, dict]:
+    """The one place a vehicle's cost and profit are worked out, so the table,
+    the per-car analysis, the company summary and every export agree.
+
+    Everything in LYD equivalents (current rates). Total cost = purchase price
+    + every expense booked on the vehicle (the automatic purchase entry is NOT
+    counted again) + damage costs. A sold vehicle's profit = sale price + any
+    other income it earned (e.g. rental) - total cost."""
+    rates = rates or _Rates(db)
+    ids = [v.id for v in vehicles]
+    txs: dict[str, list] = defaultdict(list)
+    dmgs: dict[str, list] = defaultdict(list)
+    if ids:
+        for t in db.scalars(select(FleetTransaction).where(FleetTransaction.vehicle_id.in_(ids))).all():
+            txs[t.vehicle_id].append(t)
+        for d in db.scalars(select(FleetDamageRecord).where(FleetDamageRecord.vehicle_id.in_(ids))).all():
+            dmgs[d.vehicle_id].append(d)
+    today = datetime.utcnow().date().isoformat()
+    out: dict[str, dict] = {}
+    for v in vehicles:
+        expenses_by_cat: dict[str, float] = defaultdict(float)
+        other_income_by_cat: dict[str, float] = defaultdict(float)
+        for t in txs[v.id]:
+            lyd = rates.lyd(t.currency, t.amount)
+            if t.type == "expense" and t.category != PURCHASE_CATEGORY:
+                expenses_by_cat[t.category] += lyd
+            elif t.type == "income" and t.category != SALE_CATEGORY:
+                other_income_by_cat[t.category] += lyd
+        damage = sum(rates.lyd(d.currency, d.cost) for d in dmgs[v.id])
+        purchase = rates.lyd(v.currency, v.purchase_price or 0.0)
+        expenses = sum(expenses_by_cat.values())
+        total_cost = purchase + expenses + damage
+        other_income = sum(other_income_by_cat.values())
+        sold = v.sale_price is not None
+        sale = rates.lyd(v.sale_currency or v.currency, v.sale_price) if sold else None
+        profit = (sale + other_income - total_cost) if sold else None
+        out[v.id] = {
+            "sold": sold,
+            "purchaseLyd": round(purchase, 2),
+            "expensesLyd": round(expenses, 2),
+            "expensesByCategoryLyd": {k: round(x, 2) for k, x in sorted(expenses_by_cat.items(), key=lambda kv: -kv[1])},
+            "damageLyd": round(damage, 2),
+            "totalCostLyd": round(total_cost, 2),
+            "otherIncomeLyd": round(other_income, 2),
+            "otherIncomeByCategoryLyd": {k: round(x, 2) for k, x in other_income_by_cat.items()},
+            "saleLyd": round(sale, 2) if sold else None,
+            "profitLyd": round(profit, 2) if sold else None,
+            "profitOnCostPct": round(profit / total_cost * 100, 1) if sold and total_cost else None,
+            "marginPct": round(profit / sale * 100, 1) if sold and sale else None,
+            "daysInStock": _days_between(v.purchase_date or v.timestamp, v.sale_date if sold else today),
+            "breakEvenLyd": round(total_cost, 2) if not sold else None,
+        }
+    return out
 
 
 def _to_lyd(db: Session, currency: str, amount: float) -> float:
@@ -834,13 +911,9 @@ def _warehouse_stmt_row(db: Session, v: FleetVehicle, i: int) -> list:
     # profit here has to compare LYD equivalents rather than subtracting two
     # amounts in different currencies as if they were the same.
     sale_ccy = v.sale_currency or v.currency
-    profit, profit_ccy = None, v.currency
+    profit, profit_ccy = None, "LYD"
     if v.sale_price is not None:
-        if sale_ccy == v.currency:
-            profit = v.sale_price - v.purchase_price
-        else:
-            profit = _to_lyd(db, sale_ccy, v.sale_price) - _to_lyd(db, v.currency, v.purchase_price)
-            profit_ccy = "LYD"
+        profit = _vehicle_economics(db, [v])[v.id]["profitLyd"]   # after every cost of the vehicle
     return [
         str(i), f"#{v.auto_number:03d}", v.name, v.type, v.serial_number or "—", v.chassis_number or "—", v.color or "—",
         v.manufacture_date or "—", v.operator or "—", v.status,
@@ -1074,7 +1147,54 @@ def fleet_summary(date_from: str = "", date_to: str = "", company: str = Depends
         total_damage += _to_lyd(db, d.currency, d.cost)
 
     total_costs = total_expense + total_damage
+
+    # The honest picture: money tied up in unsold cars (capital), profit earned on the cars actually sold,
+    # and what was spent, split by whether the car was sold. Sold cars are those sold inside the date range.
+    econ = _vehicle_economics(db, list(vehicles))
+    sold = [v for v in vehicles if v.sale_price is not None and (not date_from or (v.sale_date or "")[:10] >= date_from) and (not date_to or (v.sale_date or "")[:10] <= date_to)]
+    stock = [v for v in vehicles if v.sale_price is None]
+    stock_purchase = sum(econ[v.id]["purchaseLyd"] for v in stock)
+    stock_extra = sum(econ[v.id]["expensesLyd"] + econ[v.id]["damageLyd"] for v in stock)
+    sales_total = sum(econ[v.id]["saleLyd"] for v in sold)
+    cost_of_sold = sum(econ[v.id]["totalCostLyd"] for v in sold)
+    other_income_sold = sum(econ[v.id]["otherIncomeLyd"] for v in sold)
+    realized = sales_total + other_income_sold - cost_of_sold
+    exp_cat_sold: dict[str, float] = defaultdict(float)
+    exp_cat_stock: dict[str, float] = defaultdict(float)
+    for group, bucket in ((sold, exp_cat_sold), (stock, exp_cat_stock)):
+        for v in group:
+            for cat, amt in econ[v.id]["expensesByCategoryLyd"].items():
+                bucket[cat] += amt
+            if econ[v.id]["damageLyd"]:
+                bucket["أضرار وإصلاحات"] += econ[v.id]["damageLyd"]
+    other_income_by_cat: dict[str, float] = defaultdict(float)
+    for v in vehicles:
+        for cat, amt in econ[v.id]["otherIncomeByCategoryLyd"].items():
+            other_income_by_cat[cat] += amt
+    profitability = {
+        "capital": {
+            "inventoryCount": len(stock), "inventoryCostLyd": round(stock_purchase + stock_extra, 2),
+            "purchaseLyd": round(stock_purchase, 2), "expensesLyd": round(stock_extra, 2),
+        },
+        "sales": {
+            "soldCount": len(sold), "salesLyd": round(sales_total, 2), "costOfSoldLyd": round(cost_of_sold, 2),
+            "purchaseOfSoldLyd": round(sum(econ[v.id]["purchaseLyd"] for v in sold), 2),
+            "expensesOfSoldLyd": round(sum(econ[v.id]["expensesLyd"] + econ[v.id]["damageLyd"] for v in sold), 2),
+            "otherIncomeLyd": round(other_income_sold, 2),
+            "realizedProfitLyd": round(realized, 2),
+            "profitOnCostPct": round(realized / cost_of_sold * 100, 1) if cost_of_sold else None,
+            "marginPct": round(realized / sales_total * 100, 1) if sales_total else None,
+        },
+        "expenses": {
+            "onSoldByCategoryLyd": {k: round(x, 2) for k, x in sorted(exp_cat_sold.items(), key=lambda kv: -kv[1])},
+            "onStockByCategoryLyd": {k: round(x, 2) for k, x in sorted(exp_cat_stock.items(), key=lambda kv: -kv[1])},
+            "onSoldLyd": round(sum(exp_cat_sold.values()), 2), "onStockLyd": round(sum(exp_cat_stock.values()), 2),
+        },
+        "otherIncomeByCategoryLyd": {k: round(x, 2) for k, x in other_income_by_cat.items()},
+        "otherIncomeTotalLyd": round(sum(other_income_by_cat.values()), 2),
+    }
     return success_response(data={
+        "profitability": profitability,
         "vehicleCount": len(vehicles),
         "statusCounts": status_counts,
         "totalIncomeLyd": total_income,
@@ -1085,6 +1205,54 @@ def fleet_summary(date_from: str = "", date_to: str = "", company: str = Depends
         "incomeByCategoryLyd": income_by_category,
         "expenseByCategoryLyd": expense_by_category,
     })
+
+
+def _analysis_rows(db: Session, company: str) -> list[dict]:
+    vehicles = db.scalars(select(FleetVehicle).where(FleetVehicle.company == company).order_by(FleetVehicle.auto_number)).all()
+    econ = _vehicle_economics(db, list(vehicles))
+    warehouses = {w.id: w.name for w in db.scalars(select(FleetWarehouse).where(FleetWarehouse.company == company)).all()}
+    return [{
+        "id": v.id, "autoNumber": v.auto_number, "name": v.name, "type": v.type, "chassisNumber": v.chassis_number, "serialNumber": v.serial_number,
+        "status": v.status, "currency": v.currency, "purchaseDate": v.purchase_date, "saleDate": v.sale_date, "buyerName": v.buyer_name, "sellerName": v.seller_name,
+        "warehouseName": warehouses.get(v.warehouse_id), "purchasePrice": v.purchase_price, "salePrice": v.sale_price, "saleCurrency": (v.sale_currency or v.currency) if v.sale_price is not None else None,
+        **econ[v.id],
+    } for v in vehicles]
+
+
+@router.get("/fleet/analysis")
+def fleet_vehicle_analysis(company: str = Depends(get_company), actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+    """Every vehicle's full cost and profit breakdown (LYD equivalents) — the data behind the
+    profitability table and each car's analysis panel."""
+    return success_response(data=_analysis_rows(db, company))
+
+
+@router.get("/fleet/analysis/export")
+def export_fleet_analysis(format: str = "pdf", actor: User = Depends(fleet_actor), company: str = Depends(get_company), db: Session = Depends(get_db)):
+    rows = _analysis_rows(db, company)
+    f = lambda x: "—" if x is None else f"{x:,.2f}"
+    headers = ["م", "المركبة", "الحالة", "سعر الشراء", "المصروفات والأضرار", "التكلفة الكاملة", "سعر البيع", "الربح", "نسبة الربح من التكلفة", "الأيام"]
+    body, tot = [], {"cost": 0.0, "sale": 0.0, "profit": 0.0, "sold_cost": 0.0, "stock": 0.0}
+    for i, r in enumerate(rows, start=1):
+        body.append([str(i), f"#{r['autoNumber']:03d} {r['name']}", r["status"], f(r["purchaseLyd"]), f(r["expensesLyd"] + r["damageLyd"]), f(r["totalCostLyd"]),
+                     f(r["saleLyd"]), f(r["profitLyd"]), f"{r['profitOnCostPct']}%" if r["profitOnCostPct"] is not None else "—", "" if r["daysInStock"] is None else str(r["daysInStock"])])
+        tot["cost"] += r["totalCostLyd"]
+        if r["sold"]:
+            tot["sale"] += r["saleLyd"]
+            tot["profit"] += r["profitLyd"]
+            tot["sold_cost"] += r["totalCostLyd"]
+        else:
+            tot["stock"] += r["totalCostLyd"]
+    closing = (f"المبيعات: {tot['sale']:,.2f} د.ل — تكلفة المباع: {tot['sold_cost']:,.2f} د.ل — الربح المحقق: {tot['profit']:,.2f} د.ل — "
+               f"رأس المال في المخزون: {tot['stock']:,.2f} د.ل (كل المبالغ بما يعادلها بالدينار)")
+    sections = [("ربحية المركبات (د.ل)", headers, body)]
+    if format == "xlsx":
+        buf = build_sectioned_excel(sections)
+        return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="profitability_{company}.xlsx"'})
+    try:
+        buf = build_sectioned_pdf(f"ربحية مركبات {company_name(db, company)}", sections, closing)
+    except ArabicFontUnavailable as e:
+        raise APIError(code="FONT_UNAVAILABLE", message_ar="تعذر إنشاء التقرير: لم يتم العثور على خط يدعم اللغة العربية", message_en=str(e), status_code=500)
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="profitability_{company}.pdf"'})
 
 
 @router.get("/fleet/transactions")
