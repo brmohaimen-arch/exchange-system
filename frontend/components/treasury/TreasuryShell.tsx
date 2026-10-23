@@ -3136,7 +3136,7 @@ function TreasuryShellInner({ visibleTabs, pageTitle, basePath }: TreasuryShellP
                   <input value={accountForm.accountName} onChange={(e) => setAccountForm({ ...accountForm, accountName: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">رقم الحساب <span className="text-xs font-normal text-muted-foreground">(اختياري)</span></label>
+                  <label className="block text-sm font-medium text-foreground mb-1">رقم الحساب <span className="text-xs font-normal text-muted-foreground">(تلقائي إن تُرك فارغاً)</span></label>
                   <input value={accountForm.accountNumber} onChange={(e) => setAccountForm({ ...accountForm, accountNumber: e.target.value })} dir="ltr" className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>

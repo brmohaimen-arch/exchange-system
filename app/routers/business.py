@@ -417,8 +417,28 @@ def _ensure_other_bank(db: Session) -> tuple[str, str, str, str]:
         db.flush()
     return bank.id, bank.name, branch.id, branch.name
 
+def _next_company_account_number(db: Session) -> str:
+    """Next sequential number (001, 002, ...) for a company bank account left without one — the same
+    style as customer codes. Only company accounts count, and only short sequence numbers (a long typed
+    number such as an IBAN never feeds the sequence)."""
+    numbers = db.scalars(select(BankAccount.account_number).where(BankAccount.customer_id.is_(None))).all()
+    return f"{max([int(n) for n in numbers if (n or '').isdigit() and len(n) <= 6] or [0]) + 1:03d}"
+
+
+def _auto_account_number(db: Session, customer_id: str | None) -> str:
+    """The number an account gets when nobody typed one: a customer's account takes the customer's own
+    account number (their code), so all of a customer's accounts read the same; a company account gets the next sequence."""
+    if customer_id:
+        owner = db.get(Customer, customer_id)
+        if owner:
+            return (owner.bank_account_number or "").strip() or owner.id
+    return _next_company_account_number(db)
+
+
 def _resolve_bank_account_payload(db: Session, data: "BankAccountCreate") -> dict:
     payload = data.model_dump()
+    if not (payload.get("account_number") or "").strip():
+        payload["account_number"] = _auto_account_number(db, payload.get("customer_id"))
     if payload["bank_id"] == OTHER_BANK_SENTINEL:
         bank_id, bank_name, branch_id, branch_name = _ensure_other_bank(db)
         payload.update(bank_id=bank_id, bank_name=bank_name, branch_id=branch_id, branch_name=branch_name)
