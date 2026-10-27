@@ -10,7 +10,7 @@ import unittest
 from decimal import Decimal
 
 from scripts_check_calculations import read_only_connection
-from scripts_reconcile_live import TABLES, build_report, main
+from scripts_reconcile_live import TABLES, build_report, compact_report, main
 
 
 class ReconciliationReport(unittest.TestCase):
@@ -161,6 +161,40 @@ class ReconciliationReport(unittest.TestCase):
                 code=main(['--db',str(path),'--json'])
             self.assertEqual(code,2)
             self.assertFalse(path.exists())
+            self.assertFalse(json.loads(output.getvalue())['complete'])
+
+    def test_summary_omits_long_identity_lists_without_changing_totals(self):
+        self.vehicle(); self.account(); self.ledger('one',250,after=250)
+        full=self.report(accounts=('a',))
+        full['fleet_accounts'][0]['data']['current_vehicle_bank_hints']=[dict(bank_name='Bank',account_suffix='****1234',transactions=['tx_'+str(i) for i in range(2000)])]
+        summary=compact_report(full)
+        data=summary['fleet_accounts'][0]['data']
+        self.assertNotIn('recent_ledger',data)
+        self.assertEqual(data['valid_primary_net'],250)
+        self.assertTrue(data['internally_matches_zero_opening'])
+        self.assertEqual(data['current_bank_identity_hint_samples'][0]['transaction_count'],2000)
+        self.assertEqual(len(full['fleet_accounts'][0]['data']['current_vehicle_bank_hints'][0]['transactions']),2000)
+        self.assertLess(len(json.dumps(summary,default=str)),len(json.dumps(full,default=str))/2)
+
+    def test_summary_preserves_reversal_conclusions_and_missing_sections(self):
+        self.deposit()
+        full=self.report(deposits=('d','missing'))
+        summary=compact_report(full)
+        self.assertFalse(summary['complete'])
+        self.assertEqual(summary['deposits'][1],full['deposits'][1])
+        before=full['deposits'][0]['data']['legs'][0]
+        after=summary['deposits'][0]['data']['legs'][0]
+        self.assertEqual(after['reference_net'],before['reference_net'])
+        self.assertEqual(after['interpretation'],before['interpretation'])
+        self.assertNotIn('neighbouring_movements',after)
+        self.assertIn('neighbouring_movements',before)
+
+    def test_summary_cli_preserves_incomplete_exit_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output=io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code=main(['--db',str(Path(folder)/'missing.sqlite'),'--summary'])
+            self.assertEqual(code,2)
             self.assertFalse(json.loads(output.getvalue())['complete'])
 
     def test_display_truncation_does_not_change_ledger_arithmetic(self):

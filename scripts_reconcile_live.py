@@ -4,6 +4,7 @@
 Run beside scripts_check_calculations.py:
   python scripts_reconcile_live.py --db /path/to/sql_app.db
   python scripts_reconcile_live.py --json > live-reconciliation.json
+  python scripts_reconcile_live.py --summary
   python scripts_reconcile_live.py --all --json > full-reconciliation.json
 
 No app imports, migrations, network calls or financial writes. Exit 0 means
@@ -11,6 +12,7 @@ the requested report completed, NOT that all balances are correct. Exit 2
 means missing targets/schema, invalid data, or incomplete coverage.
 """
 import argparse
+from copy import deepcopy
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -359,6 +361,65 @@ def build_report(con, deposit_ids=DEPOSITS, account_ids=ACCOUNTS, limit=12):
     return report
 
 
+def compact_report(report):
+    """Small output for terminal sharing; preserve calculations and errors.
+
+    The full report remains available with --json/--all. Never mutate its
+    evidence or recompute any financial value while preparing the summary.
+    """
+    result=deepcopy(report)
+    result['output']='summary; detailed evidence omitted, calculations unchanged'
+    for case in result.get('deposits',[])+result.get('fleet_accounts',[]):
+        data=case.get('data')
+        if data is None:
+            continue
+        history=data.get('audit_history',{})
+        if 'rows' in history:
+            rows=history['rows'][:4]
+            for row in rows:
+                description=row.get('description') or ''
+                row['description']=description[:240]
+                row['description_truncated']=len(description)>240
+            history['rows']=rows
+            history['shown']=len(rows)
+            history['truncated']=history.get('total',0)>len(rows)
+        ledger=data.pop('recent_ledger',None)
+        if ledger is not None:
+            data['ledger_rows_total']=ledger['total']
+        hints=data.pop('current_vehicle_bank_hints',None)
+        if hints is not None:
+            data['current_bank_identity_hint_count']=len(hints)
+            data['current_bank_identity_hint_samples']=[dict(bank_name=h['bank_name'],account_suffix=h['account_suffix'],transaction_count=len(h['transactions'])) for h in hints[:5]]
+        for leg in data.get('legs',[]):
+            neighbours=leg.pop('neighbouring_movements',None)
+            if neighbours is not None:
+                leg['neighbouring_rows_total']=neighbours['total']
+            gaps=leg.get('matching_undo_gap_candidates')
+            if gaps is not None:
+                gaps['rows']=gaps['rows'][:3]
+                gaps['shown']=len(gaps['rows'])
+                gaps['truncated']=gaps['total']>len(gaps['rows'])
+            errors=leg.get('arithmetic_error_ids')
+            if errors is not None:
+                errors['rows']=errors['rows'][:3]
+                errors['shown']=len(errors['rows'])
+                errors['truncated']=errors['total']>len(errors['rows'])
+        if 'journals' in data:
+            data['journals']=[{k:j.get(k) for k in ('id','reference','date','status','tx_type','user')} for j in data['journals']]
+    for item in result.get('usage',{}).values():
+        data=item.get('data',{})
+        ids=data.get('foreign_interest_journal_ids')
+        if ids is not None:
+            data['foreign_interest_journal_count']=len(ids)
+            data['foreign_interest_journal_ids']=ids[:3]
+        exposure=data.get('sold_with_foreign_amounts')
+        if exposure is not None:
+            exposure['rows']=exposure['rows'][:3]
+            exposure['shown']=len(exposure['rows'])
+            exposure['truncated']=exposure['total']>len(exposure['rows'])
+    return result
+
+
 def render(report):
     print('READ-ONLY live reconciliation | complete={}'.format(report.get('complete',False)))
     for key,value in report.get('usage',{}).items():
@@ -386,6 +447,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--db',default=str(Path(__file__).resolve().parent/'sql_app.db'))
     parser.add_argument('--json',action='store_true')
+    parser.add_argument('--summary',action='store_true',help='compact JSON; omit detailed ledgers and long evidence lists')
     parser.add_argument('--all',action='store_true')
     parser.add_argument('--deposit',action='append',help='override default deposit IDs; repeat as needed')
     parser.add_argument('--fleet-account',action='append',help='override default fleet IDs; repeat as needed')
@@ -400,7 +462,9 @@ def main(argv=None):
     finally:
         if con is not None:
             con.close()
-    if args.json:
+    if args.summary:
+        report=compact_report(report)
+    if args.json or args.summary:
         print(json.dumps(report,ensure_ascii=False,indent=2,default=serialize,allow_nan=False))
     else:
         render(report)
