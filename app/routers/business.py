@@ -3410,7 +3410,15 @@ def _ledger_sequence(movements: list, opening: float | None = None, hidden: list
         while pending and pending[0].timestamp <= m.timestamp:
             h = pending.pop(0)
             new_hidden.append(h.amount_in - h.amount_out)
-        if prev_stored_after is not None:
+        if prev_stored_after is None:
+            # The first shown row: cancelled movements before it that the recorded balance still contains
+            # (e.g. two manual entries later reversed) are the account's real starting point being 0, not an
+            # "opening balance" — taken out so the statement starts clean and their later reversal can be matched.
+            if new_hidden and abs(m.balance_before) > 0.005:
+                explained, opened, _closed = _explain_gap(m.balance_before, new_hidden, [])
+                open_hidden = [new_hidden[i] for i in opened]
+                offset -= explained
+        else:
             gap = m.balance_before - prev_stored_after
             if abs(gap) > 0.005:
                 explained, opened, closed = _explain_gap(gap, new_hidden, open_hidden)

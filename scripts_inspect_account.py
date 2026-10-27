@@ -144,6 +144,17 @@ def inspect(con, entity_id, currency, date_from, date_to):
         ts = m['timestamp']
         in_range = (not date_from or ts[:10] >= date_from) and (not date_to or ts[:10] <= date_to)
         if not is_hidden(m):
+            if prev_after is None and stretch and abs(m['balance_before']) > EPS:
+                # the first shown row starts at a balance that cancelled movements before it still contain
+                found = explain(m['balance_before'], stretch, [])
+                if found:
+                    open_hidden = [stretch[i] for i in found[0]]
+                    if in_range:
+                        print('   ***** OPENING {:>14} at {} | EXPLAINED by hidden movement(s) before the first row ({}) - the real opening is 0'.format(
+                            money(m['balance_before']), ts, ', '.join(money(n) for n in open_hidden)))
+                else:
+                    if in_range:
+                        print('   ***** OPENING {:>14} at {} | first row starts from a balance no hidden movement explains (an opening balance)'.format(money(m['balance_before']), ts))
             if prev_after is not None and abs(m['balance_before'] - prev_after) > EPS:
                 gap = m['balance_before'] - prev_after
                 total_gap += gap
