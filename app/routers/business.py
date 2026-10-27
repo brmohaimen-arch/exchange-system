@@ -606,20 +606,30 @@ def _customer_bank_and_branch(db: Session, bank_name: str | None) -> tuple[str, 
     return bank.id, bank.name, branch.id, branch.name
 
 
-def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str | None, account_number: str | None, currency: str | None, actor_name: str, bank_name_changed: bool = False):
-    """Keeps the customer's own external bank account (a BankAccount row tagged
-    via customer_id, kept separate from the company's own accounts) in sync with
-    the bank_name/bank_account_number typed into their profile. An existing
-    unlinked account matching the IBAN is linked; otherwise a new Bank/Branch/
-    BankAccount is created for it. If the customer already had a different
-    account linked and the IBAN changed (or was cleared), that old account is
-    unlinked — never deleted, since it may carry real balance/movement history."""
-    previous = db.scalar(select(BankAccount).where(BankAccount.customer_id == customer.id))
-    new_number = (account_number or "").strip()
+def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str | None, account_number: str | None, currency: str | None, actor_name: str, bank_name_changed: bool = False, create_default: bool = False):
+    """Use the existing customer-owned BankAccount model, including for defaults.
 
-    if previous and previous.account_number != new_number:
-        previous.customer_id = None
-        previous = None
+    New customers get a LYD account even without bank details; their customer
+    code is its displayed number, as on the existing bank-account form. A blank
+    profile number never detaches an account or resets its balance. If a new
+    number is supplied, retain ownership of older accounts and their history.
+    Profile saves with several linked accounts must not select an arbitrary one.
+    No new defaults are backfilled when an existing customer is merely edited.
+    """
+    linked = db.scalars(select(BankAccount).where(BankAccount.customer_id == customer.id)).all()
+    new_number = (account_number or "").strip()
+    if not new_number and len(linked) > 1:
+        return
+    matches = [a for a in linked if a.account_number == new_number] if new_number else linked
+    if len(matches) > 1 and currency:
+        matches = [a for a in matches if a.currency == currency]
+    previous = matches[0] if len(matches) == 1 else None
+
+    # Ambiguous profile fields cannot identify which bank account to change.
+    if len(matches) > 1:
+        return
+    if not new_number and linked and previous is None:
+        return
 
     if previous:
         # Same account number as before. If the bank name in the profile was edited in THIS save, the
@@ -628,25 +638,27 @@ def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str 
         # Typing an explicit "غير محدد" / "أخرى" always applies, even when the profile already says so (profiles saved
         # before the account followed the profile hold that word while the account kept its old bank).
         typed = (bank_name or "").strip().lower()
-        if bank_name_changed or (typed and typed in _UNSPECIFIED_BANK_NAMES):
+        if typed and (bank_name_changed or typed in _UNSPECIFIED_BANK_NAMES):
             bank_id, resolved_name, branch_id, branch_label = _customer_bank_and_branch(db, bank_name)
             if previous.bank_id != bank_id:
                 create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankAccount", entity_id=previous.id,
                                  description=f"تم تغيير بنك حساب العميل {customer.name} من ({previous.bank_name}) إلى ({resolved_name}) من ملف العميل", username=actor_name)
                 previous.bank_id, previous.bank_name, previous.branch_id, previous.branch_name = bank_id, resolved_name, branch_id, branch_label
         return
-    if not new_number:
+    if not new_number and not create_default:
         return
 
-    existing = db.scalar(select(BankAccount).where(BankAccount.account_number == new_number, BankAccount.customer_id.is_(None)))
+    # A generated customer code is not evidence that an unrelated company
+    # account with the same number belongs to this customer.
+    existing = db.scalar(select(BankAccount).where(BankAccount.account_number == new_number, BankAccount.customer_id.is_(None))) if new_number else None
     if existing:
         existing.customer_id = customer.id
         return
 
-    bank_id, resolved_bank_name, branch_id, branch_label = _customer_bank_and_branch(db, bank_name or "بنك العميل")
+    bank_id, resolved_bank_name, branch_id, branch_label = _customer_bank_and_branch(db, bank_name)
     account = BankAccount(
         id=new_id("ba_cust"), bank_id=bank_id, bank_name=resolved_bank_name, branch_id=branch_id, branch_name=branch_label,
-        account_name=customer.name, account_number=new_number, account_type="individual",
+        account_name=customer.name, account_number=new_number or customer.id, account_type="individual",
         currency=(currency or "LYD"), balance=0.0, is_active=True,
         notes="حساب بنكي خاص بالعميل — أُنشئ تلقائياً", customer_id=customer.id,
     )
@@ -676,10 +688,13 @@ def next_customer_code(actor: User = Depends(get_current_user), db: Session = De
 def create_customer(data: CustomerCreate, actor: User = Depends(require_permission("إدارة العملاء")), db: Session = Depends(get_db)):
     if db.get(Customer, data.id):
         raise APIError(code="CUSTOMER_EXISTS", message_ar="رمز العميل موجود بالفعل", message_en="Customer ID already exists", status_code=400)
-    c = Customer(**data.model_dump(exclude={"bank_currency"}))
+    payload = data.model_dump(exclude={"bank_currency"})
+    payload["balances"] = {"USD": 0.0, "LYD": 0.0, **payload["balances"]}
+    c = Customer(**payload)
     db.add(c)
     db.flush()
-    _sync_customer_bank_account(db, c, data.bank_name, data.bank_account_number, data.bank_currency, actor.name)
+    _sync_customer_bank_account(db, c, data.bank_name, data.bank_account_number, data.bank_currency, actor.name, create_default=True)
+    db.flush()  # include the bank-account audit entry in the customer's audit chain
     create_audit_log(db, action=AuditAction.CREATE, entity_type="Customer", entity_id=c.id, description=f"تمت إضافة عميل جديد: {c.name}", username=actor.username)
     db.commit()
     return success_response(data=customer_to_dict(c))
@@ -705,6 +720,7 @@ def update_customer(customer_id: str, data: CustomerCreate, actor: User = Depend
     was_active = c.is_active
     c.is_active = data.is_active
     _sync_customer_bank_account(db, c, data.bank_name, data.bank_account_number, data.bank_currency, actor.name, bank_name_changed=bank_name_changed)
+    db.flush()
     action_desc = f"تم تعديل بيانات العميل: {c.name}"
     if was_active and not data.is_active:
         action_desc = f"تم إيقاف العميل: {c.name}"
@@ -2370,7 +2386,7 @@ def import_customers(data: CustomerImportRequest, actor: User = Depends(require_
         if db.get(Customer, row.id):
             skipped.append(row.id)
             continue
-        balances = {}
+        balances = {"USD": 0.0, "LYD": 0.0}
         if row.opening_balance_currency and row.opening_balance_amount:
             balances[row.opening_balance_currency] = row.opening_balance_amount
         customer = Customer(
@@ -2379,6 +2395,9 @@ def import_customers(data: CustomerImportRequest, actor: User = Depends(require_
             profit_pct=row.profit_pct
         )
         db.add(customer)
+        db.flush()  # FK parent, and duplicate IDs in this same import, must be visible
+        _sync_customer_bank_account(db, customer, None, None, None, actor.name, create_default=True)
+        db.flush()
         created.append(row.id)
 
     create_audit_log(db, action=AuditAction.CREATE, entity_type="Customer", entity_id="bulk_import", description=f"استيراد جماعي: تمت إضافة {len(created)} عميل، تم تجاوز {len(skipped)} (موجودين مسبقاً)", username=actor.username)
