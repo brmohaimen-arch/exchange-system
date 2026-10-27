@@ -191,7 +191,9 @@ for key in "ABCDEFG":
 
 print()
 if total == 0:
-    print("RESULT: clean - no cancelled or deleted operation shows in any statement.")
+    print("RESULT: no findings in the covered statement checks. Nothing was changed.")
     sys.exit(0)
-print(f"RESULT: {total} finding(s) - these cancelled operations still appear in statements. Nothing was changed.")
+cancelled_findings = sum(len(findings.get(key, [])) for key in "ABCDE")
+balance_findings = sum(len(findings.get(key, [])) for key in "FG")
+print(f"RESULT: {total} finding(s): {cancelled_findings} cancellation/state issue(s), {balance_findings} ledger-balance review item(s). Nothing was changed.")
 sys.exit(1)
