@@ -1,15 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from ..database import get_db
-from ..models import (
-    Branch, Vault, BankAccount, Customer, Shift, Transfer, ApprovalRequest, InventoryCount, DailyExpense,
-    AuditAction, Notification, NotificationType, NotificationStatus, User, Role, JournalEntry, ExchangeRate,
-    DailyClosing, Transaction, FixedAsset, Vehicle, Movement
-)
+from ..models import Branch, Vault, Shift, Transfer, ApprovalRequest, InventoryCount, DailyExpense, AuditAction, Notification, NotificationType, NotificationStatus, User, Role, DailyClosing, Transaction, FixedAsset, Vehicle, Movement
 from ..id_gen import new_id
 from ..tracking import create_audit_log
-from ..core.responses import success_response, error_response
+from ..core.responses import success_response
 from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission, check_branch_access
 from ..whatsapp_gateway import send_manager_alert, get_setting as get_whatsapp_setting
@@ -18,6 +14,7 @@ from .business import apply_transaction_reversal, execute_transfer_legs
 from pydantic import BaseModel
 from typing import Dict, Literal
 from datetime import datetime
+from math import isfinite
 
 router = APIRouter(tags=["Operations"])
 
@@ -417,13 +414,19 @@ def list_shifts(actor: User = Depends(get_current_user), db: Session = Depends(g
 def open_shift(data: ShiftOpen, actor: User = Depends(require_permission("فتح وردية")), db: Session = Depends(get_db)):
     """Doc requirement: a cashier can never just start transacting on their own —
     opening a shift is only a *request* until a manager accepts it (POST /approvals/{id}/action).
-    The vault's balances are only touched once that approval lands, so an unapproved
-    opening-balance count can't silently override what's actually in the vault."""
+    The request records the vault snapshot as well as the cashier's count;
+    approval applies their difference to the then-current balance."""
     existing = db.get(Shift, data.id)
     if existing:
         raise APIError(code="EXISTS", message_ar="الوردية مفتوحة بالفعل", message_en="Shift already exists", status_code=400)
 
     check_branch_access(actor, db, data.branch)
+
+    vault = db.get(Vault, data.vault_id)
+    if not vault or vault.branch != data.branch:
+        raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة غير موجودة في الفرع المحدد", message_en="Vault not found in the selected branch", status_code=400)
+    if any(not isfinite(n) or n < 0 for n in data.opening_balances.values()):
+        raise APIError(code="INVALID_AMOUNT", message_ar="رصيد الافتتاح غير صالح", message_en="Invalid opening balance", status_code=400)
 
     # Check if there is already an open (or pending) shift for this cashier
     open_shift_exists = db.scalar(
@@ -443,7 +446,7 @@ def open_shift(data: ShiftOpen, actor: User = Depends(require_permission("فتح
         vault_id=data.vault_id,
         vault_name=data.vault_name,
         opening_balances=data.opening_balances,
-        expected_balances=data.opening_balances,
+        expected_balances=dict(vault.balances),  # request-time snapshot; not an approved opening yet
         actual_balances={},
         differences={},
         status="pending_open",
@@ -656,6 +659,9 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
     if not approval:
         raise APIError(code="NOT_FOUND", message_ar="طلب الموافقة غير موجود", message_en="Approval request not found", status_code=404)
 
+    if approval.type == "shift_open" and approval.status != "pending":
+        raise APIError(code="ALREADY_PROCESSED", message_ar="تمت معالجة الطلب بالفعل", message_en="Approval already processed", status_code=400)
+
     required_permission = APPROVAL_TYPE_PERMISSIONS.get(approval.type)
     if required_permission:
         role = db.get(Role, actor.role)
@@ -698,15 +704,30 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
         elif approval.type == "shift_open":
             approval.status = "approved"
             shift = db.get(Shift, approval.reference_id)
+            if not shift or shift.status != "pending_open":
+                raise APIError(code="ALREADY_PROCESSED", message_ar="الوردية ليست بانتظار الفتح", message_en="Shift is not pending opening", status_code=400)
             if shift and shift.status == "pending_open":
                 check_branch_access(actor, db, shift.branch)
                 shift.status = "open"
                 shift.start_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
                 shift.approved_by = actor.name
                 vault = db.get(Vault, shift.vault_id)
-                if vault:
-                    vault.opening_balances = shift.opening_balances
-                    vault.balances = shift.opening_balances
+                if not vault:
+                    raise APIError(code="VAULT_NOT_FOUND", message_ar="الخزنة غير موجودة", message_en="Vault not found", status_code=400)
+                # Apply only the counted difference against the request-time
+                # snapshot, preserving all intervening money movements.
+                # Old pending requests stored expected == counted, so they
+                # safely contribute zero delta rather than overwrite cash.
+                opening = dict(vault.balances)
+                for currency, counted in shift.opening_balances.items():
+                    delta = counted - shift.expected_balances.get(currency, 0.0)
+                    opening[currency] = opening.get(currency, 0.0) + delta
+                if any(not isfinite(n) or n < 0 for n in opening.values()):
+                    raise APIError(code="INVALID_OPENING_BALANCE", message_ar="فرق الجرد الافتتاحي لا يتوافق مع الرصيد الحالي؛ راجع الطلب", message_en="Opening count difference is incompatible with the current balance; review the request", status_code=400)
+                vault.balances = dict(opening)
+                shift.opening_balances = opening
+                shift.expected_balances = dict(opening)
+                vault.opening_balances = dict(opening)
                 create_audit_log(db, action=AuditAction.APPROVE, entity_type="Shift", entity_id=shift.id, description=f"تم قبول طلب فتح وردية الصراف {shift.cashier} بواسطة {actor.name}", username=actor.username)
 
         elif approval.type == "shift":

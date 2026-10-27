@@ -6,7 +6,7 @@ import { ArrowRight, Search, Download, MessageCircle, Loader2, FileText } from '
 import { matchesQuery } from '@/lib/search'
 import { api, openFile, downloadFile, Currency } from '@/lib/api-client'
 import { ApiError } from '@/lib/auth-provider'
-import { CurrencyFlag } from '@/components/ui/currency-flag'
+
 import { DateInput } from '@/components/ui/date-input'
 
 interface StatementSection { name: string; headers: string[]; rows: string[][] }
@@ -27,8 +27,6 @@ export default function AllCustomersStatementPage() {
   useEffect(() => {
     api.get<Currency[]>('/currencies').then(setCurrencies).catch(() => {})
   }, [])
-
-  const currencyFlag = (code: string) => currencies.find((c) => c.code === code)?.flag || ''
 
   const query = () => {
     const params = new URLSearchParams()

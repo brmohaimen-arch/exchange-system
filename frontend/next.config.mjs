@@ -7,9 +7,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const nextConfig = {
   output: 'standalone',
   outputFileTracingRoot: __dirname,
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
   },

@@ -95,7 +95,6 @@ export default function SettingsPage() {
 
   // MFA (self-service, own account)
   const [mfaSecret, setMfaSecret] = useState('')
-  const [mfaOtpauthUrl, setMfaOtpauthUrl] = useState('')
   const [mfaEnrolling, setMfaEnrolling] = useState(false)
   const [mfaCode, setMfaCode] = useState('')
   const [mfaBusy, setMfaBusy] = useState(false)
@@ -410,7 +409,6 @@ export default function SettingsPage() {
     try {
       const data = await api.post<{ secret: string; otpauthUrl: string }>('/auth/mfa/setup')
       setMfaSecret(data.secret)
-      setMfaOtpauthUrl(data.otpauthUrl)
       setMfaEnrolling(true)
       setMfaCode('')
     } catch (err) {

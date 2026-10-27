@@ -212,7 +212,7 @@ export function Header() {
             <User className="h-5 w-5" />
           </div>
           <button
-            onClick={logout}
+            onClick={() => logout()}
             title="تسجيل الخروج"
             className="rounded-full p-2 text-muted-foreground hover:bg-danger/10 hover:text-danger transition-colors"
           >

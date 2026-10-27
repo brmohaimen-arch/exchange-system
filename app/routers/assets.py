@@ -1,6 +1,6 @@
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -10,7 +10,7 @@ from ..models import (
     AuditAction, User
 )
 from ..tracking import create_audit_log
-from ..core.responses import success_response, error_response
+from ..core.responses import success_response
 from ..core.errors import APIError
 from ..auth_deps import get_current_user, require_permission
 from ..file_storage import save_upload, resolve_path

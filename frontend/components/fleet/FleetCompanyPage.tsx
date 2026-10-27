@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, FormEvent } from 'react'
-import { Plus, X, Loader2, Trash2, Package, Truck, Wallet, TriangleAlert, TrendingUp, TrendingDown, Landmark, ListTree, FileText, Download, Power, Tag, ArrowUpRight, ArrowDownRight, CalendarRange, Pencil, Undo2 } from 'lucide-react'
+import { Plus, X, Loader2, Trash2, Package, Truck, Wallet, TriangleAlert, TrendingUp, Landmark, ListTree, FileText, Download, Power, Tag, Pencil, Undo2 } from 'lucide-react';
 import { FleetBreakdown } from '@/components/fleet/FleetBreakdown'
 import { FleetProfitability } from '@/components/fleet/FleetProfitability'
 import { api, openFile, downloadFile, FleetVehicle, FleetTransaction, FleetTransactionType, FleetDamageRecord, FleetSummary, FleetTransactionWithVehicle, FleetAccount, FleetAccountType, FleetPaymentMethod, FleetWarehouse, FleetCompanyDef, Currency } from '@/lib/api-client'

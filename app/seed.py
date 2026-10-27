@@ -1,15 +1,7 @@
-from datetime import datetime
 from sqlalchemy.orm import Session
 from .database import SessionLocal
 from .auth_deps import hash_password
-from .models import (
-    User, Branch, Currency, ExchangeRate, RateHistory, Vault, Customer, Debt,
-    Bank, BankBranch, BankAccount, Shift, Transaction, Movement, JournalEntry,
-    AuditLog, LoginLog, InventoryCount, ApprovalRequest, Transfer,
-    FixedAsset, Vehicle, RealEstate, MaintenanceRecord, DepreciationRecord, AssetDocument,
-    SystemSetting, Backup, AuditAction, NotificationType, NotificationStatus, Role,
-    CurrencyDenomination
-)
+from .models import User, Branch, Currency, ExchangeRate, Vault, SystemSetting, Role, CurrencyDenomination
 
 # The 6 roles from the requirements doc, expressed with the same permission
 # vocabulary the frontend uses (src/config/permissions.ts ALL_PERMISSIONS).

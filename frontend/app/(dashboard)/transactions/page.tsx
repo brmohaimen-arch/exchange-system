@@ -6,7 +6,7 @@ import { ArrowRightLeft, DollarSign, Repeat, Loader2, Lock, Clock, PlayCircle, X
 import { api, newId, openFile, Currency, Customer, ExchangeRate, Vault, Transaction, Shift } from '@/lib/api-client'
 import { ApiError, useAuth } from '@/lib/auth-provider'
 import { TablePagination, paginate } from '@/components/TablePagination'
-import { usePersistedState, clearPersistedState } from '@/lib/usePersistedState'
+import { usePersistedState } from '@/lib/usePersistedState';
 import { NumberInput } from '@/components/ui/number-input'
 import { useTableFilters } from '@/components/TableFilters'
 import { useSuccess } from '@/components/SuccessProvider'

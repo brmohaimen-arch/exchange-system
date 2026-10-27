@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
@@ -6,7 +6,7 @@ from ..models import (
     JournalEntry, AuditLog, LoginLog, SystemSetting, Backup, AuditAction, User, Movement, Vault, BankAccount, Customer, Transaction, Transfer
 )
 from ..tracking import create_audit_log, verify_audit_chain
-from ..core.responses import success_response, error_response
+from ..core.responses import success_response
 from ..core.errors import APIError
 from ..core.export_labels import JOURNAL_STATUS_LABELS_AR
 from ..auth_deps import require_permission

@@ -2,8 +2,9 @@ import io
 import os
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select, func, or_, and_, not_
 from ..database import get_db
 from ..models import (
@@ -12,19 +13,19 @@ from ..models import (
     CustomerAccountEntry, Transfer, DailyClosing
 )
 from ..tracking import create_audit_log
-from ..core.responses import success_response, error_response
+from ..core.responses import success_response
 from ..core.errors import APIError
 from ..core.export_labels import TX_TYPE_LABELS_AR, PAYMENT_METHOD_LABELS_AR, TX_STATUS_LABELS_AR
 from ..auth_deps import get_current_user, require_permission
 from ..id_gen import new_id
-from ..export_utils import build_excel, build_pdf, build_receipt_pdf, build_statement_pdf, build_sectioned_excel, build_sectioned_pdf, ArabicFontUnavailable
+from ..export_utils import build_excel, build_pdf, build_receipt_pdf, build_sectioned_excel, build_sectioned_pdf, ArabicFontUnavailable
 from ..file_storage import save_upload, resolve_path
-from ..arabic_numbers import amount_in_words, balance_side
+from ..arabic_numbers import balance_side
 from ..whatsapp_gateway import send_manager_alert, send_whatsapp_document, get_setting as get_whatsapp_setting
 from ..telegram_gateway import send_manager_alert as send_telegram_alert
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import List, Dict
 from datetime import datetime, timedelta
 
 router = APIRouter(tags=["Business & Transactions"])
@@ -505,6 +506,24 @@ def create_bank_deposit(account_id: str, data: BankDepositCreate, actor: User = 
     db.commit()
     return success_response(data=bank_deposit_to_dict(deposit), message_ar="تم تسجيل الوديعة بنجاح")
 
+def _ensure_interest_uncredited(db: Session, deposit_id: str):
+    # Older releases used random references. The new deterministic reference
+    # also acts as a unique claim, so simultaneous credits cannot both commit.
+    reference = f"int_once_{deposit_id}"
+    credited = db.scalar(select(JournalEntry.id).where(or_(
+        JournalEntry.reference == reference,
+        JournalEntry.reference.startswith(f"int_{deposit_id}_", autoescape=True),
+    )).limit(1))
+    if not credited:
+        credited = db.scalar(select(Movement.id).where(or_(
+            Movement.reference_id == reference,
+            Movement.reference_id.startswith(f"int_{deposit_id}_", autoescape=True),
+        )).limit(1))
+    if credited:
+        raise APIError(code="INTEREST_ALREADY_CREDITED", message_ar="سبق تسجيل فائدة هذه الوديعة", message_en="This deposit's one-time interest was already credited", status_code=400)
+    return reference
+
+
 @router.post("/bank_deposits/{deposit_id}/calculate_interest")
 def calculate_bank_deposit_interest(deposit_id: str, actor: User = Depends(require_permission("إدارة البنوك")), db: Session = Depends(get_db)):
     """Computes this deposit's interest as a flat percentage of its own amount —
@@ -519,6 +538,7 @@ def calculate_bank_deposit_interest(deposit_id: str, actor: User = Depends(requi
     if deposit.interest_rate <= 0:
         raise APIError(code="INTEREST_NOT_CONFIGURED", message_ar="لم يتم تحديد نسبة فائدة لهذه الوديعة", message_en="This deposit has no interest rate set", status_code=400)
 
+    _ensure_interest_uncredited(db, deposit_id)
     interest = deposit.amount * (deposit.interest_rate / 100.0)
     deposit.accrued_interest = interest
     deposit.last_calculated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -536,12 +556,29 @@ def credit_bank_deposit_interest(deposit_id: str, actor: User = Depends(require_
     deposit = db.get(BankDeposit, deposit_id)
     if not deposit:
         raise APIError(code="NOT_FOUND", message_ar="الوديعة غير موجودة", message_en="Deposit not found", status_code=404)
+    entry_id = _ensure_interest_uncredited(db, deposit_id)
     if deposit.accrued_interest <= 0:
         raise APIError(code="NO_ACCRUED_INTEREST", message_ar="لا توجد فائدة متراكمة لإضافتها", message_en="No accrued interest to credit", status_code=400)
 
     account = db.get(BankAccount, deposit.bank_account_id)
     if not account:
         raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
+
+    # Acquire a database-unique claim before touching any money. A competing
+    # request rolls back instead of crediting the same contract a second time.
+    claim = JournalEntry(
+        id=f"JV-{entry_id}", date=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        tx_type="فائدة بنكية", reference=entry_id, description="", user=actor.name,
+        status="approved", lines=[],
+    )
+    db.add(claim)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        if db.get(JournalEntry, f"JV-{entry_id}"):
+            raise APIError(code="INTEREST_ALREADY_CREDITED", message_ar="سبق تسجيل فائدة هذه الوديعة", message_en="This deposit's one-time interest was already credited", status_code=400)
+        raise
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     interest_amount = deposit.accrued_interest
@@ -550,22 +587,17 @@ def credit_bank_deposit_interest(deposit_id: str, actor: User = Depends(require_
     account.last_movement = timestamp
     deposit.accrued_interest = 0.0
 
-    entry_id = new_id(f"int_{deposit_id}")
     db.add(Movement(
         id=new_id(f"m_bank_{entry_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=account.id,
         entity_name=account.account_name, currency=account.currency, type="إضافة فائدة وديعة بنكية",
         amount_in=interest_amount, amount_out=0.0, balance_before=balance_before, balance_after=account.balance,
         reference_id=entry_id, user=actor.name
     ))
-    db.add(JournalEntry(
-        id=f"JV-{entry_id}", date=timestamp, tx_type="فائدة بنكية", reference=entry_id,
-        description=f"إضافة فائدة وديعة بقيمة {interest_amount:.2f} {account.currency} إلى حساب {account.account_name}",
-        user=actor.name, status="approved",
-        lines=[
+    claim.description = f"إضافة فائدة وديعة بقيمة {interest_amount:.2f} {account.currency} إلى حساب {account.account_name}"
+    claim.lines = [
             {"accountName": f"حساب بنكي {account.bank_name} - {account.account_name}", "currency": account.currency, "debit": interest_amount, "credit": 0.0, "originalAmount": interest_amount, "exchangeRate": 1.0, "equivalentLYD": interest_amount},
             {"accountName": "إيراد فوائد بنكية", "currency": account.currency, "debit": 0.0, "credit": interest_amount, "originalAmount": interest_amount, "exchangeRate": 1.0, "equivalentLYD": interest_amount},
         ]
-    ))
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="BankDeposit", entity_id=deposit_id, description=f"تم إضافة فائدة مستحقة بقيمة {interest_amount:.2f} {account.currency} لرصيد الحساب {account.account_name}")
     db.commit()
     return success_response(data=bank_account_to_dict(account), message_ar=f"تم إضافة {interest_amount:.2f} {account.currency} لرصيد الحساب")
@@ -652,8 +684,8 @@ def _sync_customer_bank_account(db: Session, customer: Customer, bank_name: str 
     # account with the same number belongs to this customer.
     existing = db.scalar(select(BankAccount).where(BankAccount.account_number == new_number, BankAccount.customer_id.is_(None))) if new_number else None
     if existing:
-        existing.customer_id = customer.id
-        return
+        # A typed number cannot authorize reclassifying company funds.
+        raise APIError(code="BANK_ACCOUNT_IN_USE", message_ar="رقم الحساب مستخدم لحساب الشركة؛ لا يمكن ربطه تلقائياً بالعميل", message_en="This number belongs to a company account and cannot be adopted automatically", status_code=400)
 
     bank_id, resolved_bank_name, branch_id, branch_label = _customer_bank_and_branch(db, bank_name)
     account = BankAccount(
@@ -818,6 +850,8 @@ def _run_customer_account_op(op_type: str, customer_id: str, data: CustomerAccou
             raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب البنكي المحدد غير موجود", message_en="Bank account not found", status_code=400)
         if not bank_acc.is_active:
             raise APIError(code="ACCOUNT_INACTIVE", message_ar="لا يمكن تنفيذ عملية على حساب بنكي غير نشط", message_en="Cannot operate on an inactive bank account", status_code=400)
+        if bank_acc.currency != data.currency:
+            raise APIError(code="CURRENCY_MISMATCH", message_ar="عملة الحساب البنكي لا تطابق عملة العملية", message_en="Bank account currency does not match the operation", status_code=400)
         source_before = bank_acc.balance
 
     # A vault or a company bank account is real money changing hands with the
@@ -1661,6 +1695,9 @@ def _run_bank_account_op(op_type: str, account_id: str, data: CustomerAccountOp,
         raise APIError(code="NOT_FOUND", message_ar="الحساب البنكي غير موجود", message_en="Bank account not found", status_code=404)
     if not account.is_active:
         raise APIError(code="ACCOUNT_INACTIVE", message_ar="لا يمكن تنفيذ عملية على حساب بنكي غير نشط", message_en="Cannot operate on an inactive bank account", status_code=400)
+
+    if account.currency != data.currency:
+        raise APIError(code="CURRENCY_MISMATCH", message_ar="عملة الحساب البنكي لا تطابق عملة العملية", message_en="Bank account currency does not match the operation", status_code=400)
 
     vault = None
     if data.vault_id:
@@ -4381,6 +4418,9 @@ def apply_transaction_reversal(db: Session, tx_id: str, actor_name: str, reason:
         raise APIError(code="NOT_FOUND", message_ar="العملية غير موجودة", message_en="Transaction not found", status_code=404)
     if tx.status == "reversed":
         raise APIError(code="ALREADY_REVERSED", message_ar="تم عكس هذه العملية بالفعل", message_en="Transaction already reversed", status_code=400)
+
+    if tx.type not in ("buy", "sell", "exchange"):
+        raise APIError(code="USE_DEDICATED_REVERSAL", message_ar="استخدم زر التراجع في كشف الحساب لهذه العملية", message_en="Use the dedicated account-statement reversal for this operation", status_code=400)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 

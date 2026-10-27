@@ -3,10 +3,10 @@ import io
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import select
 from pydantic import BaseModel
 from ..database import get_db
-from ..models import Transaction, Debt, Customer, ExchangeRate, User, ApprovalRequest, AuditAction
+from ..models import Transaction, Debt, User, ApprovalRequest, AuditAction
 from ..core.responses import success_response
 from ..core.errors import APIError
 from ..core.export_labels import TX_TYPE_LABELS_AR, DEBT_STATUS_LABELS_AR

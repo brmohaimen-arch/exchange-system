@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..database import get_db
 from ..models import Currency, Transaction, Vault, AuditAction, ExchangeRate, RateHistory, User, CurrencyDenomination
 from ..tracking import create_audit_log
-from ..core.responses import success_response, error_response
+from ..core.responses import success_response
 from ..core.errors import APIError
 from ..auth_deps import require_permission, get_current_user
 from ..id_gen import new_id

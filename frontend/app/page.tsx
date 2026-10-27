@@ -4,12 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { useBranding } from '@/lib/branding'
-import {
-  ArrowLeft, PlayCircle, CheckCircle2, Zap, ShieldCheck,
-  Building2, TrendingUp, Users, FileBarChart, Wallet, Landmark,
-  MessageCircle, Send, Menu, X,
-  Smartphone, Truck, CreditCard, FileText, Palette, Lock, Boxes,
-} from 'lucide-react'
+import { ArrowLeft, PlayCircle, CheckCircle2, Zap, ShieldCheck, TrendingUp, Users, FileBarChart, Wallet, Landmark, MessageCircle, Send, Menu, X, Smartphone, Truck, CreditCard, FileText, Palette, Lock, Boxes } from 'lucide-react';
 
 const NAV_LINKS = [
   { href: '#features', label: 'المميزات' },

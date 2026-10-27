@@ -1,5 +1,6 @@
-import io
 import re
+import hashlib
+from math import isfinite
 from collections import defaultdict
 from datetime import datetime, date as _date
 
@@ -14,7 +15,7 @@ from ..models import FleetVehicle, FleetTransaction, FleetDamageRecord, FleetAcc
 from ..tracking import create_audit_log
 from ..core.responses import success_response
 from ..core.errors import APIError
-from ..auth_deps import require_permission, get_current_user
+from ..auth_deps import get_current_user
 from ..models import Role
 from ..id_gen import new_id
 from ..export_utils import build_sectioned_pdf, build_sectioned_excel, ArabicFontUnavailable
@@ -71,6 +72,33 @@ def fleet_actor(company: str = Depends(get_company), current_user: User = Depend
     if perm not in (role.permissions if role else []):
         raise APIError(code="FORBIDDEN", message_ar=f"لا تملك صلاحية تنفيذ هذا الإجراء: {perm}", message_en=f"Missing required permission: {perm}", status_code=403)
     return current_user
+
+
+def _company_record(db: Session, model, record_id: str, company: str):
+    """Scope IDs to the company selected by the already-authorized route.
+
+    Child rows inherit their company from their vehicle. Return the same 404
+    for absent and foreign-company IDs; never expose another company's row.
+    """
+    query = select(model).where(model.id == record_id)
+    if model in (FleetVehicle, FleetAccount):
+        query = query.where(model.company == company)
+    else:
+        query = query.join(FleetVehicle, model.vehicle_id == FleetVehicle.id).where(FleetVehicle.company == company)
+    record = db.scalar(query)
+    if record is None:
+        raise APIError(code="NOT_FOUND", message_ar="السجل غير موجود", message_en="Record not found", status_code=404)
+    return record
+
+
+def _valid_amount(amount: float, allow_zero: bool = False):
+    if not isfinite(amount) or amount < 0 or (amount == 0 and not allow_zero):
+        raise APIError(code="INVALID_AMOUNT", message_ar="المبلغ غير صالح", message_en="Invalid amount", status_code=400)
+
+
+def _manual_category(category: str):
+    if category.strip() in _VEHICLE_LINKED_CATEGORIES:
+        raise APIError(code="RESERVED_CATEGORY", message_ar="هذا التصنيف خاص بقيود شراء وبيع المركبة التلقائية", message_en="Category reserved for generated vehicle entries", status_code=400)
 
 
 def _company_vehicle_ids(db: Session, company: str) -> list[str]:
@@ -284,7 +312,7 @@ def _manual_account_label(t: FleetTransaction, vehicle: FleetVehicle | None) -> 
     return raw
 
 
-def transaction_to_dict(t: FleetTransaction, account_name: str | None = None):
+def transaction_to_dict(t: FleetTransaction, account_name: str | None = None, balances: dict | None = None):
     return {
         "id": t.id,
         "vehicleId": t.vehicle_id,
@@ -298,7 +326,7 @@ def transaction_to_dict(t: FleetTransaction, account_name: str | None = None):
         "timestamp": t.timestamp,
         "accountId": t.account_id,
         "accountName": account_name,
-        "balanceAfter": t.balance_after,
+        "balanceAfter": balances.get(t.id) if balances is not None else t.balance_after,
         "counterparty": t.counterparty,
     }
 
@@ -308,12 +336,17 @@ SALE_CATEGORY = "بيع المركبة/المعدة"
 
 
 class _Rates:
-    """Current ->LYD rates, read once (same rule as _to_lyd: no rate = amount as is)."""
+    """Current direct sell rates to LYD. Missing rates never imply parity."""
     def __init__(self, db: Session):
         self.map = {r.from_currency: r.sell_rate for r in db.scalars(select(ExchangeRate).where(ExchangeRate.to_currency == "LYD")).all()}
 
     def lyd(self, currency: str, amount: float) -> float:
-        return amount if currency == "LYD" else amount * self.map.get(currency, 1.0)
+        if currency == "LYD" or amount == 0:
+            return amount
+        rate = self.map.get(currency)
+        if rate is None or not isfinite(rate) or rate <= 0:
+            raise APIError(code="MISSING_EXCHANGE_RATE", message_ar=f"حدد سعر صرف صالحاً من {currency} إلى LYD لعرض المجموع", message_en=f"A positive {currency}/LYD sell rate is required for valuation", status_code=400)
+        return amount * rate
 
 
 def _days_between(start: str | None, end: str | None) -> int | None:
@@ -379,10 +412,9 @@ def _vehicle_economics(db: Session, vehicles: list[FleetVehicle], rates: _Rates 
 
 
 def _to_lyd(db: Session, currency: str, amount: float) -> float:
-    if currency == "LYD":
+    if currency == "LYD" or amount == 0:
         return amount
-    rate_row = db.scalar(select(ExchangeRate).where(ExchangeRate.from_currency == currency, ExchangeRate.to_currency == "LYD"))
-    return amount * rate_row.sell_rate if rate_row else amount
+    return _Rates(db).lyd(currency, amount)
 
 
 WALLET_NAME = "محفظة بيان النقدية"
@@ -405,35 +437,83 @@ def _get_cash_wallet(db: Session, currency: str, company: str = "bayan") -> Flee
 
 
 def _get_manual_account(db: Session, company: str, currency: str, details: str) -> FleetAccount:
-    """Running balance for a bank account the employee typed by hand. The same
-    typed account number reuses the same tracked balance, so "الرصيد بعد" is
-    recorded on the statement without anyone registering an account first.
-    Tracker only (like the cash wallet): never blocks an operation."""
-    m = re.search(r"رقم الحساب:\s*(.+?)\s*(?:—|$)", details)
-    key = (m.group(1) if m else details).strip()
-    acct = db.scalar(select(FleetAccount).where(FleetAccount.account_type == "manual", FleetAccount.company == company, FleetAccount.currency == currency, FleetAccount.account_number == key))
+    """Bank + account number identify a tracker; owner labels do not.
+
+    Legacy trackers have no bank identity and may already combine several
+    banks. Leave them intact and start identified trackers for future posts.
+    Unstructured details use a full-text digest instead of a truncated key.
+    """
+    def field(label):
+        match = re.search(r"(?:^|—)\s*" + re.escape(label) + r"\s*:\s*(.*?)(?:—|$)", details)
+        return " ".join(match.group(1).split()) if match else ""
+
+    number, bank = field("رقم الحساب"), field("البنك").casefold()
+    if len(number) > 100 or len(bank) > 150:
+        raise APIError(code="INVALID_BANK_DETAILS", message_ar="بيانات الحساب البنكي أطول من الحد المسموح", message_en="Bank identity exceeds the supported length", status_code=400)
+    key = number or "manual:" + hashlib.sha256(" ".join(details.split()).casefold().encode("utf-8")).hexdigest()
+    acct = db.scalar(select(FleetAccount).where(
+        FleetAccount.account_type == "manual", FleetAccount.company == company,
+        FleetAccount.currency == currency, FleetAccount.account_number == key,
+        FleetAccount.bank_name == bank,
+    ))
     if not acct:
         label = details
         for prefix in ("البنك: ", "رقم الحساب: ", "صاحب الحساب: "):
             label = label.replace(prefix, "")
         acct = FleetAccount(
             id=new_id("fleetacc"), name=label[:150], currency=currency, account_type="manual", company=company,
-            account_number=key[:100], balance=0.0, created_by="النظام", timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            account_number=key, bank_name=bank, balance=0.0, created_by="النظام", timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
         )
         db.add(acct)
         db.flush()
     return acct
 
 
-def _apply_account_entry(db: Session, account_id: str, currency: str, entry_type: str, amount: float, expected_account_type: str | None = None) -> tuple[FleetAccount, float]:
+def _ledger_order(t: FleetTransaction):
+    # IDs generated by new_id retain the millisecond creation order within a
+    # minute. Legacy IDs use a deterministic fallback without guessing ties.
+    match = re.search(r"_(\d{13})_[0-9a-f]{6}$", t.id)
+    created = int(match.group(1)) if match else 0
+    return (t.date, t.timestamp, created, t.id)
+
+
+def _statement_balances(db: Session, company: str) -> dict[str, float | None]:
+    """Reconstruct displayed balances from all live account legs, read-only.
+
+    Anchor each account at its current balance, subtract all surviving legs
+    to find its opening, then replay by statement order. Edits/deletions and
+    date/vehicle filters cannot leave stale balance_after snapshots on screen.
+    Client ledgers have additional sale drawdowns without transaction rows;
+    hide those unsupported cash balances, as the exported statement does.
+    """
+    accounts = {a.id: a for a in db.scalars(select(FleetAccount).where(FleetAccount.company == company)).all()}
+    txs = db.scalars(select(FleetTransaction).join(FleetVehicle, FleetTransaction.vehicle_id == FleetVehicle.id).where(FleetVehicle.company == company)).all()
+    running = {aid: a.balance for aid, a in accounts.items()}
+    for t in txs:
+        a = accounts.get(t.account_id)
+        if a and a.currency == t.currency and a.account_type != "client":
+            running[a.id] -= t.amount if t.type == "income" else -t.amount
+    result = {}
+    for t in sorted(txs, key=_ledger_order):
+        a = accounts.get(t.account_id)
+        if a is None or a.currency != t.currency or a.account_type == "client":
+            result[t.id] = None
+            continue
+        running[a.id] += t.amount if t.type == "income" else -t.amount
+        result[t.id] = running[a.id]
+    return result
+
+
+def _apply_account_entry(db: Session, account_id: str, currency: str, entry_type: str, amount: float, expected_account_type: str | None = None, *, company: str) -> tuple[FleetAccount, float]:
     """Validates and books an income/expense amount against a real FleetAccount.
     Shared by manual ledger entries, vehicle purchases paid from a bank
     account, and vehicle sales collected into one. expected_account_type
     enforces the purchase-from-company / sale-into-client split server-side —
     not just in what the UI offers to pick from."""
-    account = db.get(FleetAccount, account_id)
-    if not account:
-        raise APIError(code="ACCOUNT_NOT_FOUND", message_ar="الحساب المحدد غير موجود", message_en="Account not found", status_code=400)
+    _valid_amount(amount)
+    account = _company_record(db, FleetAccount, account_id, company)
+    if not account.is_active:
+        raise APIError(code="ACCOUNT_INACTIVE", message_ar="الحساب غير نشط", message_en="Account is inactive", status_code=400)
     if account.currency != currency:
         raise APIError(code="CURRENCY_MISMATCH", message_ar=f"عملة الحساب ({account.currency}) لا تطابق العملة المطلوبة ({currency})", message_en="Account currency does not match", status_code=400)
     if expected_account_type and account.account_type != expected_account_type:
@@ -484,6 +564,7 @@ def list_fleet_vehicles(company: str = Depends(get_company), actor: User = Depen
 
 @router.post("/fleet/vehicles")
 def create_fleet_vehicle(data: FleetVehicleCreate, actor: User = Depends(fleet_actor), company: str = Depends(get_company), db: Session = Depends(get_db)):
+    _valid_amount(data.purchase_price, allow_zero=True)
     if data.purchase_price > 0:
         if data.purchase_payment_method not in PAYMENT_METHODS:
             raise APIError(code="PAYMENT_METHOD_REQUIRED", message_ar="حدد طريقة الدفع (نقدي أو بنك) لسعر الشراء", message_en="A payment method (cash or bank) is required when purchase_price > 0", status_code=400)
@@ -498,12 +579,12 @@ def create_fleet_vehicle(data: FleetVehicleCreate, actor: User = Depends(fleet_a
     manual_bank = data.purchase_price > 0 and data.purchase_payment_method == "bank" and data.purchase_manual_bank
     if manual_bank:
         wallet = _get_manual_account(db, company, data.currency, (data.purchase_bank_details or "").strip())
-        _, balance_after = _apply_account_entry(db, wallet.id, data.currency, "expense", data.purchase_price, expected_account_type="manual")
+        _, balance_after = _apply_account_entry(db, wallet.id, data.currency, "expense", data.purchase_price, expected_account_type="manual", company=company)
     elif data.purchase_price > 0 and data.purchase_payment_method == "bank":
-        account, balance_after = _apply_account_entry(db, data.purchase_account_id, data.currency, "expense", data.purchase_price, expected_account_type="company")
+        account, balance_after = _apply_account_entry(db, data.purchase_account_id, data.currency, "expense", data.purchase_price, expected_account_type="company", company=company)
     elif data.purchase_price > 0:
         wallet = _get_cash_wallet(db, data.currency, company)
-        _, balance_after = _apply_account_entry(db, wallet.id, data.currency, "expense", data.purchase_price, expected_account_type="wallet")
+        _, balance_after = _apply_account_entry(db, wallet.id, data.currency, "expense", data.purchase_price, expected_account_type="wallet", company=company)
 
     v = FleetVehicle(
         id=vehicle_id, company=company, auto_number=_next_fleet_auto_number(db), name=data.name.strip(), type=data.type.strip(),
@@ -521,6 +602,7 @@ def create_fleet_vehicle(data: FleetVehicleCreate, actor: User = Depends(fleet_a
         currency=data.currency, notes=data.notes, created_by=actor.name, timestamp=timestamp,
     )
     db.add(v)
+    db.flush()  # persist the parent before its generated purchase entry
 
     if data.purchase_price > 0:
         tx_notes = "قيد تلقائي عند إضافة المركبة"
@@ -562,6 +644,7 @@ def _rebook_purchase(db: Session, v: FleetVehicle, data: "FleetVehicleUpdate", a
     price to the (possibly different) account/wallet. Returns True if anything
     changed. Raises before any commit, so a failure leaves nothing half-done."""
     new_price = data.purchase_price or 0.0
+    _valid_amount(new_price, allow_zero=True)
     if new_price < 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="سعر الشراء لا يمكن أن يكون سالباً", message_en="Purchase price cannot be negative", status_code=400)
     method = data.purchase_payment_method or v.purchase_payment_method
@@ -576,6 +659,8 @@ def _rebook_purchase(db: Session, v: FleetVehicle, data: "FleetVehicleUpdate", a
         and (not manual or (seller == v.seller_name and details == v.purchase_bank_details))
     )
     if unchanged:
+        if old_tx and data.purchase_date:
+            old_tx.date = data.purchase_date
         return False
     if new_price > 0:
         if method not in PAYMENT_METHODS:
@@ -585,7 +670,7 @@ def _rebook_purchase(db: Session, v: FleetVehicle, data: "FleetVehicleUpdate", a
 
     # 1. Undo the old entry's effect on whatever account it was paid from.
     if old_tx and old_tx.account_id:
-        old_account = db.get(FleetAccount, old_tx.account_id)
+        old_account = _company_record(db, FleetAccount, old_tx.account_id, v.company)
         if old_account:
             old_account.balance += old_tx.amount
 
@@ -597,15 +682,15 @@ def _rebook_purchase(db: Session, v: FleetVehicle, data: "FleetVehicleUpdate", a
         return True
     if manual:
         account = _get_manual_account(db, v.company, v.currency, details or "")
-        _, balance_after = _apply_account_entry(db, account.id, v.currency, "expense", new_price, expected_account_type="manual")
+        _, balance_after = _apply_account_entry(db, account.id, v.currency, "expense", new_price, expected_account_type="manual", company=v.company)
         v.purchase_account_id = None
         v.seller_name, v.purchase_bank_details = seller, details
     elif method == "bank":
-        account, balance_after = _apply_account_entry(db, account_id, v.currency, "expense", new_price, expected_account_type="company")
+        account, balance_after = _apply_account_entry(db, account_id, v.currency, "expense", new_price, expected_account_type="company", company=v.company)
         v.purchase_account_id = account.id
     else:
         account = _get_cash_wallet(db, v.currency, v.company)
-        _, balance_after = _apply_account_entry(db, account.id, v.currency, "expense", new_price, expected_account_type="wallet")
+        _, balance_after = _apply_account_entry(db, account.id, v.currency, "expense", new_price, expected_account_type="wallet", company=v.company)
         v.purchase_account_id = None
     v.purchase_price, v.purchase_payment_method = new_price, method
     if old_tx:
@@ -627,10 +712,12 @@ def _rebook_purchase(db: Session, v: FleetVehicle, data: "FleetVehicleUpdate", a
 
 
 @router.put("/fleet/vehicles/{vehicle_id}")
-def update_fleet_vehicle(vehicle_id: str, data: FleetVehicleUpdate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    v = db.get(FleetVehicle, vehicle_id)
+def update_fleet_vehicle(vehicle_id: str, data: FleetVehicleUpdate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    v = _company_record(db, FleetVehicle, vehicle_id, company)
     if not v:
         raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
+    if data.currency != v.currency and ((v.purchase_price or 0.0) > 0 or v.sale_price is not None):
+        raise APIError(code="CURRENCY_LOCKED", message_ar="لا يمكن تغيير عملة مركبة لها قيود شراء أو بيع", message_en="Cannot change currency once purchase/sale is booked", status_code=400)
     v.name = data.name.strip()
     v.type = data.type.strip()
     v.serial_number = (data.serial_number or "").strip() or None
@@ -644,8 +731,6 @@ def update_fleet_vehicle(vehicle_id: str, data: FleetVehicleUpdate, actor: User 
     price_note = ""
     if data.purchase_price is not None:
         old_price = v.purchase_price or 0.0
-        if data.currency != v.currency and (old_price > 0 or v.sale_price is not None):
-            raise APIError(code="CURRENCY_LOCKED", message_ar="لا يمكن تغيير عملة مركبة لها قيود شراء أو بيع", message_en="Cannot change currency once purchase/sale is booked", status_code=400)
         v.currency = data.currency
         if data.purchase_date:
             v.purchase_date = data.purchase_date
@@ -661,14 +746,16 @@ def update_fleet_vehicle(vehicle_id: str, data: FleetVehicleUpdate, actor: User 
         v.currency = data.currency
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="FleetVehicle", entity_id=vehicle_id,
                       description=f"تم تعديل بيانات مركبة/معدة الأسطول: {v.name}{price_note}", username=actor.username)
+    db.flush()
+    account_names = {a.id: a.name for a in db.scalars(select(FleetAccount).where(FleetAccount.company == company)).all()}
+    result = vehicle_to_dict(v, _vehicle_balances(db, vehicle_id), account_names, db)
     db.commit()
-    account_names = {a.id: a.name for a in db.scalars(select(FleetAccount)).all()}
-    return success_response(data=vehicle_to_dict(v, _vehicle_balances(db, vehicle_id), account_names, db), message_ar="تم تعديل البيانات بنجاح")
+    return success_response(data=result, message_ar="تم تعديل البيانات بنجاح")
 
 
 @router.post("/fleet/vehicles/{vehicle_id}/sell")
-def sell_fleet_vehicle(vehicle_id: str, data: FleetVehicleSell, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    v = db.get(FleetVehicle, vehicle_id)
+def sell_fleet_vehicle(vehicle_id: str, data: FleetVehicleSell, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    v = _company_record(db, FleetVehicle, vehicle_id, company)
     if not v:
         raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
     if v.sale_price is not None:
@@ -697,18 +784,18 @@ def sell_fleet_vehicle(vehicle_id: str, data: FleetVehicleSell, actor: User = De
     # really is, the client side is just a running tally of that buyer.
     company_account, balance_after = None, None
     if data.sale_payment_method == "bank" and not manual_bank:
-        company_account, balance_after = _apply_account_entry(db, data.sale_account_id, sale_ccy, "income", data.sale_price, expected_account_type="company")
+        company_account, balance_after = _apply_account_entry(db, data.sale_account_id, sale_ccy, "income", data.sale_price, expected_account_type="company", company=v.company)
     wallet = None
     if manual_bank:
         wallet = _get_manual_account(db, v.company, sale_ccy, (data.sale_bank_details or "").strip())
-        _, balance_after = _apply_account_entry(db, wallet.id, sale_ccy, "income", data.sale_price, expected_account_type="manual")
+        _, balance_after = _apply_account_entry(db, wallet.id, sale_ccy, "income", data.sale_price, expected_account_type="manual", company=v.company)
     if data.sale_payment_method == "cash":
         wallet = _get_cash_wallet(db, sale_ccy, v.company)
-        _, balance_after = _apply_account_entry(db, wallet.id, sale_ccy, "income", data.sale_price, expected_account_type="wallet")
+        _, balance_after = _apply_account_entry(db, wallet.id, sale_ccy, "income", data.sale_price, expected_account_type="wallet", company=v.company)
 
     client_account = None
     if data.sale_client_account_id:
-        client_account, _ = _apply_account_entry(db, data.sale_client_account_id, sale_ccy, "expense", data.sale_price, expected_account_type="client")
+        client_account, _ = _apply_account_entry(db, data.sale_client_account_id, sale_ccy, "expense", data.sale_price, expected_account_type="client", company=v.company)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     buyer_name = data.buyer_name.strip()
@@ -738,17 +825,19 @@ def sell_fleet_vehicle(vehicle_id: str, data: FleetVehicleSell, actor: User = De
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="FleetVehicle", entity_id=vehicle_id,
                       description=f"تم بيع {v.name} (#{v.auto_number:03d}) للمشتري {buyer_name} بمبلغ {data.sale_price} {sale_ccy} (سعر الشراء {v.purchase_price} {v.currency})",
                       username=actor.username)
-    db.commit()
+    db.flush()
     account_names = {}
     if company_account:
         account_names[company_account.id] = company_account.name
     if client_account:
         account_names[client_account.id] = client_account.name
-    return success_response(data=vehicle_to_dict(v, _vehicle_balances(db, vehicle_id), account_names, db), message_ar="تم تسجيل عملية البيع بنجاح")
+    result = vehicle_to_dict(v, _vehicle_balances(db, vehicle_id), account_names, db)
+    db.commit()
+    return success_response(data=result, message_ar="تم تسجيل عملية البيع بنجاح")
 
 
 @router.post("/fleet/vehicles/{vehicle_id}/sell/reverse")
-def reverse_fleet_vehicle_sale(vehicle_id: str, data: ReverseEntryRequest, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+def reverse_fleet_vehicle_sale(vehicle_id: str, data: ReverseEntryRequest, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
     """Undoes a sale recorded with wrong details (wrong buyer, price, chassis
     number mismatch discovered after the fact, etc.) — reverses both account
     entries sell_fleet_vehicle booked (the company account that received the
@@ -760,7 +849,7 @@ def reverse_fleet_vehicle_sale(vehicle_id: str, data: ReverseEntryRequest, actor
     reason = data.reason.strip()
     if not reason:
         raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
-    v = db.get(FleetVehicle, vehicle_id)
+    v = _company_record(db, FleetVehicle, vehicle_id, company)
     if not v:
         raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
     if v.sale_price is None:
@@ -768,11 +857,11 @@ def reverse_fleet_vehicle_sale(vehicle_id: str, data: ReverseEntryRequest, actor
 
     sale_tx = db.scalar(select(FleetTransaction).where(FleetTransaction.vehicle_id == vehicle_id, FleetTransaction.category == "بيع المركبة/المعدة").order_by(FleetTransaction.timestamp.desc()))
     if sale_tx and sale_tx.account_id:
-        account = db.get(FleetAccount, sale_tx.account_id)
+        account = _company_record(db, FleetAccount, sale_tx.account_id, company)
         if account:
             account.balance -= sale_tx.amount  # undo the income side
     if v.sale_client_account_id:
-        client_account = db.get(FleetAccount, v.sale_client_account_id)
+        client_account = _company_record(db, FleetAccount, v.sale_client_account_id, company)
         if client_account:
             client_account.balance += v.sale_price  # undo the client drawdown
     if sale_tx:
@@ -796,13 +885,13 @@ def reverse_fleet_vehicle_sale(vehicle_id: str, data: ReverseEntryRequest, actor
 
 
 @router.delete("/fleet/vehicles/{vehicle_id}")
-def delete_fleet_vehicle(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    v = db.get(FleetVehicle, vehicle_id)
+def delete_fleet_vehicle(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    v = _company_record(db, FleetVehicle, vehicle_id, company)
     if not v:
         raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
     for t in db.scalars(select(FleetTransaction).where(FleetTransaction.vehicle_id == vehicle_id)).all():
         if t.account_id:
-            account = db.get(FleetAccount, t.account_id)
+            account = _company_record(db, FleetAccount, t.account_id, company)
             if account:
                 # Same reversal delete_fleet_transaction does — without this,
                 # deleting a vehicle (which cascades its transactions, including
@@ -814,7 +903,7 @@ def delete_fleet_vehicle(vehicle_id: str, actor: User = Depends(fleet_actor), db
         # The client-side draw-down from a sale has no FleetTransaction row of
         # its own (the transaction above is booked against the company
         # account only) — reverse it here directly or it stays wrong forever.
-        client_account = db.get(FleetAccount, v.sale_client_account_id)
+        client_account = _company_record(db, FleetAccount, v.sale_client_account_id, company)
         if client_account:
             client_account.balance += v.sale_price
     for d in db.scalars(select(FleetDamageRecord).where(FleetDamageRecord.vehicle_id == vehicle_id)).all():
@@ -992,8 +1081,8 @@ def create_fleet_account(data: FleetAccountCreate, actor: User = Depends(fleet_a
 
 
 @router.put("/fleet/accounts/{account_id}")
-def update_fleet_account(account_id: str, data: FleetAccountCreate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    a = db.get(FleetAccount, account_id)
+def update_fleet_account(account_id: str, data: FleetAccountCreate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    a = _company_record(db, FleetAccount, account_id, company)
     if not a:
         raise APIError(code="NOT_FOUND", message_ar="الحساب غير موجود", message_en="Account not found", status_code=404)
     a.name = data.name.strip()
@@ -1009,8 +1098,8 @@ def update_fleet_account(account_id: str, data: FleetAccountCreate, actor: User 
 
 
 @router.delete("/fleet/accounts/{account_id}")
-def delete_fleet_account(account_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    a = db.get(FleetAccount, account_id)
+def delete_fleet_account(account_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    a = _company_record(db, FleetAccount, account_id, company)
     if not a:
         raise APIError(code="NOT_FOUND", message_ar="الحساب غير موجود", message_en="Account not found", status_code=404)
     if a.account_type in ("wallet", "manual"):
@@ -1029,8 +1118,8 @@ def delete_fleet_account(account_id: str, actor: User = Depends(fleet_actor), db
 
 
 @router.put("/fleet/accounts/{account_id}/toggle_active")
-def toggle_fleet_account_active(account_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    a = db.get(FleetAccount, account_id)
+def toggle_fleet_account_active(account_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    a = _company_record(db, FleetAccount, account_id, company)
     if not a:
         raise APIError(code="NOT_FOUND", message_ar="الحساب غير موجود", message_en="Account not found", status_code=404)
     if a.account_type in ("wallet", "manual"):
@@ -1264,7 +1353,9 @@ def list_all_fleet_transactions(date_from: str = "", date_to: str = "", company:
     account_names = {a.id: a.name for a in db.scalars(select(FleetAccount).where(FleetAccount.company == company)).all()}
     query = _date_filtered(select(FleetTransaction).where(FleetTransaction.vehicle_id.in_(list(names))), FleetTransaction, date_from, date_to)
     res = db.scalars(query.order_by(FleetTransaction.date.desc(), FleetTransaction.timestamp.desc())).all()
-    return success_response(data=[{**transaction_to_dict(t, account_names.get(t.account_id) or _manual_account_label(t, vehicles_by_id.get(t.vehicle_id))), "vehicleName": names.get(t.vehicle_id, "—"),
+    balances = _statement_balances(db, company)
+    res = sorted(res, key=_ledger_order, reverse=True)
+    return success_response(data=[{**transaction_to_dict(t, account_names.get(t.account_id) or _manual_account_label(t, vehicles_by_id.get(t.vehicle_id)), balances), "vehicleName": names.get(t.vehicle_id, "—"),
                                  "vehicleChassis": (vehicles_by_id[t.vehicle_id].chassis_number if t.vehicle_id in vehicles_by_id else None),
                                  "vehiclePurchasePrice": (vehicles_by_id[t.vehicle_id].purchase_price if t.vehicle_id in vehicles_by_id else None),
                                  "vehiclePurchaseCurrency": (vehicles_by_id[t.vehicle_id].currency if t.vehicle_id in vehicles_by_id else None)} for t in res])
@@ -1285,6 +1376,9 @@ def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company
     query = _date_filtered(select(FleetTransaction).where(FleetTransaction.vehicle_id.in_(list(names))), FleetTransaction, date_from, date_to)
     res = db.scalars(query.order_by(FleetTransaction.date, FleetTransaction.timestamp)).all()
 
+    balances = _statement_balances(db, company)
+    res = sorted(res, key=_ledger_order)
+
     headers = ["المرجع", "التاريخ", "المركبة/المعدة", "رقم الهيكل", "سعر الشراء", "التفاصيل", "دخول", "خروج", "العملة", "من", "إلى", "الرصيد بعد", "ملاحظات", "بواسطة"]
     # One table per currency — a USD sale and a LYD purchase never share a table.
     rows_by_ccy: dict[str, list] = {}
@@ -1302,7 +1396,8 @@ def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company
         # A client account's balance isn't a meaningful cash figure to publish
         # in the statement — never show it, same as the on-screen table.
         linked_account = all_accounts.get(t.account_id)
-        show_balance = t.balance_after is not None and not (linked_account and linked_account.account_type == "client")
+        balance = balances.get(t.id)
+        show_balance = balance is not None and not (linked_account and linked_account.account_type == "client")
         bucket = rows_by_ccy.setdefault(t.currency, [])
         veh = vehicles_by_id.get(t.vehicle_id)
         buy_price = f"{veh.purchase_price:,.2f} {veh.currency}" if veh and veh.purchase_price else "—"
@@ -1310,7 +1405,7 @@ def _fleet_statement_sections(db: Session, date_from: str, date_to: str, company
             len(bucket) + 1, t.date, names.get(t.vehicle_id, "—"), (veh.chassis_number if veh else None) or "—", buy_price, t.category,
             entry_str, exit_str,
             t.currency, from_label, to_label,
-            f"{t.balance_after:,.2f}" if show_balance else "—",
+            f"{balance:,.2f}" if show_balance else "—",
             t.notes or "", t.created_by,
         ])
     closing_line = "الإجمالي: " + (
@@ -1353,25 +1448,29 @@ def list_all_fleet_damage_records(date_from: str = "", date_to: str = "", compan
 
 # ----------------- TRANSACTIONS (income/expense ledger) -----------------
 @router.get("/fleet/vehicles/{vehicle_id}/transactions")
-def list_fleet_transactions(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+def list_fleet_transactions(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    _company_record(db, FleetVehicle, vehicle_id, company)
     res = db.scalars(select(FleetTransaction).where(FleetTransaction.vehicle_id == vehicle_id).order_by(FleetTransaction.date.desc(), FleetTransaction.timestamp.desc())).all()
-    account_names = {a.id: a.name for a in db.scalars(select(FleetAccount)).all()}
-    return success_response(data=[transaction_to_dict(t, account_names.get(t.account_id)) for t in res])
+    account_names = {a.id: a.name for a in db.scalars(select(FleetAccount).where(FleetAccount.company == company)).all()}
+    balances = _statement_balances(db, company)
+    return success_response(data=[transaction_to_dict(t, account_names.get(t.account_id), balances) for t in sorted(res, key=_ledger_order, reverse=True)])
 
 
 @router.post("/fleet/vehicles/{vehicle_id}/transactions")
-def create_fleet_transaction(vehicle_id: str, data: FleetTransactionCreate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+def create_fleet_transaction(vehicle_id: str, data: FleetTransactionCreate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    _valid_amount(data.amount)
+    _manual_category(data.category)
     if data.type not in ("income", "expense"):
         raise APIError(code="INVALID_TYPE", message_ar="نوع القيد يجب أن يكون إيراد أو مصروف", message_en="type must be 'income' or 'expense'", status_code=400)
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
-    v = db.get(FleetVehicle, vehicle_id)
+    v = _company_record(db, FleetVehicle, vehicle_id, company)
     if not v:
         raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
 
     # No named account = paid/received in cash → the cash wallet.
     account_id = data.account_id or _get_cash_wallet(db, data.currency, v.company).id
-    account, balance_after = _apply_account_entry(db, account_id, data.currency, data.type, data.amount)
+    account, balance_after = _apply_account_entry(db, account_id, data.currency, data.type, data.amount, company=v.company)
 
     t = FleetTransaction(
         id=new_id("fleettx"), vehicle_id=vehicle_id, type=data.type, category=data.category.strip(),
@@ -1385,7 +1484,7 @@ def create_fleet_transaction(vehicle_id: str, data: FleetTransactionCreate, acto
     create_audit_log(db, action=AuditAction.CREATE, entity_type="FleetTransaction", entity_id=t.id,
                       description=f"{'إيراد' if data.type == 'income' else 'مصروف'} {data.amount} {data.currency} على {v.name} ({data.category}){account_note}", username=actor.username)
     db.commit()
-    return success_response(data=transaction_to_dict(t, account.name if account else None), message_ar="تمت إضافة القيد بنجاح")
+    return success_response(data=transaction_to_dict(t, account.name if account else None, _statement_balances(db, company)), message_ar="تمت إضافة القيد بنجاح")
 
 
 class FleetTransactionEdit(BaseModel):
@@ -1398,7 +1497,7 @@ class FleetTransactionEdit(BaseModel):
     # kind; omitted, the kind is kept as is.
     type: str | None = None
     # The account it moved money through / who it was with, when picked wrong.
-    # None keeps what is there; an empty string clears it (no account / no one).
+    # None keeps the current account; an empty string selects the cash wallet.
     account_id: str | None = None
     counterparty: str | None = None
 
@@ -1416,7 +1515,7 @@ def _guard_editable_fleet_transaction(t: "FleetTransaction"):
         raise APIError(code="NOT_EDITABLE_HERE", message_ar=f"لا يمكن تعديل أو التراجع عن هذا القيد من هنا — {hint}", message_en="This entry is linked to the vehicle's own fields; use the vehicle's own edit/undo-sale action instead", status_code=400)
 
 @router.put("/fleet/transactions/{transaction_id}")
-def edit_fleet_transaction(transaction_id: str, data: FleetTransactionEdit, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+def edit_fleet_transaction(transaction_id: str, data: FleetTransactionEdit, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
     """Fixes a mistaken income/expense entry's amount/category/date/notes —
     e.g. the wrong amount was typed — without deleting and re-creating it.
     Undoes the old amount's effect on the linked account (same formula
@@ -1429,23 +1528,27 @@ def edit_fleet_transaction(transaction_id: str, data: FleetTransactionEdit, acto
         raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
     if data.amount <= 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="يجب أن يكون المبلغ أكبر من صفر", message_en="Amount must be positive", status_code=400)
-    t = db.get(FleetTransaction, transaction_id)
+    t = _company_record(db, FleetTransaction, transaction_id, company)
     if not t:
         raise APIError(code="NOT_FOUND", message_ar="القيد غير موجود", message_en="Transaction not found", status_code=404)
     _guard_editable_fleet_transaction(t)
     if data.type is not None and data.type not in ("income", "expense"):
         raise APIError(code="INVALID_TYPE", message_ar="نوع القيد يجب أن يكون إيراد أو مصروف", message_en="type must be 'income' or 'expense'", status_code=400)
+    _valid_amount(data.amount)
+    _manual_category(data.category)
     new_type = data.type or t.type
 
     old_amount, old_category, old_type = t.amount, t.category, t.type
     new_account_id = t.account_id if data.account_id is None else (data.account_id or None)
+    if not new_account_id:
+        new_account_id = _get_cash_wallet(db, t.currency, company).id
     account_name = None
     if t.account_id:
-        old_account = db.get(FleetAccount, t.account_id)
+        old_account = _company_record(db, FleetAccount, t.account_id, company)
         if old_account:
             old_account.balance += t.amount if t.type == "expense" else -t.amount  # undo the old entry on its OLD account (by its OLD kind)
     if new_account_id:
-        account, balance_after = _apply_account_entry(db, new_account_id, t.currency, new_type, data.amount)  # apply + validate on the NEW account (by the NEW kind)
+        account, balance_after = _apply_account_entry(db, new_account_id, t.currency, new_type, data.amount, company=company)  # apply + validate on the NEW account (by the NEW kind)
         t.balance_after = balance_after
         account_name = account.name
     else:
@@ -1463,10 +1566,10 @@ def edit_fleet_transaction(transaction_id: str, data: FleetTransactionEdit, acto
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="FleetTransaction", entity_id=transaction_id,
                       description=f"تم تعديل قيد {old_category} من {old_amount:,.2f} إلى {data.amount:,.2f} {t.currency}{type_note} — السبب: {reason}", username=actor.username)
     db.commit()
-    return success_response(data=transaction_to_dict(t, account_name), message_ar="تم تعديل القيد بنجاح")
+    return success_response(data=transaction_to_dict(t, account_name, _statement_balances(db, company)), message_ar="تم تعديل القيد بنجاح")
 
 @router.post("/fleet/transactions/{transaction_id}/reverse")
-def reverse_fleet_transaction(transaction_id: str, data: ReverseEntryRequest, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+def reverse_fleet_transaction(transaction_id: str, data: ReverseEntryRequest, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
     """Same as delete_fleet_transaction, but requires a reason and logs it —
     kept alongside delete (not replacing it) since this ledger already
     reverses the balance safely on delete; the only gap was no recorded
@@ -1474,12 +1577,12 @@ def reverse_fleet_transaction(transaction_id: str, data: ReverseEntryRequest, ac
     reason = data.reason.strip()
     if not reason:
         raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التراجع", message_en="A reason is required", status_code=400)
-    t = db.get(FleetTransaction, transaction_id)
+    t = _company_record(db, FleetTransaction, transaction_id, company)
     if not t:
         raise APIError(code="NOT_FOUND", message_ar="القيد غير موجود", message_en="Transaction not found", status_code=404)
     _guard_editable_fleet_transaction(t)
     if t.account_id:
-        account = db.get(FleetAccount, t.account_id)
+        account = _company_record(db, FleetAccount, t.account_id, company)
         if account:
             account.balance += t.amount if t.type == "expense" else -t.amount
     create_audit_log(db, action=AuditAction.REVERSE, entity_type="FleetTransaction", entity_id=transaction_id,
@@ -1489,12 +1592,13 @@ def reverse_fleet_transaction(transaction_id: str, data: ReverseEntryRequest, ac
     return success_response(data={"deleted": True}, message_ar="تم التراجع عن القيد بنجاح")
 
 @router.delete("/fleet/transactions/{transaction_id}")
-def delete_fleet_transaction(transaction_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    t = db.get(FleetTransaction, transaction_id)
+def delete_fleet_transaction(transaction_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    t = _company_record(db, FleetTransaction, transaction_id, company)
     if not t:
         raise APIError(code="NOT_FOUND", message_ar="القيد غير موجود", message_en="Transaction not found", status_code=404)
+    _guard_editable_fleet_transaction(t)
     if t.account_id:
-        account = db.get(FleetAccount, t.account_id)
+        account = _company_record(db, FleetAccount, t.account_id, company)
         if account:
             # Reverse exactly what this entry did to the account's balance so
             # deleting it never leaves money silently vanished or duplicated.
@@ -1508,16 +1612,18 @@ def delete_fleet_transaction(transaction_id: str, actor: User = Depends(fleet_ac
 
 # ----------------- DAMAGE RECORDS -----------------
 @router.get("/fleet/vehicles/{vehicle_id}/damage")
-def list_fleet_damage_records(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+def list_fleet_damage_records(vehicle_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    _company_record(db, FleetVehicle, vehicle_id, company)
     res = db.scalars(select(FleetDamageRecord).where(FleetDamageRecord.vehicle_id == vehicle_id).order_by(FleetDamageRecord.date.desc(), FleetDamageRecord.timestamp.desc())).all()
     return success_response(data=[damage_to_dict(d) for d in res])
 
 
 @router.post("/fleet/vehicles/{vehicle_id}/damage")
-def create_fleet_damage_record(vehicle_id: str, data: FleetDamageCreate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    v = db.get(FleetVehicle, vehicle_id)
+def create_fleet_damage_record(vehicle_id: str, data: FleetDamageCreate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    v = _company_record(db, FleetVehicle, vehicle_id, company)
     if not v:
         raise APIError(code="NOT_FOUND", message_ar="المركبة غير موجودة", message_en="Vehicle not found", status_code=404)
+    _valid_amount(data.cost, allow_zero=True)
     d = FleetDamageRecord(
         id=new_id("fleetdmg"), vehicle_id=vehicle_id, date=data.date, description=data.description,
         cost=data.cost, currency=data.currency, reported_by=(data.reported_by or "").strip() or None,
@@ -1531,8 +1637,8 @@ def create_fleet_damage_record(vehicle_id: str, data: FleetDamageCreate, actor: 
 
 
 @router.put("/fleet/damage/{damage_id}")
-def update_fleet_damage_status(damage_id: str, data: FleetDamageStatusUpdate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    d = db.get(FleetDamageRecord, damage_id)
+def update_fleet_damage_status(damage_id: str, data: FleetDamageStatusUpdate, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    d = _company_record(db, FleetDamageRecord, damage_id, company)
     if not d:
         raise APIError(code="NOT_FOUND", message_ar="سجل الضرر غير موجود", message_en="Damage record not found", status_code=404)
     d.status = data.status
@@ -1550,7 +1656,7 @@ class FleetDamageEdit(BaseModel):
     reason: str
 
 @router.put("/fleet/damage/{damage_id}/details")
-def edit_fleet_damage_record(damage_id: str, data: FleetDamageEdit, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
+def edit_fleet_damage_record(damage_id: str, data: FleetDamageEdit, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
     """Fixes a damage record's cost/description/date/reporter — unlike a
     FleetTransaction, damage cost never books against a real FleetAccount
     (it only feeds the vehicle's own cost/profit totals), so there's no
@@ -1558,9 +1664,10 @@ def edit_fleet_damage_record(damage_id: str, data: FleetDamageEdit, actor: User 
     reason = data.reason.strip()
     if not reason:
         raise APIError(code="REASON_REQUIRED", message_ar="يجب كتابة سبب التعديل", message_en="A reason is required", status_code=400)
+    _valid_amount(data.cost, allow_zero=True)
     if data.cost < 0:
         raise APIError(code="INVALID_AMOUNT", message_ar="لا يمكن أن تكون التكلفة بقيمة سالبة", message_en="Cost cannot be negative", status_code=400)
-    d = db.get(FleetDamageRecord, damage_id)
+    d = _company_record(db, FleetDamageRecord, damage_id, company)
     if not d:
         raise APIError(code="NOT_FOUND", message_ar="سجل الضرر غير موجود", message_en="Damage record not found", status_code=404)
     old_cost, old_description = d.cost, d.description
@@ -1572,8 +1679,8 @@ def edit_fleet_damage_record(damage_id: str, data: FleetDamageEdit, actor: User 
 
 
 @router.delete("/fleet/damage/{damage_id}")
-def delete_fleet_damage_record(damage_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db)):
-    d = db.get(FleetDamageRecord, damage_id)
+def delete_fleet_damage_record(damage_id: str, actor: User = Depends(fleet_actor), db: Session = Depends(get_db), company: str = Depends(get_company)):
+    d = _company_record(db, FleetDamageRecord, damage_id, company)
     if not d:
         raise APIError(code="NOT_FOUND", message_ar="سجل الضرر غير موجود", message_en="Damage record not found", status_code=404)
     db.delete(d)

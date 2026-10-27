@@ -22,7 +22,7 @@ from ..core.errors import APIError
 from ..core.responses import success_response
 from ..database import get_db
 from ..id_gen import new_id
-from ..models import AuditAction, FleetAccount, FleetCompanyDef, FleetVehicle, FleetWarehouse, Role, User
+from ..models import AuditAction, FleetCompanyDef, FleetWarehouse, Role, User
 from ..tracking import create_audit_log
 
 router = APIRouter(tags=["Fleet companies (dynamic list)"])

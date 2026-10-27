@@ -1,17 +1,17 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from ..database import get_db
 from ..models import User, Role, AuditAction, LoginLog
 from ..tracking import create_audit_log
-from ..core.responses import success_response, error_response
+from ..core.responses import success_response
 from ..core.errors import APIError
 from ..auth_deps import hash_password, verify_password, create_access_token, get_current_user, require_permission
 from ..id_gen import new_id
 from ..request_context import get_client_ip, get_client_device
-from ..trial import is_trial_expired, trial_status
+from ..trial import is_trial_expired
 from .. import mfa
 from pydantic import BaseModel
 
