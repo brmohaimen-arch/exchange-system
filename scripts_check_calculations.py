@@ -69,15 +69,18 @@ def read_only_connection(path):
     con = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=15)
     con.row_factory = sqlite3.Row
     con.execute('PRAGMA query_only=ON')
-    allowed = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
-               sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_RECURSIVE}
+    # Authorizer action codes by their fixed SQLite numbers: older Pythons (the server's system python3 is 3.6)
+    # do not export SQLITE_FUNCTION / SQLITE_RECURSIVE, so the module constants cannot be relied on.
+    ok, deny = 0, 1
+    allowed = {21, 20, 31, 22, 33}   # SELECT, READ, FUNCTION, TRANSACTION, RECURSIVE
+    pragma_action = 19
     pragmas = {'table_info', 'foreign_key_check', 'quick_check'}
     def authorize(action, arg1, arg2, dbname, trigger):
         if action in allowed:
-            return sqlite3.SQLITE_OK
-        if action == sqlite3.SQLITE_PRAGMA and (arg1 or '').lower() in pragmas:
-            return sqlite3.SQLITE_OK
-        return sqlite3.SQLITE_DENY
+            return ok
+        if action == pragma_action and (arg1 or '').lower() in pragmas:
+            return ok
+        return deny
     con.set_authorizer(authorize)
     con.execute('BEGIN')  # one consistent read snapshot, including WAL; no immutable=1
     return con
