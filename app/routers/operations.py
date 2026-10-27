@@ -86,6 +86,7 @@ class InventoryCountCreate(BaseModel):
     reason: str
     notes: str | None = None
     reported_by: str
+    denomination_breakdown: Dict[str, float] | None = None
 
 class DailyExpenseCreate(BaseModel):
     id: str
@@ -509,9 +510,8 @@ def close_shift(shift_id: str, data: ShiftClose, actor: User = Depends(require_p
 
     # Calculate differences
     diffs = {}
-    for curr, val in expected.items():
-        actual_val = data.actual_balances.get(curr, 0.0)
-        diffs[curr] = actual_val - val
+    for curr in sorted(set(expected) | set(data.actual_balances)):
+        diffs[curr] = data.actual_balances.get(curr, 0.0) - expected.get(curr, 0.0)
 
     shift.actual_balances = data.actual_balances
     shift.differences = diffs
@@ -722,6 +722,12 @@ def execute_approval_action(approval_id: str, action: Literal["approve", "reject
                 shift.approved_by = actor.name
                 create_audit_log(db, action=AuditAction.APPROVE, entity_type="Shift", entity_id=shift.id, description=f"تم اعتماد إقفال وردية الصراف {shift.cashier}", username=actor.username)
 
+        elif approval.type == "inventory":
+            ic = db.get(InventoryCount, approval.reference_id)
+            if ic:
+                apply_inventory_count(db, ic, actor)
+            approval.status = "approved"
+
         else:
             approval.status = "approved"
 
@@ -806,25 +812,45 @@ def submit_inventory_count(data: InventoryCountCreate, actor: User = Depends(get
     db.commit()
     return success_response(data=inventory_to_dict(ic))
 
-@router.post("/inventory_counts/{ic_id}/approve")
-def approve_inventory_count(ic_id: str, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
-    ic = db.get(InventoryCount, ic_id)
-    if not ic:
-         raise APIError(code="NOT_FOUND", message_ar="الجرد غير موجود", message_en="Count not found", status_code=404)
+def apply_inventory_count(db: Session, ic: InventoryCount, actor: User):
+    """Approves a count exactly once. What it applies is the DIFFERENCE the count found
+    (counted - system at count time), added to the vault's balance as it is NOW and
+    recorded as a movement — so anything that moved the vault between the count and the
+    approval is kept, and the adjustment shows on the vault's statement."""
+    if ic.status != "pending":
+        raise APIError(code="ALREADY_PROCESSED", message_ar=f"تمت معالجة هذا الجرد بالفعل (الحالة: {ic.status})", message_en=f"This count was already processed (status: {ic.status})", status_code=400)
     ic.status = "approved"
 
     vault = db.get(Vault, ic.vault_id)
-    if vault:
+    if vault and abs(ic.difference) > 0.005:
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
         bals = vault.balances.copy()
-        bals[ic.currency] = ic.actual_balance
+        before = bals.get(ic.currency, 0.0)
+        after = before + ic.difference
+        bals[ic.currency] = after
         vault.balances = bals
+        vault.last_movement = timestamp
+        db.add(Movement(
+            id=new_id(f"m_invc_{ic.id}"), timestamp=timestamp, entity_type="vault", entity_id=vault.id, entity_name=vault.name,
+            currency=ic.currency, type="تسوية فروقات جرد",
+            amount_in=ic.difference if ic.difference > 0 else 0.0, amount_out=-ic.difference if ic.difference < 0 else 0.0,
+            balance_before=before, balance_after=after, reference_id=ic.id, user=actor.name,
+        ))
 
     appr = db.get(ApprovalRequest, f"apr_ic_{ic.id}")
     if appr:
         appr.status = "approved"
 
     create_audit_log(db, action=AuditAction.UPDATE, entity_type="InventoryCount", entity_id=ic.id,
-                      description=f"تم اعتماد الجرد وتحديث رصيد الخزنة {ic.vault_id} ({ic.currency}) إلى {ic.actual_balance}", username=actor.username)
+                      description=f"تم اعتماد الجرد وتطبيق فرق {ic.difference:+,.2f} {ic.currency} على الخزنة {ic.vault_id}", username=actor.username)
+
+
+@router.post("/inventory_counts/{ic_id}/approve")
+def approve_inventory_count(ic_id: str, actor: User = Depends(require_permission("اعتماد الإقفالات")), db: Session = Depends(get_db)):
+    ic = db.get(InventoryCount, ic_id)
+    if not ic:
+         raise APIError(code="NOT_FOUND", message_ar="الجرد غير موجود", message_en="Count not found", status_code=404)
+    apply_inventory_count(db, ic, actor)
     db.commit()
     return success_response(data=inventory_to_dict(ic))
 

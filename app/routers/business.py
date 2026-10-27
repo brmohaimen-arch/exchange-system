@@ -3786,6 +3786,10 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
         raise APIError(code="INVALID_RATE", message_ar="يجب أن يكون سعر الصرف أكبر من صفر", message_en="Rate must be positive", status_code=400)
     if data.commission < 0:
         raise APIError(code="INVALID_COMMISSION", message_ar="لا يمكن أن تكون العمولة بقيمة سالبة", message_en="Commission cannot be negative", status_code=400)
+    if data.paymentMethod not in ("cash", "customer_account", "bank_account", "debt"):
+        raise APIError(code="INVALID_PAYMENT_METHOD", message_ar="طريقة الدفع غير صالحة", message_en="Unsupported payment method", status_code=400)
+    if data.paymentMethod == "bank_account" and not data.bankAccountId:
+        raise APIError(code="BANK_ACCOUNT_REQUIRED", message_ar="اختر الحساب البنكي الذي ستُسوّى به العملية", message_en="A bank account is required when the payment method is bank_account", status_code=400)
 
     vault = db.get(Vault, data.vaultId)
     if not vault:
@@ -3833,6 +3837,9 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
     else:
         raise APIError(code="INVALID_TYPE", message_ar="نوع العملية غير صالح", message_en="Invalid operation type", status_code=400)
 
+    if cashier_pay_amount < 0:
+        raise APIError(code="INVALID_COMMISSION", message_ar="قيمة العمولة أكبر من قيمة العملية — لا يمكن أن يصبح المبلغ المدفوع سالباً", message_en="Commission exceeds the transaction value", status_code=400)
+
     # Check sufficient vault balance for the payout leg. On a sell, the foreign currency
     # handed to the customer always leaves the vault regardless of payment method (the
     # customer walks away with physical currency no matter how they paid for it), so
@@ -3856,6 +3863,14 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
         bank_acc = db.get(BankAccount, data.bankAccountId)
         if not bank_acc:
             raise APIError(code="BANK_ACCOUNT_NOT_FOUND", message_ar="الحساب المصرفي المحدد غير موجود", message_en="Bank account not found", status_code=400)
+        settlement_currency = cashier_receive_currency if is_sell else cashier_pay_currency
+        if bank_acc.currency != settlement_currency:
+            raise APIError(
+                code="BANK_CURRENCY_MISMATCH",
+                message_ar=f"عملة الحساب البنكي ({bank_acc.currency}) لا تطابق عملة التسوية ({settlement_currency}) — اختر حساباً بعملة {settlement_currency}",
+                message_en=f"Bank account currency ({bank_acc.currency}) does not match the settlement currency ({settlement_currency})",
+                status_code=400
+            )
 
     # Check the customer has enough account balance to cover what they're paying for
     # this operation FROM their own account balance — this only applies to a sell
@@ -3932,7 +3947,7 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
     # 3. Update Bank Account balance
     if data.paymentMethod == "bank_account" and bank_acc:
         old_bank_balance = bank_acc.balance
-        if is_buy:
+        if not is_sell:
             bank_acc.balance -= cashier_pay_amount
         else:
             bank_acc.balance += cashier_receive_amount
@@ -3945,9 +3960,9 @@ def execute_pos_operation(data: POSOperation, actor: User = Depends(get_current_
             entity_id=bank_acc.id,
             entity_name=f"{bank_acc.bank_name} - {bank_acc.account_name}",
             currency=bank_acc.currency,
-            type="سحب نقدي لصالح عملية صرافة" if is_buy else "إيداع نقدي من مبيعات صرافة",
-            amount_in=0.0 if is_buy else cashier_receive_amount,
-            amount_out=cashier_pay_amount if is_buy else 0.0,
+            type="سحب نقدي لصالح عملية صرافة" if not is_sell else "إيداع نقدي من مبيعات صرافة",
+            amount_in=0.0 if not is_sell else cashier_receive_amount,
+            amount_out=cashier_pay_amount if not is_sell else 0.0,
             balance_before=old_bank_balance,
             balance_after=bank_acc.balance,
             reference_id=tx_id,
@@ -4344,7 +4359,10 @@ def apply_transaction_reversal(db: Session, tx_id: str, actor_name: str, reason:
         shift.expected_balances = expected
 
     # 5. Flip the journal entry
-    jv = db.scalar(select(JournalEntry).where(JournalEntry.reference == tx_id, JournalEntry.status == "approved"))
+    # An edit leaves an approved "REV-..." entry next to the approved replacement: the one to cancel is
+    # the newest NON-reversal entry, never the inverse of an earlier posting.
+    approved_jvs = [j for j in db.scalars(select(JournalEntry).where(JournalEntry.reference == tx_id, JournalEntry.status == "approved")).all() if not j.id.startswith("REV-")]
+    jv = max(approved_jvs, key=lambda j: j.date or "") if approved_jvs else None
     if jv:
         jv.status = "reversed"
         rev_lines = [{
@@ -4442,6 +4460,15 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
 
     if cashier_pay_amount < 0:
         raise APIError(code="INVALID_COMMISSION", message_ar="قيمة العمولة أكبر من قيمة العملية بعد التعديل", message_en="Commission exceeds the edited transaction value", status_code=400)
+    if tx.payment_method == "bank_account" and bank_acc:
+        settlement_currency = cashier_receive_currency if is_sell else cashier_pay_currency
+        if bank_acc.currency != settlement_currency:
+            raise APIError(
+                code="BANK_CURRENCY_MISMATCH",
+                message_ar=f"عملة الحساب البنكي ({bank_acc.currency}) لا تطابق عملة التسوية ({settlement_currency}) — لا يمكن تعديل هذه العملية؛ يمكن عكسها وإعادة تسجيلها بحساب بنكي بالعملة الصحيحة",
+                message_en=f"Bank account currency ({bank_acc.currency}) does not match the settlement currency ({settlement_currency})",
+                status_code=400
+            )
 
     # 3. Re-run the same sufficiency checks execute_pos_operation performs at creation
     # time. On a sell, the foreign currency handed to the customer always leaves the
@@ -4499,7 +4526,7 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
     # 6. Reapply bank account balance + movement
     if tx.payment_method == "bank_account" and bank_acc:
         old_bank_balance = bank_acc.balance
-        if is_buy:
+        if not is_sell:
             bank_acc.balance -= cashier_pay_amount
         else:
             bank_acc.balance += cashier_receive_amount
@@ -4507,8 +4534,8 @@ def edit_transaction(tx_id: str, data: TransactionEditRequest, actor: User = Dep
         db.add(Movement(
             id=new_id(f"bm_edit_{tx_id}"), timestamp=timestamp, entity_type="bank_account", entity_id=bank_acc.id,
             entity_name=f"{bank_acc.bank_name} - {bank_acc.account_name}", currency=bank_acc.currency,
-            type="سحب نقدي لصالح عملية صرافة (بعد تعديل)" if is_buy else "إيداع نقدي من مبيعات صرافة (بعد تعديل)",
-            amount_in=0.0 if is_buy else cashier_receive_amount, amount_out=cashier_pay_amount if is_buy else 0.0,
+            type="سحب نقدي لصالح عملية صرافة (بعد تعديل)" if not is_sell else "إيداع نقدي من مبيعات صرافة (بعد تعديل)",
+            amount_in=0.0 if not is_sell else cashier_receive_amount, amount_out=cashier_pay_amount if not is_sell else 0.0,
             balance_before=old_bank_balance, balance_after=bank_acc.balance, reference_id=tx_id, user=username
         ))
 
