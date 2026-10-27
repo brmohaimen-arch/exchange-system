@@ -1,5 +1,6 @@
 import io
 import os
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
@@ -1784,12 +1785,25 @@ def _reverse_movement_entries(db: Session, reference_id: str, actor_name: str, r
         if entity is not None:
             if m.entity_type in ("vault", "customer"):
                 bals = entity.balances.copy()
-                bals[m.currency] = bals.get(m.currency, 0.0) - m.amount_in + m.amount_out
+                balance_before = bals.get(m.currency, 0.0)
+                bals[m.currency] = balance_before - m.amount_in + m.amount_out
                 entity.balances = bals
+                balance_after = bals[m.currency]
             else:
-                entity.balance = entity.balance - m.amount_in + m.amount_out
+                balance_before = entity.balance
+                entity.balance = balance_before - m.amount_in + m.amount_out
+                balance_after = entity.balance
             if m.entity_type != "customer":
                 entity.last_movement = timestamp
+            # The money is put back, so the account's recorded balances must show it: a counter-movement
+            # (itself hidden from every statement, like the entry it cancels) keeps the chain of
+            # balance_before / balance_after continuous. Without it the next row starts from a balance the
+            # previous row never reached, which the daily ledger had to guess about.
+            db.add(Movement(
+                id=new_id(f"m_rev_{m.id}"), timestamp=timestamp, entity_type=m.entity_type, entity_id=m.entity_id,
+                entity_name=m.entity_name, currency=m.currency, type=f"عكس — {m.type}", amount_in=m.amount_out, amount_out=m.amount_in,
+                balance_before=balance_before, balance_after=balance_after, reference_id=m.reference_id, status="reversed", user=actor_name,
+            ))
         m.status = "reversed"
 
     reversed_jvs = _reverse_journal_entries(db, reference_id, actor_name, reason)
@@ -3348,6 +3362,23 @@ def _chain_ordered(movements: list) -> list:
         while j < len(movements) and movements[j].timestamp == movements[i].timestamp:
             j += 1
         group = list(movements[i:j])
+        # Every movement id carries its creation time in milliseconds (new_id): inside one minute that is the exact
+        # order they were recorded in, which settles even the cases the balances alone cannot (a movement and its
+        # opposite starting from the same balance).
+        keys = [_creation_key(m) for m in group]
+        if len(group) > 1 and all(k is not None for k in keys):
+            ordered.extend(m for _, m in sorted(zip(keys, group), key=lambda km: km[0]))
+            i = j
+            continue
+        anchor = ordered[-1].balance_after if ordered else None
+        # Several rows can start from the same balance (a movement and its counter-movement cancel out), so
+        # "the first one that fits" can pick the wrong one. Look for the order in which EVERY row starts where
+        # the previous one ended; only if there is none fall back to the first-fit pick.
+        chain = _complete_chain(group, anchor) if len(group) <= 9 else None
+        if chain:
+            ordered.extend(chain)
+            i = j
+            continue
         while group:
             anchor = ordered[-1].balance_after if ordered else None
             if anchor is not None:
@@ -3361,6 +3392,28 @@ def _chain_ordered(movements: list) -> list:
     return ordered
 
 
+def _creation_key(m) -> int | None:
+    """The creation time (ms since epoch) embedded in a movement id by new_id(): its LAST 13-digit run (a
+    counter-movement's id also contains the id of the movement it cancels)."""
+    runs = re.findall(r"(?<!\d)\d{13}(?!\d)", m.id or "")
+    return int(runs[-1]) if runs else None
+
+
+def _complete_chain(group: list, anchor: float | None) -> list | None:
+    """An ordering of `group` in which each row's balance_before equals the previous row's balance_after
+    (the first one starting at `anchor` when there is one), or None when no such ordering exists."""
+    def extend(prev_after, remaining):
+        if not remaining:
+            return []
+        for m in remaining:
+            if prev_after is None or abs(m.balance_before - prev_after) < 0.005:
+                tail = extend(m.balance_after, [x for x in remaining if x is not m])
+                if tail is not None:
+                    return [m] + tail
+        return None
+    return extend(anchor, list(group))
+
+
 def _explain_gap(gap: float, new_hidden: list[float], open_hidden: list[float]) -> tuple[float, list[int], list[int]]:
     """Which hidden movements explain a gap between two shown rows. A hidden (cancelled) movement leaves its
     amount inside the recorded balances from its own time (+n); if the cancellation put the money back without
@@ -3368,6 +3421,9 @@ def _explain_gap(gap: float, new_hidden: list[float], open_hidden: list[float]) 
     gap. So a gap is made of: the amounts of hidden movements that appeared in this stretch (new) and the
     reversals of ones that appeared earlier (open). Returns (explained, indexes of new ones left open,
     indexes of open ones closed) for the smallest combination that matches exactly, else (0, [], [])."""
+    if new_hidden and abs(sum(new_hidden) - gap) < 0.005:
+        # the plain case: the gap is exactly what the hidden movements of this stretch add up to
+        return sum(new_hidden), list(range(len(new_hidden))), []
     items = [(n, "new", i) for i, n in enumerate(new_hidden)] + [(-n, "open", i) for i, n in enumerate(open_hidden)]
     if not items or len(items) > 14:
         return 0.0, [], []
@@ -3383,6 +3439,21 @@ def _explain_gap(gap: float, new_hidden: list[float], open_hidden: list[float]) 
     _, mask, total = best
     chosen = [items[i] for i in range(len(items)) if mask >> i & 1]
     return total, [i for _, kind, i in chosen if kind == "new"], [i for _, kind, i in chosen if kind == "open"]
+
+
+def _cancel_pairs(amounts: list[float]) -> list[float]:
+    """Drops every +n / -n pair from the still-open hidden amounts: a cancelled movement together with its
+    counter-movement nets to zero, can never explain a gap, and would only inflate the search."""
+    amounts = list(amounts)
+    i = 0
+    while i < len(amounts):
+        j = next((k for k in range(i + 1, len(amounts)) if abs(amounts[i] + amounts[k]) < 0.005), None)
+        if j is None:
+            i += 1
+        else:
+            del amounts[j]
+            del amounts[i]
+    return amounts
 
 
 def _ledger_sequence(movements: list, opening: float | None = None, hidden: list | None = None) -> list[dict]:
@@ -3404,25 +3475,28 @@ def _ledger_sequence(movements: list, opening: float | None = None, hidden: list
     prev_stored_after: float | None = None
     offset = 0.0          # the still-open hidden amounts, taken out of the recorded balances
     open_hidden: list[float] = []
-    pending = sorted(hidden or [], key=lambda h: h.timestamp)
-    for m in _chain_ordered(movements):
-        new_hidden: list[float] = []
-        while pending and pending[0].timestamp <= m.timestamp:
-            h = pending.pop(0)
-            new_hidden.append(h.amount_in - h.amount_out)
+    # Shown and hidden movements are put in ONE order (time, then the balance chain inside the same minute), so a
+    # hidden movement lands exactly between the shown rows it really sits between — even within a single minute.
+    hidden_ids = {id(h) for h in (hidden or [])}
+    ordered = _chain_ordered(sorted(list(movements) + list(hidden or []), key=lambda x: x.timestamp))
+    new_hidden: list[float] = []
+    for m in ordered:
+        if id(m) in hidden_ids:
+            new_hidden.append(m.amount_in - m.amount_out)
+            continue
         if prev_stored_after is None:
             # The first shown row: cancelled movements before it that the recorded balance still contains
             # (e.g. two manual entries later reversed) are the account's real starting point being 0, not an
             # "opening balance" — taken out so the statement starts clean and their later reversal can be matched.
             if new_hidden and abs(m.balance_before) > 0.005:
                 explained, opened, _closed = _explain_gap(m.balance_before, new_hidden, [])
-                open_hidden = [new_hidden[i] for i in opened]
+                open_hidden = _cancel_pairs([new_hidden[i] for i in opened])
                 offset -= explained
         else:
             gap = m.balance_before - prev_stored_after
             if abs(gap) > 0.005:
                 explained, opened, closed = _explain_gap(gap, new_hidden, open_hidden)
-                open_hidden = [n for i, n in enumerate(open_hidden) if i not in closed] + [new_hidden[i] for i in opened]
+                open_hidden = _cancel_pairs([n for i, n in enumerate(open_hidden) if i not in closed] + [new_hidden[i] for i in opened])
                 offset -= explained
                 residual = gap - explained
                 if abs(residual) > 0.005:
@@ -3435,6 +3509,7 @@ def _ledger_sequence(movements: list, opening: float | None = None, hidden: list
                       "currency": m.currency, "entity_name": m.entity_name, "notes": None, "user": m.user})
         prev_after = after
         prev_stored_after = m.balance_after
+        new_hidden = []
     return items
 
 

@@ -23,6 +23,10 @@ What it looks for
      operation itself (Transaction / Transfer) is still live, with no replacement entry. Their money was
      undone while they keep showing everywhere.
   E. Debts / advances marked cancelled that a customer statement would still list.
+  F. The daily ledger (PDF / Excel "كشف الحركة اليومية") prints an "unrecorded manual adjustment" line: a balance
+     that changed with no movement behind it. A cancellation or an edit must never cause one; what remains is a
+     balance edited by hand on the banks page, or history from before counter-movements were recorded. Review each.
+  G. The ledger's last balance differs from the account's own balance.
 (Deleted debts, advances, fleet entries and vehicles are removed from the database, so they cannot show.)
 """
 import argparse
@@ -51,7 +55,7 @@ try:
     from sqlalchemy.orm import sessionmaker
 
     from app.models import (Advance, BankAccount, Customer, CustomerAccountEntry, Debt, JournalEntry, Movement, Transaction, Transfer, Vault)
-    from app.routers.business import (_not_reversed_movement, _reversed_customer_entry_ids, _reversed_journal_refs)
+    from app.routers.business import (_entity_daily_ledger_rows, _not_reversed_movement, _reversed_customer_entry_ids, _reversed_journal_refs)
 except Exception as exc:  # pragma: no cover
     print("could not load the application code:", repr(exc))
     sys.exit(2)
@@ -136,6 +140,34 @@ for a in db.scalars(select(Advance)).all():
     if getattr(a, "status", None) == "cancelled" and a.id not in reversed_journal_refs:
         add("E", f"{a.timestamp}  advance {a.amount:,.2f} {a.currency}  customer {customers.get(a.customer_id, a.customer_id)}  [{a.id}]")
 
+# ---- F / G. the daily ledgers (the PDF / Excel "كشف الحركة اليومية") ---------------------------------------
+# Built with the application's own ledger code. F: a printed "unrecorded manual adjustment" line - a balance that
+# changed with no movement behind it. A cancellation or an edit must never cause one (it records a counter-movement);
+# what is left is either a balance edited by hand (banks page) or data from before counter-movements existed - review.
+# G: the ledger's last balance is not the account's balance.
+ledger_targets = []
+for v in db.scalars(select(Vault)).all():
+    for ccy in (v.balances or {}):
+        ledger_targets.append(("vault", v.id, v.name, ccy, (v.balances or {}).get(ccy, 0.0)))
+for a in db.scalars(select(BankAccount)).all():
+    ledger_targets.append(("bank_account", a.id, f"{a.bank_name} - {a.account_name}", a.currency, a.balance))
+for kind, eid, name, ccy, live_balance in ledger_targets:
+    if not db.scalar(select(Movement.id).where(Movement.entity_type == kind, Movement.entity_id == eid, Movement.currency == ccy).limit(1)):
+        continue
+    headers, rows = _entity_daily_ledger_rows(db, kind, eid, "", "", ccy)
+    bal_col = headers.index("الرصيد بالأرقام")
+    for r in rows:
+        if "تعديل رصيد يدوي" in str(r[3]):
+            amount = f"+{r[4]}" if r[4] else f"-{r[5]}"
+            add("F", f"{r[1]}  {name} [{eid}]  {ccy}  {amount}")
+    if len(rows) > 1:
+        try:
+            last = float(str(rows[-1][bal_col]).replace(",", "").split()[0])
+        except ValueError:
+            continue
+        if abs(last - live_balance) > 0.01:
+            add("G", f"{name} [{eid}]  {ccy}  ledger ends at {last:,.2f} but the account holds {live_balance:,.2f}")
+
 # ---- report ------------------------------------------------------------------------------------
 TITLES = {
     "A": "A. cancelled customer deposits / withdrawals / transfers still in the customer statement",
@@ -143,9 +175,11 @@ TITLES = {
     "C": "C. cancelled transfers still listed as approved in statements",
     "D": "D. operations whose journal entry was reversed but that are still live (half-cancelled)",
     "E": "E. cancelled debts / advances still listed",
+    "F": "F. daily ledger prints an 'unrecorded manual adjustment' line (a balance changed with no movement - review each)",
+    "G": "G. daily ledger's last balance differs from the account's balance",
 }
 total = 0
-for key in "ABCDE":
+for key in "ABCDEFG":
     rows = findings.get(key, [])
     total += len(rows)
     status = "OK" if not rows else f"{len(rows)} FOUND"
