@@ -3361,6 +3361,30 @@ def _chain_ordered(movements: list) -> list:
     return ordered
 
 
+def _explain_gap(gap: float, new_hidden: list[float], open_hidden: list[float]) -> tuple[float, list[int], list[int]]:
+    """Which hidden movements explain a gap between two shown rows. A hidden (cancelled) movement leaves its
+    amount inside the recorded balances from its own time (+n); if the cancellation put the money back without
+    recording a movement, the balance drops by n again at the cancellation time (-n), which lands in a LATER
+    gap. So a gap is made of: the amounts of hidden movements that appeared in this stretch (new) and the
+    reversals of ones that appeared earlier (open). Returns (explained, indexes of new ones left open,
+    indexes of open ones closed) for the smallest combination that matches exactly, else (0, [], [])."""
+    items = [(n, "new", i) for i, n in enumerate(new_hidden)] + [(-n, "open", i) for i, n in enumerate(open_hidden)]
+    if not items or len(items) > 14:
+        return 0.0, [], []
+    best = None
+    for mask in range(1, 1 << len(items)):
+        total = sum(items[i][0] for i in range(len(items)) if mask >> i & 1)
+        if abs(total - gap) < 0.005:
+            size = bin(mask).count("1")
+            if best is None or size < best[0]:
+                best = (size, mask, total)
+    if best is None:
+        return 0.0, [], []
+    _, mask, total = best
+    chosen = [items[i] for i in range(len(items)) if mask >> i & 1]
+    return total, [i for _, kind, i in chosen if kind == "new"], [i for _, kind, i in chosen if kind == "open"]
+
+
 def _ledger_sequence(movements: list, opening: float | None = None, hidden: list | None = None) -> list[dict]:
     """Ledger lines for one entity+currency. Where two consecutive movements
     don't join up (balance_before != previous balance_after — a balance that
@@ -3369,36 +3393,40 @@ def _ledger_sequence(movements: list, opening: float | None = None, hidden: list
     unexplained.
 
     hidden = the movements of cancelled operations that are left out of the
-    statement. Normally their amount is already out of the recorded balances
-    (the cancellation put the money back), so nothing is left to explain. But
-    an operation cancelled the old way (journal entry only) keeps its amount
-    inside every later recorded balance: the gap it leaves between two shown
-    rows is then exactly what the hidden movements of that stretch add up to.
-    That gap is taken out of the running balance silently, instead of printing
-    the cancelled operation again as a "manual adjustment" line."""
+    statement. Their amounts sit inside the recorded balances (and, when the
+    cancellation restored the balance without logging a movement, they come out
+    again later), so the gaps they leave are explained by them (_explain_gap)
+    and taken out of the running balance — the cancelled operation never
+    reappears as a "manual adjustment", and only a gap nothing explains is
+    printed as one."""
     items: list[dict] = []
     prev_after = opening
-    offset = 0.0   # the hidden amounts already taken out of the recorded balances
+    prev_stored_after: float | None = None
+    offset = 0.0          # the still-open hidden amounts, taken out of the recorded balances
+    open_hidden: list[float] = []
     pending = sorted(hidden or [], key=lambda h: h.timestamp)
     for m in _chain_ordered(movements):
-        hidden_net = 0.0
+        new_hidden: list[float] = []
         while pending and pending[0].timestamp <= m.timestamp:
             h = pending.pop(0)
-            hidden_net += h.amount_in - h.amount_out
+            new_hidden.append(h.amount_in - h.amount_out)
+        if prev_stored_after is not None:
+            gap = m.balance_before - prev_stored_after
+            if abs(gap) > 0.005:
+                explained, opened, closed = _explain_gap(gap, new_hidden, open_hidden)
+                open_hidden = [n for i, n in enumerate(open_hidden) if i not in closed] + [new_hidden[i] for i in opened]
+                offset -= explained
+                residual = gap - explained
+                if abs(residual) > 0.005:
+                    items.append({"m": None, "ts": m.timestamp, "in": residual if residual > 0 else 0.0, "out": -residual if residual < 0 else 0.0,
+                                  "after": m.balance_before + offset, "type": "تعديل رصيد يدوي (غير مسجَّل)", "currency": m.currency,
+                                  "entity_name": m.entity_name, "notes": "فرق بين رصيدين متتاليين — تعديل يدوي على الرصيد", "user": "—"})
         before = m.balance_before + offset
-        if prev_after is not None and abs(before - prev_after) > 0.005:
-            gap = before - prev_after
-            if abs(gap - hidden_net) < 0.005:
-                offset -= gap   # exactly the cancelled amount: carry on without it
-                before = prev_after
-            else:
-                items.append({"m": None, "ts": m.timestamp, "in": gap if gap > 0 else 0.0, "out": -gap if gap < 0 else 0.0,
-                              "after": before, "type": "تعديل رصيد يدوي (غير مسجَّل)", "currency": m.currency,
-                              "entity_name": m.entity_name, "notes": "فرق بين رصيدين متتاليين — تعديل يدوي على الرصيد", "user": "—"})
         after = m.balance_after + offset
         items.append({"m": m, "ts": m.timestamp, "in": m.amount_in, "out": m.amount_out, "before": before, "after": after, "type": m.details or m.type,
                       "currency": m.currency, "entity_name": m.entity_name, "notes": None, "user": m.user})
         prev_after = after
+        prev_stored_after = m.balance_after
     return items
 
 
