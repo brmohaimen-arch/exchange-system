@@ -89,6 +89,23 @@ def chain_order(rows):
     return out
 
 
+def explain(gap, new_hidden, open_hidden):
+    """Same matching the daily ledger uses: a gap is the amounts of hidden movements that appeared in this stretch
+    plus the later reversal (-amount) of hidden ones seen earlier. Returns (opened indexes, closed indexes) or None."""
+    items = [(n, 'new', i) for i, n in enumerate(new_hidden)] + [(-n, 'open', i) for i, n in enumerate(open_hidden)]
+    if not items or len(items) > 14:
+        return None
+    best = None
+    for mask in range(1, 1 << len(items)):
+        total = sum(items[i][0] for i in range(len(items)) if mask >> i & 1)
+        if abs(total - gap) < EPS and (best is None or bin(mask).count('1') < best[0]):
+            best = (bin(mask).count('1'), mask)
+    if best is None:
+        return None
+    chosen = [items[i] for i in range(len(items)) if best[1] >> i & 1]
+    return [i for _, k, i in chosen if k == 'new'], [i for _, k, i in chosen if k == 'open']
+
+
 def inspect(con, entity_id, currency, date_from, date_to):
     acct = con.execute('SELECT * FROM bank_accounts WHERE id=?', (entity_id,)).fetchone()
     kind = 'bank_account'
@@ -120,8 +137,9 @@ def inspect(con, entity_id, currency, date_from, date_to):
     print('')
     print('chain (H = hidden from the statements, GAP = recorded balances do not join up):')
 
-    prev_after, total_gap, total_hidden_unjoined = None, 0.0, 0.0
-    stretch_hidden = 0.0
+    prev_after, total_gap, unexplained = None, 0.0, 0.0
+    stretch = []        # hidden movements since the last shown row (net amounts)
+    open_hidden = []    # hidden movements whose amount is still inside the recorded balances
     for m in rows:
         ts = m['timestamp']
         in_range = (not date_from or ts[:10] >= date_from) and (not date_to or ts[:10] <= date_to)
@@ -129,26 +147,32 @@ def inspect(con, entity_id, currency, date_from, date_to):
             if prev_after is not None and abs(m['balance_before'] - prev_after) > EPS:
                 gap = m['balance_before'] - prev_after
                 total_gap += gap
-                note = 'hidden net in this stretch {}'.format(money(stretch_hidden))
-                if abs(gap - stretch_hidden) < EPS:
-                    note += ' -> EXPLAINED by hidden movements'
-                elif abs(stretch_hidden) < EPS:
-                    note += ' -> no hidden movement: a balance changed without a movement'
+                found = explain(gap, stretch, open_hidden)
+                if found:
+                    opened, closed = found
+                    parts = []
+                    if opened:
+                        parts.append('the hidden movement(s) of this stretch ({})'.format(', '.join(money(stretch[i]) for i in opened)))
+                    if closed:
+                        parts.append("the later reversal of earlier hidden movement(s) ({})".format(', '.join(money(open_hidden[i]) for i in closed)))
+                    note = 'EXPLAINED by ' + ' and '.join(parts)
+                    open_hidden = [n for i, n in enumerate(open_hidden) if i not in closed] + [stretch[i] for i in opened]
                 else:
-                    note += ' -> partly explained, remainder {}'.format(money(gap - stretch_hidden))
+                    unexplained += gap
+                    note = 'NOT EXPLAINED by any hidden movement: a balance changed without a movement (e.g. the balance edited on the banks page)'
                 if in_range:
                     print('   ***** GAP {:>16} before {} | {}'.format(money(gap), ts, note))
-            stretch_hidden = 0.0
+            stretch = []
             prev_after = m['balance_after']
         else:
-            stretch_hidden += (m['amount_in'] or 0.0) - (m['amount_out'] or 0.0)
+            stretch.append((m['amount_in'] or 0.0) - (m['amount_out'] or 0.0))
         if in_range:
             print('   {} {} | {:<34} | in {:>14} out {:>14} | before {:>14} after {:>14} | {} | ref {} | {}'.format(
                 'H' if is_hidden(m) else ' ', ts, (m['type'] or '')[:34], money(m['amount_in']), money(m['amount_out']),
                 money(m['balance_before']), money(m['balance_after']), m['status'], m['reference_id'], m['user'] or ''))
     print('')
-    print('movements: {} | sum of gaps between shown rows: {} | last recorded balance: {} | account balance now: {}'.format(
-        len(rows), money(total_gap), money(rows[-1]['balance_after']) if rows else '-', money(current)))
+    print('movements: {} | sum of gaps: {} | of which NOT explained by hidden movements: {} | last recorded balance: {} | account balance now: {}'.format(
+        len(rows), money(total_gap), money(unexplained), money(rows[-1]['balance_after']) if rows else '-', money(current)))
     if rows and abs(rows[-1]['balance_after'] - current) > EPS:
         print('NOTE: the account balance now differs from the last recorded movement balance by {} - a change after the last movement.'.format(money(current - rows[-1]['balance_after'])))
 
